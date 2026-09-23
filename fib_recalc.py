@@ -7,7 +7,7 @@
   python3 fib_recalc.py --dump raw.json # 불러온 캔들 원본도 저장
 
 --input JSON 형식: {"BTC": {"H_w": .., "L": .., "H_d": .., "price": ..}, ...}
-결과는 마크다운으로 stdout에 출력한다. fib-plan.md 2·4~7번 표를 이걸로 바꾸면 된다.
+결과는 fib-plan.md와 같은 코인별 형식의 마크다운으로 stdout에 출력한다.
 표준 라이브러리만 사용.
 """
 import argparse
@@ -115,74 +115,73 @@ def rnd(coin, v):
     return f"{round(v / step) * step:,.0f}"
 
 
+def qty(c, v):
+    return f"{v:.1f}" if c == "XRP" else f"{v:.4f}" if c == "ETH" else f"{v:.5f}"
+
+
+def ext_name(e):
+    return f"{e:.1f}" if e == int(e) else f"{e:g}"
+
+
+def pct(a, b):
+    return f"{(a / b - 1) * 100:+.1f}%".replace("-", "−")
+
+
 def report(data):
-    out = []
-    out.append("## 2. 기준점 (업비트 캔들)\n")
-    out.append("| | 주봉 고점 (H_w) | 저점 (L) | 일봉 고점 (H_d) | 현재가 |")
-    out.append("|---|---|---|---|---|")
-    for c in COINS:
-        p = data[c]
-        out.append(
-            f"| {c} | {p['H_w']:,.0f} ({p.get('H_w_date', '-')}) | {p['L']:,.0f} ({p.get('L_date', '-')}) "
-            f"| {p['H_d']:,.0f} ({p.get('H_d_date', '-')}) | {p['price']:,.0f} |"
-        )
-
     lv = {c: levels(data[c]) for c in COINS}
-
-    out.append("\n## 4. 주봉 레벨\n")
-    out.append("| 레벨 | " + " | ".join(COINS) + " |")
-    out.append("|---|" + "---|" * len(COINS))
-    for r in WEEKLY_R:
-        out.append(f"| {r * 100:g}% | " + " | ".join(rnd(c, lv[c]["weekly"][r]) for c in COINS) + " |")
-
-    out.append("\n## 5. 일봉 레벨\n")
-    out.append("| 레벨 | " + " | ".join(COINS) + " |")
-    out.append("|---|" + "---|" * len(COINS))
-    for e in EXT_E:
-        out.append(f"| {e:g} 확장 | " + " | ".join(rnd(c, lv[c]["ext"][e]) for c in COINS) + " |")
-    for r in RETR_R:
-        name = f"{r * 100:g}% 되돌림" + (" (매수 중단선)" if r == 0.786 else "")
-        out.append(f"| {name} | " + " | ".join(rnd(c, lv[c]["retr"][r]) for c in COINS) + " |")
-
     zones = {c: sell_zones(lv[c], data[c]["price"]) for c in COINS}
-    out.append("\n## 6. 매도표 (겹침 구간 아래쪽 가격에 지정가)\n")
-    out.append("| | 비중 | " + " | ".join(COINS) + " |")
-    out.append("|---|---|" + "---|" * len(COINS))
-    for i, (name, w) in enumerate(SELL_STEPS):
-        cells = []
-        for c in COINS:
-            z = zones[c]
-            if i < len(z):
-                cells.append(f"{HOLDINGS[c] * w:.5g} @ {rnd(c, z[i]['low'])}")
-            else:
-                cells.append("겹침 구간 없음")
-        out.append(f"| {name} | {w * 100:g}% | " + " | ".join(cells) + " |")
-    out.append("| 나머지 | 30% | " + " | ".join("추적 손절" for _ in COINS) + " |")
-    out.append("\n겹침 구간 근거:")
+    budget = {c: BUY_BUDGET * BUY_SPLIT[c] for c in COINS}
+    out = ["## 한눈에 보기\n",
+           "| 코인 | 현재가 | 다음 매도 (1차) | 다음 매수 (38.2%) | 매수 중단선 |",
+           "|---|---|---|---|---|"]
     for c in COINS:
-        desc = ", ".join(
-            f"주봉 {z['weekly_r'] * 100:g}% ↔ {z['ext_e']:g} 확장 ({rnd(c, z['low'])}~{rnd(c, z['high'])})"
-            if z["ext_e"] else f"주봉 {z['weekly_r'] * 100:g}% 단독 ({rnd(c, z['low'])})"
-            for z in zones[c][:3]
+        p = data[c]["price"]
+        s = zones[c][0]["low"] if zones[c] else None
+        b = lv[c]["retr"][0.382]
+        out.append(
+            f"| {c} | {p:,.0f} | "
+            + (f"{rnd(c, s)} ({pct(s, p)})" if s else "없음")
+            + f" | {rnd(c, b)} ({pct(b, p)}) | {rnd(c, lv[c]['retr'][0.786])} |"
         )
-        out.append(f"- {c}: {desc or '없음'}")
 
-    out.append(f"\n## 7. 매수표 (현금 {CASH_KRW:,} 중 {BUY_BUDGET:,} 사용)\n")
-    out.append("| 되돌림 | 배분 | " + " | ".join(f"{c} ({BUY_BUDGET * BUY_SPLIT[c] / 1e4:,.0f}만)" for c in COINS) + " |")
-    out.append("|---|---|" + "---|" * len(COINS))
-    for r, w in BUY_STEPS:
-        cells = [f"{BUY_BUDGET * BUY_SPLIT[c] * w / 1e4:,.0f}만 @ {rnd(c, lv[c]['retr'][r])}" for c in COINS]
-        out.append(f"| {r * 100:g}% | {w * 100:g}% | " + " | ".join(cells) + " |")
-
-    out.append("\n## 1. 평가액 (현재가 × 1번 표 수량)\n")
-    out.append("| 자산 | 수량 | 현재가 | 평가액(KRW) | 비중 |")
-    out.append("|---|---|---|---|---|")
     vals = {c: HOLDINGS[c] * data[c]["price"] for c in COINS}
     total = CASH_KRW + sum(vals.values())
-    out.append(f"| KRW | – | – | {CASH_KRW:,} | {CASH_KRW / total * 100:.1f}% |")
+    out += ["\n## 포트폴리오\n", "| 자산 | 수량 | 평가액(KRW) | 비중 |", "|---|---|---|---|",
+            f"| KRW | – | {CASH_KRW:,} | {CASH_KRW / total * 100:.1f}% |"]
     for c in COINS:
-        out.append(f"| {c} | {HOLDINGS[c]:g} | {data[c]['price']:,.0f} | {vals[c]:,.0f} | {vals[c] / total * 100:.1f}% |")
-    out.append(f"| 합계 | | | {total:,.0f} | |")
+        out.append(f"| {c} | {HOLDINGS[c]:g} | {vals[c]:,.0f} | {vals[c] / total * 100:.1f}% |")
+    out.append(f"| 합계 | | {total:,.0f} | |")
+
+    for c in COINS:
+        d, l, z = data[c], lv[c], zones[c]
+        out += ["\n---\n", f"## {c}\n",
+                f"기준점: 주봉 고점 **{d['H_w']:,.0f}** ({d.get('H_w_date', '-')}) · "
+                f"저점 **{d['L']:,.0f}** ({d.get('L_date', '-')}) · "
+                f"일봉 고점 **{d['H_d']:,.0f}** ({d.get('H_d_date', '-')})\n",
+                "| 가격 | 근거 | 할 일 |", "|---|---|---|"]
+        for i in reversed(range(min(len(z), len(SELL_STEPS)))):
+            name, w = SELL_STEPS[i]
+            why = (f"주봉 {z[i]['weekly_r'] * 100:g}% ↔ {ext_name(z[i]['ext_e'])} 확장 {rnd(c, l['ext'][z[i]['ext_e']])}"
+                   if z[i]["ext_e"] else f"주봉 {z[i]['weekly_r'] * 100:g}% 단독 (가까운 확장 없음)")
+            out.append(f"| {rnd(c, z[i]['low'])} | {why} | {name} 매도 {qty(c, HOLDINGS[c] * w)} ({w * 100:g}%) |")
+        out.append(f"| **{d['price']:,.0f}** | **현재가** | |")
+        for r, w in BUY_STEPS:
+            out.append(f"| {rnd(c, l['retr'][r])} | {r * 100:g}% 되돌림 | 매수 {budget[c] * w / 1e4:,.0f}만 |")
+        out.append(f"| {rnd(c, l['retr'][0.786])} | 78.6% 되돌림 | 일봉 종가가 이 아래면 매수 중단 |")
+        out.append(f"| {d['L']:,.0f} | 저점 L | 주봉 종가가 이 아래면 1/3 축소 |")
+        if len(z) >= 2:
+            out.append(f"\n- 나머지 {qty(c, HOLDINGS[c] * 0.3)} (30%): 3차 체결 뒤 주봉 종가가 "
+                       f"{rnd(c, z[1]['low'])} 아래로 마감하면 전부 매도.")
+
+        out += ["\n<details><summary>전체 레벨</summary>\n",
+                "| 주봉 되돌림 | 가격 | 일봉 레벨 | 가격 |", "|---|---|---|---|"]
+        right = [(f"{ext_name(e)} 확장", l["ext"][e]) for e in EXT_E] + \
+                [(f"{r * 100:g}% 되돌림", l["retr"][r]) for r in RETR_R]
+        for i, (rn, rv) in enumerate(right):
+            left = (f"{WEEKLY_R[i] * 100:g}% | {rnd(c, l['weekly'][WEEKLY_R[i]])}"
+                    if i < len(WEEKLY_R) else " | ")
+            out.append(f"| {left} | {rn} | {rnd(c, rv)} |")
+        out.append("\n</details>")
     return "\n".join(out)
 
 
