@@ -332,6 +332,15 @@ class App:
         except ValueError as e:
             messagebox.showerror("자동매매", f"숫자를 확인하세요: {e}")
             return
+        try:
+            listed = {m["market"][4:] for m in fr.get("/market/all") if m["market"].startswith("KRW-")}
+        except Exception:
+            listed = None
+        unknown = [c for c in new["coins"] if listed is not None and c not in listed]
+        if unknown:
+            messagebox.showerror("자동매매", f"업비트 원화마켓에 없는 코인입니다: {', '.join(unknown)}\n"
+                                            "기호를 확인하세요 (예: BCH, SOL, DOGE, ADA).")
+            return
         if new["unit_krw"] < 5000:
             messagebox.showerror("자동매매", "업비트 최소 주문이 5,000원이라 1회 금액은 5,000원 이상이어야 합니다.")
             return
