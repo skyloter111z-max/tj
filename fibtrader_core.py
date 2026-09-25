@@ -34,7 +34,20 @@ DEFAULTS = {
     "dca_daily": {"BTC": 25_000, "ETH": 30_000, "XRP": 15_000},  # 업비트 코인 모으기 (매일 05시대)
     "progress": {c: {"sell_done": 0, "buy_done": 0} for c in fr.COINS},
     "levels": {},                   # 고정 플랜 레벨 {coin: {sells, buys, stop, at}}
+    "grid": {                       # 자동매매(물타기): 피보나치와 별개, 승인 없이 자동 주문
+        "enabled": True,
+        "simulate": True,           # 켜 두면 가상으로만 사고판다
+        "coins": ["BCH", "SOL", "DOGE"],
+        "unit_krw": 10_000,         # 1회 매수 금액
+        "drop_pct": 5.0,            # 마지막 매수가(또는 절반 매도가) 대비 이만큼 떨어지면 추가 매수
+        "profit_krw": 500,          # 사이클 수익(수수료 뺀 뒤)이 이 금액 이상이면 전량 매도
+        "half_at_breakeven": True,  # 2회 이상 산 뒤 본전(수수료 포함)에 오면 절반 매도
+        "max_krw": 500_000,         # 코인별 최대 투입(보유 원가) 한도
+        "state": {},
+    },
 }
+GRID_BLOCKED = set(fr.COINS)  # 피보나치 코인은 자동매매 금지
+FEE = 0.0005
 
 
 def now():
@@ -46,7 +59,8 @@ def load_config():
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, encoding="utf-8") as f:
             saved = json.load(f)
-        cfg.update({k: v for k, v in saved.items() if k in DEFAULTS})
+        cfg.update({k: v for k, v in saved.items() if k in DEFAULTS and k != "grid"})
+        cfg["grid"].update(saved.get("grid", {}))
         for c in fr.COINS:
             cfg["progress"].setdefault(c, {"sell_done": 0, "buy_done": 0})
     apply_config(cfg)
@@ -73,6 +87,8 @@ class DB:
             CREATE TABLE IF NOT EXISTS fills (ts TEXT, market TEXT, side TEXT, price REAL, volume REAL, uuid TEXT);
             CREATE TABLE IF NOT EXISTS actions (ts TEXT, simulated INTEGER, kind TEXT, market TEXT,
                                                 side TEXT, price REAL, volume REAL, result TEXT);
+            CREATE TABLE IF NOT EXISTS grid_trades (ts TEXT, simulated INTEGER, coin TEXT, side TEXT,
+                                                    price REAL, qty REAL, krw REAL, note TEXT);
             CREATE TABLE IF NOT EXISTS proposals (id INTEGER PRIMARY KEY, ts TEXT, reason TEXT,
                                                   todo TEXT, status TEXT);
         """)
@@ -196,12 +212,15 @@ class Engine(threading.Thread):
 
     # ---------- 감시 ----------
     def check_prices(self):
-        tickers = fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in fr.COINS))
+        coins = fr.COINS + [c for c in self.grid_coins() if c not in fr.COINS]
+        tickers = fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in coins))
         near = self.cfg["near_pct"]
         for t in tickers:
             coin, price = t["market"][4:], t["trade_price"]
             prev = self.prices.get(coin, price)
             self.prices[coin] = price
+            if coin not in fr.COINS:
+                continue
             for name, lvl in self.levels.get(coin, []):
                 key = (coin, name)
                 dist = (price / lvl - 1) * 100
@@ -215,6 +234,14 @@ class Engine(threading.Thread):
                 elif abs(dist) > near * 2 and key in self.alert_state:
                     del self.alert_state[key]
         self.emit("prices", dict(self.prices))
+        if self.cfg["grid"]["enabled"]:
+            for coin in self.grid_coins():
+                if coin in self.prices:
+                    try:
+                        self.grid_step(coin, self.prices[coin])
+                    except Exception as e:
+                        self.alert("grid", f"{coin} 자동매매 오류", str(e))
+        self.emit("grid", self.grid_view())
 
     def step_of(self, coin, side, price):
         """체결된 주문 가격이 고정 레벨의 몇 번째 단계인지 (0부터). 못 찾으면 None."""
@@ -323,10 +350,105 @@ class Engine(threading.Thread):
             self.proposal = None
             self.emit("proposal", None)
 
+    # ---------- 자동매매 (물타기 그리드) ----------
+    def grid_coins(self):
+        return [c for c in self.cfg["grid"]["coins"] if c not in GRID_BLOCKED]
+
+    def grid_state(self, coin):
+        return self.cfg["grid"]["state"].setdefault(coin, {
+            "qty": 0.0, "cost": 0.0, "buys": 0, "ref": None, "halved": False,
+            "realized": 0.0, "cycles": 0, "profit_total": 0.0})
+
+    def grid_trade(self, coin, side, price, amount):
+        """side=bid: amount는 원화, side=ask: amount는 수량. (수량, 원화[매수는 수수료 포함 지출, 매도는 수수료 뺀 수입])"""
+        g = self.cfg["grid"]
+        sim = g["simulate"] or not self.api
+        market = f"KRW-{coin}"
+        if sim:
+            qty, krw = (amount * (1 - FEE) / price, amount) if side == "bid" else (amount, amount * price * (1 - FEE))
+        else:
+            r = self.api.market_buy(market, amount) if side == "bid" else self.api.market_sell(market, amount)
+            vol, funds, fee = self.api.filled(r["uuid"])
+            qty, krw = (vol, funds + fee) if side == "bid" else (vol, funds - fee)
+            price = funds / vol if vol else price
+        self.db.add("grid_trades", now().isoformat(), int(sim), coin, side, price, qty, krw, "")
+        return qty, krw, price, sim
+
+    def grid_step(self, coin, price):
+        g, st = self.cfg["grid"], self.grid_state(coin)
+        unit, drop = g["unit_krw"], g["drop_pct"] / 100
+        tag = "[모의] " if g["simulate"] or not self.api else ""
+        if st["qty"] <= 0:  # 새 사이클 시작
+            qty, krw, px, _ = self.grid_trade(coin, "bid", price, unit)
+            st.update(qty=qty, cost=krw, buys=1, ref=px, halved=False, realized=0.0)
+            self.alert("grid", f"{tag}{coin} 시작 매수", f"{px:,.4g}원에 {krw:,.0f}원 매수 (1회)")
+        else:
+            value = st["qty"] * price * (1 - FEE)
+            pnl = st["realized"] + value - st["cost"]
+            avg = st["cost"] / st["qty"]
+            breakeven = avg / (1 - FEE)
+            if pnl >= g["profit_krw"]:
+                qty, krw, px, _ = self.grid_trade(coin, "ask", price, st["qty"])
+                pnl = st["realized"] + krw - st["cost"]
+                st["profit_total"] += pnl
+                st["cycles"] += 1
+                self.alert("grid", f"{tag}{coin} 익절 +{pnl:,.0f}원",
+                           f"{px:,.4g}원에 전량 매도 · {st['buys']}회 매수 사이클 · 누적 {st['profit_total']:,.0f}원")
+                st.update(qty=0.0, cost=0.0, buys=0, ref=None, halved=False, realized=0.0)
+            elif g["half_at_breakeven"] and st["buys"] >= 2 and not st["halved"] and price >= breakeven:
+                half = st["qty"] / 2
+                qty, krw, px, _ = self.grid_trade(coin, "ask", price, half)
+                st["realized"] += krw - st["cost"] / 2
+                st.update(qty=st["qty"] - qty, cost=st["cost"] / 2, halved=True, ref=px)
+                self.alert("grid", f"{tag}{coin} 본전 절반 매도", f"{px:,.4g}원에 {qty:g}개 매도 ({krw:,.0f}원)")
+            elif price <= st["ref"] * (1 - drop):
+                if st["cost"] + unit > g["max_krw"]:
+                    if not st.get("capped"):
+                        st["capped"] = True
+                        self.alert("grid", f"{coin} 투입 한도 도달", f"원가 {st['cost']:,.0f}원 · 한도 {g['max_krw']:,}원. 추가 매수 멈춤")
+                    return
+                qty, krw, px, _ = self.grid_trade(coin, "bid", price, unit)
+                st.update(qty=st["qty"] + qty, cost=st["cost"] + krw, buys=st["buys"] + 1, ref=px, halved=False, capped=False)
+                self.alert("grid", f"{tag}{coin} 물타기 {st['buys']}회",
+                           f"{px:,.4g}원에 {krw:,.0f}원 매수 · 평단 {st['cost'] / st['qty']:,.4g} · 원가 {st['cost']:,.0f}원")
+            else:
+                return
+        save_config(self.cfg)
+
+    def grid_view(self):
+        g, rows = self.cfg["grid"], []
+        for coin in self.grid_coins():
+            st, p = self.grid_state(coin), self.prices.get(coin)
+            if not p:
+                continue
+            q = st["qty"]
+            avg = st["cost"] / q if q else None
+            pnl = st["realized"] + q * p * (1 - FEE) - st["cost"] if q else 0
+            # 익절가: realized + q*x*(1-FEE) - cost = profit
+            tp = (g["profit_krw"] + st["cost"] - st["realized"]) / (q * (1 - FEE)) if q else None
+            rows.append({"coin": coin, "price": p, "buys": st["buys"], "cost": st["cost"], "qty": q, "avg": avg,
+                         "pnl": pnl, "next_buy": st["ref"] * (1 - g["drop_pct"] / 100) if st["ref"] else None,
+                         "breakeven": avg / (1 - FEE) if avg and st["buys"] >= 2 and not st["halved"] else None,
+                         "tp": tp, "cycles": st["cycles"], "profit_total": st["profit_total"]})
+        return rows
+
+    def grid_liquidate(self, coin):
+        st = self.grid_state(coin)
+        if st["qty"] <= 0 or coin not in self.prices:
+            return
+        qty, krw, px, sim = self.grid_trade(coin, "ask", self.prices[coin], st["qty"])
+        pnl = st["realized"] + krw - st["cost"]
+        st["profit_total"] += pnl
+        st.update(qty=0.0, cost=0.0, buys=0, ref=None, halved=False, realized=0.0)
+        self.cfg["grid"]["coins"] = [c for c in self.cfg["grid"]["coins"] if c != coin]
+        save_config(self.cfg)
+        self.alert("grid", f"{coin} 청산", f"{px:,.4g}원에 전량 매도 · 손익 {pnl:+,.0f}원 · 자동매매 목록에서 뺐습니다")
+
     def emergency_stop(self, cancel_all):
+        self.cfg["grid"]["enabled"] = False
         self.cfg["mode"] = "alert"
         save_config(self.cfg)
-        msgs = ["모드를 '알림만'으로 바꿨습니다."]
+        msgs = ["모드를 '알림만'으로 바꾸고 자동매매를 껐습니다."]
         if cancel_all and self.api:
             for coin in fr.COINS:
                 for o in self.api.open_orders(f"KRW-{coin}"):

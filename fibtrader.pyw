@@ -87,6 +87,7 @@ class App:
         nb.pack(fill="both", expand=True, padx=6, pady=(0, 6))
         self.nb = nb
         self.build_board(nb)
+        self.build_grid(nb)
         self.build_orders(nb)
         self.build_logs(nb)
         self.build_settings(nb)
@@ -205,6 +206,115 @@ class App:
         at = self.board.get("_levels_at", "")
         self.cash.config(text=f"{cash}\n레벨 기준 시각: {at}")
 
+    # ---------------- 자동매매 (물타기) ----------------
+    def build_grid(self, nb):
+        f = ttk.Frame(nb, padding=8)
+        nb.add(f, text="  자동매매  ")
+        g = self.cfg["grid"]
+        bar = ttk.Frame(f)
+        bar.pack(fill="x")
+        self.g_on = tk.BooleanVar(value=g["enabled"])
+        self.g_sim = tk.BooleanVar(value=g["simulate"])
+        self.g_half = tk.BooleanVar(value=g["half_at_breakeven"])
+        ttk.Checkbutton(bar, text="켜기", variable=self.g_on).pack(side="left")
+        ttk.Checkbutton(bar, text="모의", variable=self.g_sim).pack(side="left", padx=6)
+        self.g_fields = {}
+        for key, label, val, w in (("coins", "코인", ",".join(g["coins"]), 16), ("unit_krw", "1회", g["unit_krw"], 8),
+                                   ("drop_pct", "하락%", g["drop_pct"], 5), ("profit_krw", "익절원", g["profit_krw"], 6),
+                                   ("max_krw", "한도", g["max_krw"], 9)):
+            ttk.Label(bar, text=label).pack(side="left", padx=(8, 2))
+            e = ttk.Entry(bar, width=w)
+            e.insert(0, str(val))
+            e.pack(side="left")
+            self.g_fields[key] = e
+        ttk.Checkbutton(bar, text="본전 절반 매도", variable=self.g_half).pack(side="left", padx=8)
+        ttk.Button(bar, text="저장", command=self.save_grid).pack(side="left")
+        ttk.Label(f, text="규칙: 시작 매수 → 마지막 매수가 대비 하락%마다 1회 금액 추가 매수 → (2회 이상 샀으면) 본전에 절반 매도"
+                          " → 사이클 수익이 익절원 이상이면 전량 매도 후 다시 시작. BTC·ETH·XRP는 제외.",
+                  foreground="#555", wraplength=1000).pack(anchor="w", pady=4)
+        cols = (("coin", "코인", 60), ("price", "현재가", 100), ("buys", "매수", 45), ("cost", "원가", 85),
+                ("avg", "평단", 95), ("pnl", "평가손익", 80), ("next", "다음 매수가", 100), ("be", "본전 절반가", 100),
+                ("tp", "익절가", 100), ("cyc", "사이클", 55), ("tot", "누적 수익", 85))
+        self.grid_tree = ttk.Treeview(f, columns=[c for c, _, _ in cols], show="headings", height=5)
+        for c, t, w in cols:
+            self.grid_tree.heading(c, text=t)
+            self.grid_tree.column(c, width=w, anchor="e" if c != "coin" else "center")
+        self.grid_tree.tag_configure("up", foreground="#b91c1c")
+        self.grid_tree.tag_configure("down", foreground="#1d4ed8")
+        self.grid_tree.pack(fill="x")
+        row = ttk.Frame(f)
+        row.pack(fill="x", pady=4)
+        self.grid_sum = ttk.Label(row, text="")
+        self.grid_sum.pack(side="left")
+        ttk.Button(row, text="선택 코인 청산", command=self.grid_liquidate).pack(side="right")
+        ttk.Label(f, text="자동매매 거래 기록").pack(anchor="w", pady=(6, 0))
+        self.grid_log = self.table(f, (("ts", "시간", 150), ("sim", "모의", 45), ("coin", "코인", 60), ("side", "구분", 50),
+                                       ("price", "가격", 110), ("qty", "수량", 140), ("krw", "금액", 100)), 10)
+
+    def render_grid(self, rows):
+        self.grid_tree.delete(*self.grid_tree.get_children())
+        num = lambda v: "-" if v is None else f"{v:,.4g}" if v < 1000 else f"{v:,.0f}"  # noqa: E731
+        cost = tot = pnl = 0
+        for r in rows:
+            cost, tot, pnl = cost + r["cost"], tot + r["profit_total"], pnl + r["pnl"]
+            self.grid_tree.insert("", "end", iid=r["coin"], tags=("up" if r["pnl"] > 0 else "down",), values=(
+                r["coin"], num(r["price"]), r["buys"], f"{r['cost']:,.0f}", num(r["avg"]), f"{r['pnl']:+,.0f}",
+                num(r["next_buy"]), num(r["breakeven"]), num(r["tp"]), r["cycles"], f"{r['profit_total']:+,.0f}"))
+        g = self.cfg["grid"]
+        state = ("꺼짐" if not g["enabled"] else "모의" if g["simulate"] or not self.engine.api else "실전")
+        self.grid_sum.config(text=f"[{state}] 투입 원가 {cost:,.0f}원 · 평가손익 {pnl:+,.0f}원 · 누적 실현 {tot:+,.0f}원")
+
+    def render_grid_log(self):
+        self.grid_log.delete(*self.grid_log.get_children())
+        for ts, sim, coin, side, price, qty, krw, _ in self.db.query(
+                "SELECT * FROM grid_trades ORDER BY rowid DESC LIMIT 200"):
+            self.grid_log.insert("", "end", values=(ts[:19].replace("T", " "), "예" if sim else "", coin,
+                                                    "매수" if side == "bid" else "매도",
+                                                    f"{price:,.4g}" if price < 1000 else f"{price:,.0f}",
+                                                    f"{qty:g}", f"{krw:,.0f}"))
+
+    def save_grid(self):
+        g, fl = self.cfg["grid"], self.g_fields
+        try:
+            coins = [c.strip().upper() for c in fl["coins"].get().split(",") if c.strip()]
+            blocked = [c for c in coins if c in core.GRID_BLOCKED]
+            new = {"coins": [c for c in coins if c not in core.GRID_BLOCKED],
+                   "unit_krw": int(float(fl["unit_krw"].get())), "drop_pct": float(fl["drop_pct"].get()),
+                   "profit_krw": int(float(fl["profit_krw"].get())), "max_krw": int(float(fl["max_krw"].get()))}
+        except ValueError as e:
+            messagebox.showerror("자동매매", f"숫자를 확인하세요: {e}")
+            return
+        if new["unit_krw"] < 5000:
+            messagebox.showerror("자동매매", "업비트 최소 주문이 5,000원이라 1회 금액은 5,000원 이상이어야 합니다.")
+            return
+        going_live = self.g_on.get() and not self.g_sim.get() and (g["simulate"] or not g["enabled"])
+        if going_live and not messagebox.askyesno(
+                "자동매매 실전", f"⚠ 실전으로 켜면 승인 없이 업비트에 시장가 주문이 자동으로 나갑니다.\n"
+                f"코인 {', '.join(new['coins'])} · 1회 {new['unit_krw']:,}원 · 코인별 한도 {new['max_krw']:,}원\n\n진행할까요?",
+                icon="warning"):
+            return
+        holding = any(st.get("qty") for st in g["state"].values())
+        msg = "저장했습니다." + (f"\n{', '.join(blocked)}는 피보나치 코인이라 제외했습니다." if blocked else "")
+        if g["simulate"] and not self.g_sim.get():
+            g["state"] = {}  # 모의 보유분은 가상이라 실전 시작 전에 비운다
+            msg += "\n모의 기록(가상 보유분)을 비우고 실전으로 새로 시작합니다."
+        elif not g["simulate"] and self.g_sim.get() and holding:
+            messagebox.showerror("자동매매", "실전 보유분이 있습니다. '선택 코인 청산'으로 비운 뒤 모의로 바꾸세요.")
+            self.g_sim.set(False)
+            return
+        g.update(new, enabled=self.g_on.get(), simulate=self.g_sim.get(), half_at_breakeven=self.g_half.get())
+        core.save_config(self.cfg)
+        messagebox.showinfo("자동매매", msg)
+
+    def grid_liquidate(self):
+        sel = self.grid_tree.selection()
+        if not sel:
+            messagebox.showinfo("자동매매", "표에서 청산할 코인을 선택하세요.")
+            return
+        coin = sel[0]
+        if messagebox.askyesno("청산", f"{coin} 자동매매 보유분을 전량 시장가 매도하고 목록에서 뺄까요?"):
+            self.engine.request("grid_liquidate", coin)
+
     # ---------------- ② 주문 ----------------
     def build_orders(self, nb):
         f = ttk.Frame(nb, padding=8)
@@ -283,6 +393,7 @@ class App:
         if ans is not None:
             self.engine.request("emergency_stop", ans)
             self.mode_var.set("alert")
+            self.g_on.set(False)
 
     # ---------------- ③ 알림·기록 ----------------
     def build_logs(self, nb):
@@ -440,6 +551,8 @@ class App:
                 if akind in POPUP_KINDS:
                     self.popup(title, msg)
                 changed_logs = True
+            elif kind == "grid":
+                self.render_grid(ev[1])
             elif kind == "proposal":
                 self.proposal = ev[1]
                 self.render_proposal()
@@ -450,10 +563,12 @@ class App:
                 changed_logs = True
         if changed_logs:
             self.render_logs()
+            self.render_grid_log()
         self.root.after(500, self.pump)
 
     def run(self):
         self.render_logs()
+        self.render_grid_log()
         self.root.mainloop()
 
 

@@ -90,6 +90,25 @@ class Upbit:
     def cancel(self, order_uuid):
         return self.call("DELETE", "/order", {"uuid": order_uuid})
 
+    def market_buy(self, market, krw):
+        """시장가 매수 (금액 지정)."""
+        return self.call("POST", "/orders", {"market": market, "side": "bid", "ord_type": "price", "price": f"{krw:.0f}"})
+
+    def market_sell(self, market, volume):
+        """시장가 매도 (수량 지정)."""
+        return self.call("POST", "/orders", {"market": market, "side": "ask", "ord_type": "market",
+                                             "volume": f"{int(volume * 1e8) / 1e8:.8f}"})  # 내림: 잔고 초과 방지
+
+    def filled(self, order_uuid, tries=6):
+        """체결 결과 (수량, 체결금액, 수수료). 시장가는 보통 1~2초 안에 끝난다."""
+        for _ in range(tries):
+            time.sleep(0.7)
+            o = self.call("GET", "/order", {"uuid": order_uuid})
+            if o.get("state") in ("done", "cancel") and o.get("trades"):
+                funds = sum(float(t["funds"]) for t in o["trades"])
+                return float(o["executed_volume"]), funds, float(o.get("paid_fee") or 0)
+        raise RuntimeError(f"주문 {order_uuid} 체결 확인 실패")
+
     def place(self, market, side, volume, price):
         return self.call("POST", "/orders", {
             "market": market, "side": side, "ord_type": "limit",
