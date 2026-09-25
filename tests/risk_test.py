@@ -184,6 +184,19 @@ e.grid_step("AVAX", 100.0); st["last_trade_ts"] = 0; e.grid_step("AVAX", 110.0)
 ok("AVAX" not in g["coins"] and st["cycles"] == 1 and not st.get("auto"), "13c 자동 추가 코인은 익절로 사이클이 끝나면 목록에서 빠짐")
 fr.get = orig_get
 
+# 14 투자일지: 거래를 다시 따라간 실현 손익 합 = 엔진 누적 실현 (절반 매도·익절·물타기 포함)
+e, ex, cfg = mk(unit_krw=10000, profit_krw=1000)
+for p in (340, 323, 306, 290, 306, 323, 340, 360, 380):
+    step(e, ex, p)
+tr = core.build_journal(e.db, sim=False)
+total = sum(t["pnl"] or 0 for t in tr)
+st = e.grid_state("ADA")
+ok(abs(total - st["profit_total"]) < 0.5 and st["cycles"] >= 1,
+   f"14 투자일지 실현 합계 {total:,.1f}원 = 엔진 누적 실현 {st['profit_total']:,.1f}원 (사이클 {st['cycles']})")
+day = core.journal_summary(tr, "date")
+ok(abs(sum(d["pnl"] for d in day.values()) - total) < 0.01 and sum(d["buys"] for d in day.values()) == sum(1 for t in tr if t["side"] == "bid"),
+   "14b 일별 합계 = 거래별 합계")
+
 # 12 설정 파일 손상 → 백업으로 복구
 d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
 c = core.load_config(); c["grid"]["state"] = {"ADA": {"qty": 1.23}}; core.save_config(c); core.save_config(c)

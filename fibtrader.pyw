@@ -38,7 +38,7 @@ except Exception:  # 라이브러리가 없거나 트레이를 못 쓰는 환경
 POPUP_KINDS = {"hit", "fill", "proposal", "levels", "stop", "drift", "fail"}  # 근접(near)은 소리·트레이 알림만
 ALERT_GROUP = {"proposal": "주문", "fill": "주문", "hit": "주문", "near": "주문", "cancel": "주문", "grid": "매매"}
 GROUP_COLOR = {"주문": T.DOWN, "매매": T.UP, "시스템": T.MUTED}
-TAB_BOARD, TAB_INVEST, TAB_GRID, TAB_ORDERS, TAB_LOGS, TAB_SETTINGS = range(6)
+TAB_BOARD, TAB_INVEST, TAB_JOURNAL, TAB_GRID, TAB_ORDERS, TAB_LOGS, TAB_SETTINGS = range(7)
 
 SHOW_EVENT = "FibTraderShowEvent"  # 두 번째 실행이 이미 떠 있는 창을 앞으로 부르는 신호
 MB_TOP = 0x40000 | 0x10000          # MB_TOPMOST | MB_SETFOREGROUND: 안내창이 다른 창 뒤에 숨지 않게
@@ -208,16 +208,18 @@ class App:
         self.nb.pack(fill="both", expand=True)
         self.build_board(self.nb)
         self.build_invest(self.nb)
+        self.build_journal(self.nb)
         self.build_grid(self.nb)
         self.build_orders(self.nb)
         self.build_logs(self.nb)
         self.build_settings(self.nb)
-        self.renderers = {TAB_BOARD: self.render_board, TAB_INVEST: self.render_invest, TAB_GRID: self.render_grid_tab,
+        self.renderers = {TAB_BOARD: self.render_board, TAB_INVEST: self.render_invest, TAB_JOURNAL: self.render_journal,
+                          TAB_GRID: self.render_grid_tab,
                           TAB_ORDERS: self.render_proposal, TAB_LOGS: self.render_logs}
         self.prev_tab = None
         self.nb.on_change = self.on_tab
         last = ui.get("last_tab", 0)
-        self.nb.select(last if isinstance(last, int) and 0 <= last < 6 else 0)
+        self.nb.select(last if isinstance(last, int) and 0 <= last < 7 else 0)
         self.refresh_chrome()
         self.root.bind("<Map>", lambda e: e.widget is self.root and self.root.after(50, self.redraw_stale))
 
@@ -1106,6 +1108,158 @@ class App:
         self.hist_table.empty = ["해당하는 체결이 없습니다"]
         self.hist_table.set_rows(rows)
 
+    # ---------------- 투자일지 (자동매매 거래별·일별·월별 손익) ----------------
+    def build_journal(self, nb):
+        f = tk.Frame(nb, bg=T.GROUND)
+        nb.add(f, "투자일지")
+        g = T.GROUND
+        top = tk.Frame(f, bg=g)
+        top.pack(fill="x", padx=18, pady=(16, 10))
+        lab(top, "투자일지", "kr_big", bg=g).pack(side="left")
+        lab(top, "자동매매 거래 기준 · 손익은 수수료를 뺀 실현 손익 (판 만큼의 원가를 빼서 계산)", "kr_xs", fg=T.MUTED,
+            bg=g).pack(side="left", padx=12, pady=(6, 0))
+        T.Btn(top, "CSV 저장 (엑셀)", self.export_journal, bg=g).pack(side="right")
+        self.j_filter = "모의" if self.cfg["grid"]["simulate"] or not self.engine.api else "실전"
+        W.Segmented(top, ["실전", "모의", "전체"], self.j_filter, self.set_journal_filter).pack(side="right", padx=10)
+        self.j_stats = W.StatCells(f, [("today", "오늘 손익"), ("month", "이번 달 손익"), ("total", "누적 실현 손익"),
+                                       ("fee", "이번 달 수수료"), ("trades", "이번 달 거래")])
+        self.j_stats.pack(fill="x", padx=18)
+        outer, body = W.scroll_page(f)
+        outer.pack(fill="both", expand=True)
+        inner = tk.Frame(body, bg=T.GROUND)
+        inner.pack(fill="x", padx=18, pady=(14, 18))
+        num_col = lambda k, t, w=110: {"key": k, "title": t, "w": w, "anchor": "e"}  # noqa: E731
+        mc, _ = card(inner, "월별", "수익률 = 실현 손익 ÷ 판 코인의 원가")
+        self.j_month = W.Table(mc, [{"key": "key", "title": "월", "w": 90}, num_col("buys", "매수", 60),
+                                    num_col("buy_krw", "매수 금액"), num_col("sells", "매도", 60), num_col("sell_krw", "매도 금액"),
+                                    num_col("pnl", "실현 손익"), num_col("rate", "수익률", 80), num_col("fee", "수수료", 90),
+                                    {"key": "cyc", "title": "익절 완료", "w": 80, "anchor": "e", "grow": 1}],
+                               rh=36, fit=True, min_rows=1, empty=["아직 자동매매 거래가 없습니다"])
+        self.j_month.pack(fill="x", pady=(0, 8))
+        cc, _ = card(inner, "코인별", "선택한 구분(실전/모의) 전체 기간", pady=(18, 0))
+        self.j_coin = W.Table(cc, [{"key": "key", "title": "코인", "w": 90}, num_col("buys", "매수", 60),
+                                   num_col("buy_krw", "매수 금액"), num_col("sells", "매도", 60), num_col("sell_krw", "매도 금액"),
+                                   num_col("pnl", "실현 손익"), num_col("rate", "수익률", 80), num_col("fee", "수수료", 90),
+                                   {"key": "cyc", "title": "익절 완료", "w": 80, "anchor": "e", "grow": 1}],
+                              rh=36, fit=True, min_rows=1, empty=["아직 자동매매 거래가 없습니다"])
+        self.j_coin.pack(fill="x", pady=(0, 8))
+        dc, _ = card(inner, "일별", "최근 90일 · 행을 누르면 아래에 그날 거래", pady=(18, 0))
+        self.j_day = W.Table(dc, [{"key": "key", "title": "날짜", "w": 110}, num_col("buys", "매수", 60),
+                                  num_col("buy_krw", "매수 금액"), num_col("sells", "매도", 60), num_col("sell_krw", "매도 금액"),
+                                  num_col("pnl", "실현 손익"), num_col("fee", "수수료", 90),
+                                  {"key": "cum", "title": "누적 손익", "w": 110, "anchor": "e", "grow": 1}],
+                             rh=36, fit=True, min_rows=1, selectable=True, on_click=self.select_journal_day,
+                             empty=["아직 자동매매 거래가 없습니다"])
+        self.j_day.pack(fill="x", pady=(0, 8))
+        tc, th = card(inner, "거래 상세", pady=(18, 0))
+        self.j_detail_title = lab(th, "", "kr_xs", fg=T.MUTED)
+        self.j_detail_title.pack(side="left", padx=10, pady=(3, 0))
+        self.j_detail = W.Table(tc, [{"key": "ts", "title": "시간", "w": 80}, {"key": "sim", "title": "모의", "w": 50},
+                                     {"key": "coin", "title": "코인", "w": 70}, {"key": "kind", "title": "구분", "w": 100},
+                                     num_col("price", "가격"), num_col("qty", "수량", 130), num_col("krw", "금액", 100),
+                                     num_col("fee", "수수료", 80), num_col("pnl", "이 거래 손익", 150),
+                                     {"key": "after", "title": "거래 후 평단 · 보유 원가", "w": 170, "anchor": "e", "grow": 1}],
+                                rh=40, fit=True, min_rows=1, empty=["이 날 거래가 없습니다"])
+        self.j_detail.pack(fill="x", pady=(0, 8))
+        self.j_day_sel, self.j_trades = None, []
+
+    def set_journal_filter(self, name):
+        self.j_filter = name
+        self.render_journal()
+
+    def select_journal_day(self, day):
+        self.j_day_sel = day
+        self.render_journal_detail()
+
+    def journal_trades(self):
+        return core.build_journal(self.db, {"실전": False, "모의": True}.get(self.j_filter))
+
+    def render_journal(self):
+        if not self.shown(TAB_JOURNAL):
+            return
+        tr = self.j_trades = self.journal_trades()
+        today, month = time.strftime("%Y-%m-%d"), time.strftime("%Y-%m")
+        days = core.journal_summary(tr, "date")
+        months = core.journal_summary(tr, "month")
+        coins = core.journal_summary(tr, "coin")
+        total = sum(t["pnl"] or 0 for t in tr)
+        d, m = days.get(today), months.get(month)
+        zero = {"buys": 0, "buy_krw": 0, "sells": 0, "sell_krw": 0, "pnl": 0, "base": 0, "fee": 0, "cycles": 0}
+        d, m = d or zero, m or zero
+        rate = (lambda a: f"{a['pnl'] / a['base'] * 100:+.2f}%" if a["base"] else "-")  # noqa: E731
+        self.j_stats.set("today", T.fmtk(d["pnl"], sign=True), "원", color=T.chg_color(d["pnl"]),
+                         sub=f"매수 {d['buys']}건 · 매도 {d['sells']}건 · 익절 {d['cycles']}번")
+        self.j_stats.set("month", T.fmtk(m["pnl"], sign=True), "원", color=T.chg_color(m["pnl"]),
+                         sub=f"수익률 {rate(m)} · 익절 {m['cycles']}번")
+        self.j_stats.set("total", T.fmtk(total, sign=True), "원", color=T.chg_color(total),
+                         sub=f"전체 수수료 {sum(t['fee'] for t in tr):,.0f}원 · 거래 {len(tr)}건")
+        self.j_stats.set("fee", T.fmtk(m["fee"]), "원", sub=f"오늘 {d['fee']:,.0f}원")
+        self.j_stats.set("trades", f"{m['buys'] + m['sells']}", "건",
+                         sub=f"매수 {m['buy_krw']:,.0f}원 · 매도 {m['sell_krw']:,.0f}원")
+
+        def agg_row(a, cyc=True):
+            return {"id": a["key"], "cells": {
+                "key": {"text": a["key"], "font": "num_b" if len(a["key"]) < 8 else "num"},
+                "buys": str(a["buys"]), "buy_krw": T.fmtk(a["buy_krw"]), "sells": str(a["sells"]),
+                "sell_krw": T.fmtk(a["sell_krw"]), "pnl": {"text": T.fmtk(a["pnl"], sign=True), "fg": T.chg_color(a["pnl"]), "font": "num_b"},
+                "rate": {"text": rate(a), "fg": T.chg_color(a["pnl"])}, "fee": {"text": f"{a['fee']:,.0f}", "fg": T.MUTED},
+                "cyc": f"{a['cycles']}번" if cyc else ""}}
+        self.j_month.set_rows([agg_row(a) for a in sorted(months.values(), key=lambda a: a["key"], reverse=True)])
+        self.j_coin.set_rows([agg_row(a) for a in sorted(coins.values(), key=lambda a: -a["pnl"])])
+        cum, rows = 0.0, []
+        for a in sorted(days.values(), key=lambda a: a["key"]):
+            cum += a["pnl"]
+            r = agg_row(a)
+            r["cells"]["cum"] = {"text": T.fmtk(cum, sign=True), "fg": T.chg_color(cum)}
+            rows.append(r)
+        rows = rows[::-1][:90]
+        self.j_day.set_rows(rows)
+        if self.j_day_sel not in days:
+            self.j_day_sel = rows[0]["id"] if rows else None
+        self.j_day.selected = self.j_day_sel
+        self.j_day.draw()
+        self.render_journal_detail()
+
+    def render_journal_detail(self):
+        day = self.j_day_sel
+        tr = [t for t in self.j_trades if t["date"] == day]
+        self.j_detail_title.config(text=f"{day} · {len(tr)}건 (최근 거래가 위)" if day else "")
+        rows = []
+        for t in reversed(tr):
+            bid = t["side"] == "bid"
+            after = (f"평단 {T.fmtp(t['avg'])} · {t['hold_cost']:,.0f}원" if bid
+                     else f"남은 원가 {t['hold_cost']:,.0f}원" if t.get("hold_cost") else "사이클 끝 (보유 0)")
+            rows.append({"id": t["id"], "cells": {
+                "ts": {"text": t["ts"][11:19], "font": "num_s", "fg": T.MUTED}, "sim": {"text": "예" if t["sim"] else "", "fg": T.MUTED},
+                "coin": {"text": t["coin"], "font": "num_b"},
+                "kind": {"text": t["kind"], "fg": T.UP if bid else T.DOWN},
+                "price": T.fmtp(t["price"]), "qty": {"text": T.fmtq(t["qty"]), "fg": T.MUTED, "font": "num_s"},
+                "krw": T.fmtk(t["krw"]), "fee": {"text": f"{t['fee']:,.1f}", "fg": T.MUTED},
+                "pnl": {"text": "-" if t["pnl"] is None else T.fmtk(t["pnl"], sign=True),
+                        "fg": T.MUTED if t["pnl"] is None else T.chg_color(t["pnl"]), "font": "num_b",
+                        "sub": f"원가 {t['base']:,.0f} 대비 {t['pnl'] / t['base'] * 100:+.1f}%" if t["base"] else None},
+                "after": {"text": after, "fg": T.MUTED, "font": "kr_s"}}})
+        self.j_detail.set_rows(rows)
+
+    def export_journal(self):
+        import csv
+        tr = self.journal_trades()
+        if not tr:
+            messagebox.showinfo("투자일지", "저장할 거래가 없습니다.")
+            return
+        path = os.path.join(HERE, f"투자일지_{self.j_filter}_{time.strftime('%Y%m%d_%H%M')}.csv")
+        with open(path, "w", newline="", encoding="utf-8-sig") as fp:  # utf-8-sig: 엑셀에서 한글이 안 깨지게
+            w = csv.writer(fp)
+            w.writerow(["시간", "모의", "코인", "구분", "가격", "수량", "금액(원)", "수수료(원)", "실현 손익(원)", "판 원가(원)",
+                        "거래 후 보유 원가(원)"])
+            for t in tr:
+                w.writerow([t["ts"], "예" if t["sim"] else "", t["coin"], t["kind"], t["price"], f"{t['qty']:.8f}",
+                            round(t["krw"]), round(t["fee"], 2), "" if t["pnl"] is None else round(t["pnl"], 1),
+                            "" if t["base"] is None else round(t["base"]), round(t.get("hold_cost") or 0)])
+        self.show_notice(f"저장했습니다: {path}", 10)
+        if WIN:
+            os.startfile(path)  # 엑셀(또는 기본 프로그램)로 바로 연다
+
     # ---------------- ③ 자동매매 (12-4) ----------------
     GRID_FIELDS = (("coins", "코인", "", 3), ("unit_krw", "1회", "원", 1), ("drop_pct", "하락", "%", 1),
                    ("profit_krw", "익절", "원", 1), ("max_krw", "코인한도", "원", 1), ("total_max_krw", "전체한도", "원", 1))
@@ -1297,7 +1451,8 @@ class App:
             p, _ = self.grid_price(r)
             listed = r.get("listed", True)
             pnl = r["pnl"] + r["qty"] * ((p or 0) - (r["price"] or 0)) * (1 - core.FEE) if r["qty"] else 0
-            cost, pnl_t, tot, cycles = cost + r["cost"], pnl_t + pnl, tot + r["profit_total"], cycles + r["cycles"]
+            done = r["profit_total"] + r.get("realized", 0.0)  # 끝난 사이클 + 진행 중 사이클의 절반 매도분 (투자일지와 같은 기준)
+            cost, pnl_t, tot, cycles = cost + r["cost"], pnl_t + pnl, tot + done, cycles + r["cycles"]
             # 수수료 전 손익 = 수수료 뺀 손익 + 보유분 매수 때 낸 수수료 + 지금 팔면 낼 수수료
             gross = pnl + (r["cost"] * core.FEE + r["qty"] * (p or 0) * core.FEE if r["qty"] else 0)
             gross_t += gross
@@ -1315,7 +1470,7 @@ class App:
                 "pos": {"draw": self.pos_bar(r["next_buy"], r["tp"], p)},
                 "next": {"text": T.fmtp(r["next_buy"]) if r["next_buy"] else "-", "fg": T.UP, "sub": pct(r["next_buy"])},
                 "tp": {"text": T.fmtp(r["tp"]) if r["tp"] else "-", "fg": T.DOWN, "sub": pct(r["tp"])},
-                "cyc": str(r["cycles"]), "tot": {"text": f"{r['profit_total']:+,.0f}", "fg": T.chg_color(r["profit_total"])},
+                "cyc": str(r["cycles"]), "tot": {"text": f"{done:+,.0f}", "fg": T.chg_color(done)},
                 "own": {"text": self.own_text(r), "fg": T.MUTED, "font": "num_s"}}})
         self.g_table.set_rows(rows)
         self.update_liq_btn()
@@ -2270,6 +2425,7 @@ class App:
         if changed_logs:
             self.render_logs()
             self.render_grid_log()
+            self.render_journal()
         self.check_stale_status()
         self.root.after(500, self.pump)
 

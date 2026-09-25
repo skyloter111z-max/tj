@@ -175,6 +175,62 @@ class DB:
                           day + "%")[0][0]
 
 
+def build_journal(db, sim=None):
+    """투자일지: 자동매매 거래 기록(grid_trades)을 처음부터 다시 따라가며 거래마다 수수료·실현 손익을 계산한다.
+    엔진과 같은 방식(판 비율만큼 원가를 덜어냄)이라 매도 손익을 모두 더하면 엔진의 누적 실현과 같다.
+    sim=None이면 전체, True면 모의만, False면 실전만. 모의와 실전 장부는 따로 따라간다."""
+    rows = db.query("SELECT rowid, ts, simulated, coin, side, price, qty, krw FROM grid_trades ORDER BY rowid")
+    book, out = {}, []
+    for rid, ts, s_, coin, side, price, qty, krw in rows:
+        s_ = bool(s_)
+        if sim is not None and s_ != sim:
+            continue
+        b = book.setdefault((s_, coin), {"qty": 0.0, "cost": 0.0, "buys": 0})
+        t = {"id": rid, "ts": ts[:19].replace("T", " "), "date": ts[:10], "month": ts[:7], "sim": s_, "coin": coin,
+             "side": side, "price": price, "qty": qty, "krw": krw, "pnl": None, "base": None}
+        if side == "bid":
+            b["qty"] += qty
+            b["cost"] += krw
+            b["buys"] += 1
+            t.update(fee=max(krw - qty * price, 0.0), kind="시작 매수" if b["buys"] == 1 else f"물타기 {b['buys']}회",
+                     avg=b["cost"] / b["qty"] if b["qty"] else None, hold_cost=b["cost"])
+        else:
+            t["fee"] = max(qty * price - krw, 0.0)
+            if b["qty"] > 0:
+                frac = min(qty / b["qty"], 1.0)
+                base = b["cost"] * frac
+                b["qty"] -= qty
+                b["cost"] -= base
+                full = frac >= 0.999 or b["qty"] * price < 5_000
+                if full:
+                    b.update(qty=0.0, cost=0.0, buys=0)
+                t.update(pnl=krw - base, base=base, kind="전량 매도" if full else "절반 매도", full=full,
+                         hold_cost=b["cost"])
+            else:
+                t.update(kind="매도 (장부 없음)", full=False, hold_cost=0.0)
+        out.append(t)
+    return out
+
+
+def journal_summary(trades, key):
+    """거래 목록을 key("date"/"month"/"coin")로 묶어 합계."""
+    agg = {}
+    for t in trades:
+        a = agg.setdefault(t[key], {"key": t[key], "buys": 0, "buy_krw": 0.0, "sells": 0, "sell_krw": 0.0,
+                                    "pnl": 0.0, "base": 0.0, "fee": 0.0, "cycles": 0})
+        if t["side"] == "bid":
+            a["buys"] += 1
+            a["buy_krw"] += t["krw"]
+        else:
+            a["sells"] += 1
+            a["sell_krw"] += t["krw"]
+            a["pnl"] += t["pnl"] or 0.0
+            a["base"] += t["base"] or 0.0
+            a["cycles"] += 1 if t.get("full") else 0
+        a["fee"] += t["fee"]
+    return agg
+
+
 def make_api():
     access, secret = os.environ.get("UPBIT_ACCESS_KEY"), os.environ.get("UPBIT_SECRET_KEY")
     return fo.Upbit(access, secret) if access and secret else None
@@ -874,7 +930,7 @@ class Engine(threading.Thread):
                          "pnl": pnl, "next_buy": st["ref"] * (1 - g["drop_pct"] / 100) if st["ref"] else None,
                          "breakeven": avg / (1 - FEE) if avg and st["buys"] >= 2 and not st["halved"] else None,
                          "tp": tp, "cycles": st["cycles"], "profit_total": st["profit_total"],
-                         "fee_total": st.get("fee_total", 0.0)})
+                         "fee_total": st.get("fee_total", 0.0), "realized": st["realized"]})
         return rows
 
     def grid_refresh(self):
