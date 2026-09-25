@@ -218,6 +218,15 @@ tr = [t for t in core.build_journal(e.db, sim=False) if t["side"] == "bid"]
 amts = [round(t["krw"]) for t in tr]
 ok(amts == [10000, 20000, 40000], f"16 마틴게일 매수 금액 {amts} (4번째 8만은 한도 7만 초과라 안 삼)")
 
+# 17 수익 재투자: 전체 한도 = 설정 한도 + 누적 실현 수익 (끄면 설정 한도 그대로)
+e, ex, cfg = mk(unit_krw=10000, total_max_krw=20000, max_krw=100000, profit_krw=100000)
+cfg["grid"]["state"]["XRPX"] = {"qty": 0, "cost": 0, "buys": 0, "ref": None, "halved": False, "realized": 0, "cycles": 3, "profit_total": 5000.0}
+for p in (340, 323, 306):
+    step(e, ex, p)
+ok(e.grid_state("ADA")["buys"] == 2 and e.grid_total_cap() == 25000, f"17a 재투자 켬: 한도 2만 + 수익 5천 = 2.5만 → 2회까지 (buys={e.grid_state('ADA')['buys']})")
+cfg["grid"]["reinvest"] = False
+ok(e.grid_total_cap() == 20000, "17b 재투자 끄면 설정 한도 그대로")
+
 # 12 설정 파일 손상 → 백업으로 복구
 d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
 c = core.load_config(); c["grid"]["state"] = {"ADA": {"qty": 1.23}}; core.save_config(c); core.save_config(c)

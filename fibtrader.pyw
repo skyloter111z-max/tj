@@ -118,6 +118,12 @@ def num(text):
     return float(str(text).replace(",", "").replace(" ", "") or "nan")
 
 
+def man(v):
+    """만 원 단위 짧은 표기: 30,005 → 3.0만, 5,000,000 → 500만."""
+    v = v / 10_000
+    return f"{v:,.1f}만" if v < 100 else f"{v:,.0f}만"
+
+
 def plan_label(label):
     """플랜 라벨 '1차 매수 38.2% (20%)' → ('1차 매수', '38.2% · 20%')."""
     parts = label.split()
@@ -423,7 +429,8 @@ class App:
         self.board_tab = f
         # 하단 요약바
         self.sumbar = W.SummaryBar(f, [("coins", "코인 평가 (BTC·ETH·XRP)"), ("cash", "현금"), ("total", "총자산"),
-                                       ("free", "주문 가능 현금"), ("dca", "모으기"), ("lvl", "레벨 기준 시각")])
+                                       ("free", "주문 가능 현금"), ("dca", "모으기"), ("grid", "자동매매 예산"),
+                                       ("lvl", "레벨 기준 시각")])
         self.sumbar.pack(side="bottom", fill="x")
         self.drift_btn = T.Btn(self.sumbar, "레벨 변화 지금 확인", self.check_drift_now)
         self.drift_btn.pack(side="right", padx=16)
@@ -703,7 +710,14 @@ class App:
                 ([(r["coin"], T.TEXT, "sym_s")], [(T.fmtp(p), T.chg_color(ch), "num_s"),
                                                   (f"{T.arrow(ch)}{abs(ch):.2f}%", T.chg_color(ch), "num_xs")]),
                 ([(l2, T.MUTED, "kr_xs")], [(f"{pnl:+,.0f}", T.chg_color(pnl), "num_xs")] if r["qty"] else [])]})
-        self.coin_list.set([("피보나치", None, fib), (f"자동매매 · {state}", "전체 보기", items)], self.sel_coin)
+        used, cap = self.grid_budget()
+        self.coin_list.set([("피보나치", None, fib), (f"자동매매 · {state} · {man(used)}/{man(cap)}", "전체 보기", items)],
+                           self.sel_coin)
+
+    def grid_budget(self):
+        """자동매매 예산: (지금 코인에 들어간 원가, 적용 중인 전체 한도)."""
+        st = self.cfg["grid"]["state"]
+        return sum(v.get("cost", 0.0) for v in st.values()), self.engine.grid_total_cap()
 
     def render_center(self, coin):
         p = self.prices.get(coin)
@@ -790,6 +804,9 @@ class App:
         self.sumbar.set("dca", days, "일분", label=f"모으기 하루 {dca:,}원")
         at = self.board.get("_levels_at", "")
         self.sumbar.set("lvl", at[5:16].replace("T", " ") if len(at) > 5 else at or "-")
+        used, cap = self.grid_budget()
+        self.sumbar.set("grid", f"{man(used)} / {man(cap)}", "", color=T.UP if cap and used / cap > 0.8 else T.TEXT,
+                        label=f"자동매매 예산 · {used / cap * 100:.0f}% 사용" if cap else "자동매매 예산")
 
     def render_strip(self, data):
         self.live.update(data)
@@ -1310,7 +1327,9 @@ class App:
         self.g_on = tk.BooleanVar(value=g["enabled"])
         self.g_sim = tk.BooleanVar(value=g["simulate"])
         self.g_half = tk.BooleanVar(value=g["half_at_breakeven"])
-        for text, var in (("켜기", self.g_on), ("모의", self.g_sim), ("본전 절반 매도", self.g_half)):
+        self.g_reinvest = tk.BooleanVar(value=g.get("reinvest", True))
+        for text, var in (("켜기", self.g_on), ("모의", self.g_sim), ("본전 절반 매도", self.g_half),
+                          ("수익 재투자 (실현 수익만큼 전체 한도 늘림)", self.g_reinvest)):
             ttk.Checkbutton(chk, text=text, variable=var, style="Panel.TCheckbutton").pack(side="left", padx=(0, 16))
         lab(chk, "BTC·ETH·XRP는 제외. 코인은 쉼표나 띄어쓰기로 나눠 적습니다. 코인 칸에 적고 [저장]한 코인만 사고팝니다.",
             "kr_xs", fg=T.MUTED).pack(side="left")
@@ -1494,8 +1513,10 @@ class App:
                          sub=(f"{pnl_t / cost * 100:+.2f}% · 수수료 전 {gross_t:+,.0f}원 (팔 때 수수료 포함 계산)" if cost else ""))
         self.g_stats.set("real", T.fmtk(tot, sign=True), "원", color=T.chg_color(tot),
                          sub=f"완료 사이클 {cycles} · 지금까지 낸 수수료 {fees:,.0f}원")
-        cap = g["total_max_krw"]
-        self.g_stats.set("cap", f"{cost / cap * 100:.1f}%" if cap else "-", sub=f"{cost:,.0f} / {cap:,}원")
+        cap = self.engine.grid_total_cap()
+        extra = cap - g["total_max_krw"]
+        self.g_stats.set("cap", f"{cost / cap * 100:.1f}%" if cap else "-",
+                         sub=f"{cost:,.0f} / {cap:,.0f}원" + (f" (한도 {g['total_max_krw']:,} + 수익 {extra:,.0f})" if extra > 0 else ""))
 
     def update_liq_btn(self):
         st = self.cfg["grid"]["state"]
@@ -1600,7 +1621,8 @@ class App:
             self.cfg["stopped"]["grid"] = True  # 정지 중이면 재개할 때 켠다
             self.g_on.set(False)
             msg += "\n긴급 정지 중이라 [재개]를 누르면 켜집니다."
-        g.update(new, enabled=self.g_on.get(), simulate=self.g_sim.get(), half_at_breakeven=self.g_half.get())
+        g.update(new, enabled=self.g_on.get(), simulate=self.g_sim.get(), half_at_breakeven=self.g_half.get(),
+                 reinvest=self.g_reinvest.get())
         g["dip"].update(dip)
         core.save_config(self.cfg)
         self.set_grid_fields()

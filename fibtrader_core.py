@@ -51,6 +51,7 @@ DEFAULTS = {
         "half_at_breakeven": True,  # 2회 이상 산 뒤 본전(수수료 포함)에 오면 절반 매도
         "max_krw": 500_000,         # 코인별 최대 투입(보유 원가) 한도
         "total_max_krw": 1_500_000, # 자동매매 전체 원가 한도 (여러 코인이 같이 빠질 때)
+        "reinvest": True,           # 수익 재투자: 실현 수익만큼 전체 한도를 늘린다 (내 돈은 설정한 한도까지만)
         "max_trades_per_day": 200,  # 하루 실전 거래가 이보다 많으면 버그·폭주로 보고 자동매매를 끈다
         "state": {},
         "dip": {                    # 하락 코인 자동 추가: 추천 목록(대형 알트) 안에서만, 잡코인 제외
@@ -858,8 +859,8 @@ class Engine(threading.Thread):
         tag = "[모의] " if g["simulate"] or not self.api else ""
         total_cost = sum(self.grid_state(c)["cost"] for c in self.grid_tracked())  # 목록에서 뺀 보유분도 한도에 포함
         if st["qty"] <= 0:  # 새 사이클 시작
-            if total_cost + unit > g["total_max_krw"]:
-                return self.grid_cap_alert("total", f"자동매매 전체 원가 {total_cost:,.0f}원 · 전체 한도 {g['total_max_krw']:,}원")
+            if total_cost + unit > self.grid_total_cap():
+                return self.grid_cap_alert("total", f"자동매매 전체 원가 {total_cost:,.0f}원 · 전체 한도 {self.grid_total_cap():,.0f}원")
             qty, krw, px, _ = self.grid_trade(coin, "bid", price, unit)
             st.update(qty=qty, cost=krw, buys=1, ref=px, halved=False, realized=0.0)
             self.alert("grid", f"{tag}{coin} 시작 매수", f"{fmtp(px)}원에 {krw:,.0f}원 매수 (1회)")
@@ -893,8 +894,8 @@ class Engine(threading.Thread):
                 unit = self.grid_next_amount(st)  # 마틴게일이면 직전 매수의 배수
                 if st["cost"] + unit > g["max_krw"]:
                     return self.grid_cap_alert(coin, f"{coin} 원가 {st['cost']:,.0f}원 + 다음 매수 {unit:,.0f}원 · 코인 한도 {g['max_krw']:,}원")
-                if total_cost + unit > g["total_max_krw"]:
-                    return self.grid_cap_alert("total", f"자동매매 전체 원가 {total_cost:,.0f}원 · 전체 한도 {g['total_max_krw']:,}원")
+                if total_cost + unit > self.grid_total_cap():
+                    return self.grid_cap_alert("total", f"자동매매 전체 원가 {total_cost:,.0f}원 · 전체 한도 {self.grid_total_cap():,.0f}원")
                 qty, krw, px, _ = self.grid_trade(coin, "bid", price, unit)
                 st.update(qty=st["qty"] + qty, cost=st["cost"] + krw, buys=st["buys"] + 1, ref=px, halved=False)
                 self.alert("grid", f"{tag}{coin} 물타기 {st['buys']}회",
@@ -902,6 +903,15 @@ class Engine(threading.Thread):
             else:
                 return
         save_config(self.cfg)
+
+    def grid_realized(self):
+        """자동매매 누적 실현 수익 (끝난 사이클 + 진행 중 사이클의 절반 매도분, 수수료 뺀 금액)."""
+        return sum(st.get("profit_total", 0.0) + st.get("realized", 0.0) for st in self.cfg["grid"]["state"].values())
+
+    def grid_total_cap(self):
+        """실제 적용하는 전체 한도. 수익 재투자를 켜면 설정 한도 + 누적 실현 수익 (손실이면 설정 한도 그대로)."""
+        g = self.cfg["grid"]
+        return g["total_max_krw"] + (max(0.0, self.grid_realized()) if g.get("reinvest", True) else 0.0)
 
     def grid_next_amount(self, st):
         """다음 추가 매수 금액. 배수 1이면 1회 금액 그대로, 2면 1만 → 2만 → 4만 … (이번 사이클 매수 횟수 기준)."""
