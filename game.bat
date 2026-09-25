@@ -1,8 +1,8 @@
 @echo off
 chcp 65001 >nul
-echo === 아침: 원래 전원 설정으로 (FibTrader는 계속 돌아갑니다) ===
+echo === 게임용: 최대 성능 (FibTrader는 계속 돌아갑니다) ===
 echo.
-rem 절전·화면 꺼짐 모두 "안 함", CPU 최대 100% (24시간 자동매매)
+rem 절전·화면 꺼짐 모두 "안 함", CPU 최대 100%
 powercfg /change standby-timeout-ac 0
 powercfg /change hibernate-timeout-ac 0
 powercfg /change monitor-timeout-ac 0

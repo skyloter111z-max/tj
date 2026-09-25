@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-echo === 잘 때 절전 모드 (FibTrader는 계속 돌아갑니다) ===
+echo === 수면용: 최소 전력 (FibTrader는 계속 돌아갑니다) ===
 echo.
 rem 1. FibTrader가 꺼져 있으면 켠다 (이미 켜져 있으면 그대로)
 tasklist /fi "imagename eq pythonw.exe" | find /i "pythonw.exe" >nul || (start "" pythonw "C:\fib\fibtrader.pyw" & echo FibTrader가 꺼져 있어서 켰습니다.)

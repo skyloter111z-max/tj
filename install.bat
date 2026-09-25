@@ -31,7 +31,8 @@ echo.
 echo 바탕화면 아이콘과 자동 실행 등록 중...
 powershell -NoProfile -Command "$py=(Get-Command pythonw).Source; foreach($f in 'Desktop','Startup'){ $d=[Environment]::GetFolderPath($f); $s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d 'FibTrader.lnk')); $s.TargetPath=$py; $s.Arguments='\"C:\fib\fibtrader.pyw\"'; $s.WorkingDirectory='C:\fib'; $s.Save() }"
 del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\start_watch.bat" 2>nul
-powershell -NoProfile -Command "$d=[Environment]::GetFolderPath('Desktop'); foreach($p in @(@('FibTrader 잘때 절전','night.bat'),@('FibTrader 아침 원래대로','morning.bat'))){ $s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d ($p[0]+'.lnk'))); $s.TargetPath='C:\fib\'+$p[1]; $s.WorkingDirectory='C:\fib'; $s.Save() }"
+powershell -NoProfile -Command "$d=[Environment]::GetFolderPath('Desktop'); foreach($o in 'FibTrader 잘때 절전','FibTrader 아침 원래대로'){ Remove-Item -ErrorAction SilentlyContinue (Join-Path $d ($o+'.lnk')) }; foreach($p in @(@('FibTrader 수면용','sleep.bat'),@('FibTrader 게임용','game.bat'))){ $s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d ($p[0]+'.lnk'))); $s.TargetPath='C:\fib\'+$p[1]; $s.WorkingDirectory='C:\fib'; $s.Save() }"
+del C:\fib\night.bat C:\fib\morning.bat 2>nul
 echo.
 echo 완료! 바탕화면의 FibTrader 아이콘을 더블클릭하세요.
 echo (FibTrader가 이미 켜져 있었다면 트레이 F 아이콘 - 종료 후 다시 실행하세요)

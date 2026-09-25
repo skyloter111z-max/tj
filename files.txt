@@ -5,5 +5,5 @@ fibtrader_core.py
 fibtrader_theme.py
 fibtrader_widgets.py
 fibtrader.pyw
-night.bat
-morning.bat
+sleep.bat
+game.bat
