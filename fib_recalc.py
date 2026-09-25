@@ -27,7 +27,8 @@ BUY_SPLIT = {"BTC": 0.4, "ETH": 0.4, "XRP": 0.2}
 WEEKLY_R = [0.786, 0.618, 0.5, 0.382, 0.236]
 EXT_E = [2.618, 2.0, 1.618, 1.272]
 RETR_R = [0.382, 0.5, 0.618, 0.786]
-SELL_STEPS = [("1차", 0.2), ("2차", 0.3), ("3차", 0.2)]
+SELL_STEPS = [("1차", 0.1), ("2차", 0.3), ("3차", 0.2)]
+TRAIL_W = 1 - sum(w for _, w in SELL_STEPS)  # 나머지는 추적 손절 (지금 40%)
 BUY_STEPS = [(0.382, 0.2), (0.5, 0.3), (0.618, 0.5)]
 ZONE_TOL = 0.06  # 주봉 레벨과 일봉 확장이 6% 안이면 겹침 구간으로 본다
 
@@ -170,7 +171,7 @@ def report(data):
         out.append(f"| {rnd(c, l['retr'][0.786])} | 78.6% 되돌림 | 일봉 종가가 이 아래면 매수 중단 |")
         out.append(f"| {d['L']:,.0f} | 저점 L | 주봉 종가가 이 아래면 1/3 축소 |")
         if len(z) >= 2:
-            out.append(f"\n- 나머지 {qty(c, HOLDINGS[c] * 0.3)} (30%): 3차 체결 뒤 주봉 종가가 "
+            out.append(f"\n- 나머지 {qty(c, HOLDINGS[c] * TRAIL_W)} ({TRAIL_W * 100:.0f}%): 3차 체결 뒤 주봉 종가가 "
                        f"{rnd(c, z[1]['low'])} 아래로 마감하면 전부 매도.")
 
         out += ["\n<details><summary>전체 레벨</summary>\n",

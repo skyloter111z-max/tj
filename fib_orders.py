@@ -9,7 +9,7 @@
 
 동작:
   - 가격은 fib_recalc.py와 같은 방식으로 업비트 캔들에서 계산한다.
-  - 매도 수량은 업비트 잔고(주문에 묶인 수량 포함) × 20/30/20%. 스테이킹 물량은 잔고에 없어서 빠진다.
+  - 매도 수량은 업비트 잔고(주문에 묶인 수량 포함) × 10/30/20% (fib_recalc.SELL_STEPS). 스테이킹 물량은 잔고에 없어서 빠진다.
   - 매수 금액은 BUY_BUDGET × 코인 비중 × 20/30/50%. 현재가보다 높은 매수 레벨은 건너뛴다.
   - 가격과 수량이 같은 주문이 이미 있으면 그대로 두고 새로 걸지 않는다.
   - 1차가 체결된 뒤에 다시 실행하면 수량 기준이 바뀌므로, 체결 후에는 레벨을 먼저 다시 계산할 것.
@@ -171,7 +171,7 @@ def compute_levels(coin):
 def plan_orders(coin, holding, sell_done=0, buy_done=0, levels=None):
     """플랜 주문 목록. sell_done/buy_done: 이미 체결된 단계 수 (그 단계는 건너뛴다).
     levels를 주면 그 고정 레벨을 쓰고, 없으면 지금 캔들로 계산한다.
-    매도 수량 기준은 체결 전 보유량으로 되돌려 계산한다 (예: 1차 20% 체결 뒤엔 현재 보유 / 0.8)."""
+    매도 수량 기준은 체결 전 보유량으로 되돌려 계산한다 (예: 1차 10% 체결 뒤엔 현재 보유 / 0.9)."""
     lv = levels or compute_levels(coin)
     price = lv.get("price") or fr.get(f"/ticker?markets=KRW-{coin}")[0]["trade_price"]
     done_w = sum(w for _, w in fr.SELL_STEPS[:sell_done])
