@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import traceback
 from tkinter import messagebox, ttk
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,11 +36,43 @@ except Exception:  # 라이브러리가 없거나 트레이를 못 쓰는 환경
 POPUP_KINDS = {"hit", "fill", "proposal", "levels", "stop", "drift", "fail"}  # 근접(near)은 소리·트레이 알림만
 
 
+SHOW_EVENT = "FibTraderShowEvent"  # 두 번째 실행이 이미 떠 있는 창을 앞으로 부르는 신호
+MB_TOP = 0x40000 | 0x10000          # MB_TOPMOST | MB_SETFOREGROUND: 안내창이 다른 창 뒤에 숨지 않게
+
+
+def kernel32():
+    k = ctypes.windll.kernel32
+    k.CreateEventW.restype = k.OpenEventW.restype = ctypes.c_void_p
+    k.CreateEventW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_wchar_p]
+    k.OpenEventW.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_wchar_p]
+    k.SetEvent.argtypes = k.CloseHandle.argtypes = [ctypes.c_void_p]
+    k.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    return k
+
+
 def single_instance():
     if not WIN:
         return True
     ctypes.windll.kernel32.CreateMutexW(None, False, "FibTraderSingleInstance")
     return ctypes.windll.kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
+
+
+def signal_existing():
+    """이미 실행 중인 FibTrader에 '창 보여줘' 신호. 성공하면 True (예전 버전은 신호를 못 받아 False)."""
+    k = kernel32()
+    h = k.OpenEventW(0x0002, 0, SHOW_EVENT)  # EVENT_MODIFY_STATE
+    if not h:
+        return False
+    k.SetEvent(h)
+    k.CloseHandle(h)
+    return True
+
+
+def message(text, title="FibTrader", icon=0x40):
+    if WIN:
+        ctypes.windll.user32.MessageBoxW(0, text, title, icon | MB_TOP)
+    else:
+        print(title, text)
 
 
 def make_shortcut(folder, name="FibTrader.lnk"):
@@ -134,10 +167,20 @@ class App:
         self.icon = None
         if pystray:
             threading.Thread(target=self.run_tray, daemon=True).start()
+        if WIN:
+            threading.Thread(target=self.watch_show, daemon=True).start()
         self.engine.start()
         self.feed = core.PriceFeed(self.engine, self.events)
         self.feed.start()
         self.root.after(300, self.pump)
+
+    def watch_show(self):
+        """바탕화면 아이콘을 또 누르면(두 번째 실행) 이 창을 앞으로 가져온다."""
+        k = kernel32()
+        h = k.CreateEventW(None, 0, 0, SHOW_EVENT)
+        while h and not self.engine.stop_event.is_set():
+            if k.WaitForSingleObject(h, 1000) == 0:  # WAIT_OBJECT_0
+                self.ui_calls.put(self.show)
 
     # ---------------- 트레이 ----------------
     def tray_image(self, color):
@@ -1134,6 +1177,16 @@ class App:
 
 if __name__ == "__main__":
     if not single_instance():
-        ctypes.windll.user32.MessageBoxW(0, "FibTrader가 이미 실행 중입니다. 트레이 아이콘을 확인하세요.", "FibTrader", 0x40)
+        if WIN and signal_existing():
+            sys.exit(0)  # 이미 떠 있는 창이 앞으로 나온다
+        message("FibTrader가 이미 실행 중입니다.\n\n작업표시줄 오른쪽 아래 ^ (숨겨진 아이콘)에서 F 아이콘을 찾아\n"
+                "오른쪽 클릭 → 종료한 뒤 다시 실행하세요.\n\n아이콘이 없으면 작업 관리자에서 pythonw.exe를 끝내세요.")
         sys.exit(0)
-    App().run()
+    try:
+        App().run()
+    except Exception:
+        tb = traceback.format_exc()
+        print(tb, flush=True)  # fibtrader.log에 남는다
+        message("FibTrader를 시작하지 못했습니다.\n\n" + tb[-1800:] + "\n\n이 창을 캡처해서 보내 주세요.\n"
+                f"(기록: {os.path.join(HERE, 'fibtrader.log')})", "FibTrader 실행 오류", 0x10)
+        raise
