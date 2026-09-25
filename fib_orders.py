@@ -55,6 +55,10 @@ def jwt_token(access, secret, params=None):
     return f"{head}.{body}.{b64url(sig)}"
 
 
+class UnknownResult(RuntimeError):
+    """주문 요청이 업비트에 닿았는지 모르는 상태 (타임아웃·연결 끊김). identifier로 조회해서 확정해야 한다."""
+
+
 class Upbit:
     def __init__(self, access, secret):
         self.access, self.secret = access, secret
@@ -73,8 +77,12 @@ class Upbit:
         try:
             with urllib.request.urlopen(req, timeout=20) as r:
                 return json.load(r)
-        except urllib.error.HTTPError as e:
+        except urllib.error.HTTPError as e:  # 업비트가 명확히 거절: 주문은 안 들어감
             raise RuntimeError(f"{method} {path} 실패 {e.code}: {e.read().decode(errors='replace')}")
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+            if method == "POST":  # 요청이 닿았는지 모름 → 중복 주문 위험, 호출한 쪽에서 identifier로 확인
+                raise UnknownResult(f"{method} {path} 결과 불명확: {e}")
+            raise RuntimeError(f"{method} {path} 네트워크 오류: {e}")
         finally:
             time.sleep(0.15)
 
@@ -90,30 +98,53 @@ class Upbit:
     def cancel(self, order_uuid):
         return self.call("DELETE", "/order", {"uuid": order_uuid})
 
-    def market_buy(self, market, krw):
-        """시장가 매수 (금액 지정)."""
-        return self.call("POST", "/orders", {"market": market, "side": "bid", "ord_type": "price", "price": f"{krw:.0f}"})
+    def market_buy(self, market, krw, identifier=None):
+        """시장가 매수 (금액 지정). identifier: 중복 방지·사후 조회용 고유 번호."""
+        body = {"market": market, "side": "bid", "ord_type": "price", "price": f"{krw:.0f}"}
+        if identifier:
+            body["identifier"] = identifier
+        return self.call("POST", "/orders", body)
 
-    def market_sell(self, market, volume):
+    def market_sell(self, market, volume, identifier=None):
         """시장가 매도 (수량 지정)."""
-        return self.call("POST", "/orders", {"market": market, "side": "ask", "ord_type": "market",
-                                             "volume": f"{int(volume * 1e8) / 1e8:.8f}"})  # 내림: 잔고 초과 방지
+        body = {"market": market, "side": "ask", "ord_type": "market",
+                "volume": f"{int(volume * 1e8) / 1e8:.8f}"}  # 내림: 잔고 초과 방지
+        if identifier:
+            body["identifier"] = identifier
+        return self.call("POST", "/orders", body)
 
-    def filled(self, order_uuid, tries=6):
+    def get_order(self, uuid=None, identifier=None):
+        """주문 조회. 업비트에 없는 주문이면 None."""
+        try:
+            return self.call("GET", "/order", {"uuid": uuid} if uuid else {"identifier": identifier})
+        except RuntimeError as e:
+            if " 404" in str(e) or "not_found" in str(e):
+                return None
+            raise
+
+    @staticmethod
+    def order_result(o):
+        """(체결 수량, 체결 금액, 수수료). 아직 끝나지 않았으면 None."""
+        if not o or o.get("state") not in ("done", "cancel"):
+            return None
+        funds = sum(float(t["funds"]) for t in o.get("trades") or [])
+        return float(o.get("executed_volume") or 0), funds, float(o.get("paid_fee") or 0)
+
+    def filled(self, order_uuid=None, identifier=None, tries=6):
         """체결 결과 (수량, 체결금액, 수수료). 시장가는 보통 1~2초 안에 끝난다."""
         for _ in range(tries):
             time.sleep(0.7)
-            o = self.call("GET", "/order", {"uuid": order_uuid})
-            if o.get("state") in ("done", "cancel") and o.get("trades"):
-                funds = sum(float(t["funds"]) for t in o["trades"])
-                return float(o["executed_volume"]), funds, float(o.get("paid_fee") or 0)
-        raise RuntimeError(f"주문 {order_uuid} 체결 확인 실패")
+            res = self.order_result(self.get_order(order_uuid, identifier))
+            if res and (res[0] > 0 or res[1] == 0):
+                return res
+        raise UnknownResult(f"주문 {order_uuid or identifier} 체결 확인 실패")
 
-    def place(self, market, side, volume, price):
-        return self.call("POST", "/orders", {
-            "market": market, "side": side, "ord_type": "limit",
-            "volume": f"{volume:.8f}", "price": f"{price:.0f}",
-        })
+    def place(self, market, side, volume, price, identifier=None):
+        body = {"market": market, "side": side, "ord_type": "limit",
+                "volume": f"{int(volume * 1e8) / 1e8:.8f}", "price": f"{price:.0f}"}
+        if identifier:
+            body["identifier"] = identifier
+        return self.call("POST", "/orders", body)
 
 
 def snap(coin, v):
@@ -142,8 +173,8 @@ def plan_orders(coin, holding, sell_done=0, buy_done=0, levels=None):
     base = holding / (1 - done_w) if done_w < 1 else 0
     orders = []
     for i, (name, w) in enumerate(fr.SELL_STEPS):
-        if i < sell_done or i >= len(lv["sells"]):
-            continue
+        if i < sell_done or i >= len(lv["sells"]) or lv["sells"][i] <= price:
+            continue  # 이미 지나간 매도가에 지정가를 걸면 곧바로 시장가처럼 팔리므로 걸지 않는다
         orders.append({"side": "ask", "step": i, "label": f"{name} 매도 {w * 100:g}%",
                        "price": lv["sells"][i], "volume": int(base * w * 1e8) / 1e8})
     budget = fr.BUY_BUDGET * fr.BUY_SPLIT[coin]

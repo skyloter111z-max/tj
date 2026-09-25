@@ -29,7 +29,7 @@ try:
 except Exception:  # 라이브러리가 없거나 트레이를 못 쓰는 환경이면 창만 띄운다
     pystray = None
 
-POPUP_KINDS = {"hit", "fill", "proposal", "levels", "stop"}  # 근접(near)은 소리·트레이 알림만
+POPUP_KINDS = {"hit", "fill", "proposal", "levels", "stop", "drift", "fail"}  # 근접(near)은 소리·트레이 알림만
 
 
 def single_instance():
@@ -74,7 +74,8 @@ class App:
 
         self.root = tk.Tk()
         self.root.title("FibTrader")
-        self.root.geometry("1120x720")
+        self.root.geometry("1120x800")
+        self.root.minsize(1000, 700)
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
         style = ttk.Style()
         style.configure("Treeview", rowheight=22)
@@ -165,9 +166,10 @@ class App:
         f = ttk.Frame(nb, padding=8)
         nb.add(f, text="  현황  ")
         self.cards = {}
+        self.order_trees = {}
         for i, coin in enumerate(fr.COINS):
             box = ttk.LabelFrame(f, text=f"  {coin}  ", padding=6)
-            box.grid(row=0, column=i, sticky="nsew", padx=4)
+            box.grid(row=1, column=i, sticky="nsew", padx=4)
             f.columnconfigure(i, weight=1)
             price = tk.Label(box, text="-", font=("맑은 고딕", 20, "bold"), anchor="w")
             price.pack(fill="x")
@@ -175,7 +177,7 @@ class App:
             sub.pack(anchor="w")
             hold = ttk.Label(box, text="", foreground="#111", font=("맑은 고딕", 10, "bold"))
             hold.pack(anchor="w")
-            tree = ttk.Treeview(box, columns=("price", "name", "dist"), show="headings", height=9)
+            tree = ttk.Treeview(box, columns=("price", "name", "dist"), show="headings", height=8)
             for col, text, w in (("price", "가격", 110), ("name", "구분", 90), ("dist", "현재가 대비", 80)):
                 tree.heading(col, text=text)
                 tree.column(col, width=w, anchor="e" if col != "name" else "center")
@@ -186,10 +188,41 @@ class App:
             tree.pack(fill="x", pady=4)
             trend = ttk.Label(box, text="", justify="left", foreground="#333", wraplength=300)
             trend.pack(anchor="w")
+            ttk.Label(box, text="업비트 예약(미체결) 주문").pack(anchor="w", pady=(8, 2))
+            head = ttk.Frame(box)
+            head.pack(fill="x", pady=(0, 2))
+            ttk.Button(head, text="선택 취소", command=lambda c=coin: self.cancel_selected(c)).pack(side="left")
+            ttk.Button(head, text="전체 취소", command=lambda c=coin: self.cancel_coin(c)).pack(side="left", padx=4)
+            ttk.Button(head, text="플랜대로 다시 걸기", command=lambda c=coin: self.replan_coin(c)).pack(side="right")
+            ot = ttk.Treeview(box, columns=("side", "price", "vol", "krw"), show="headings", height=3, selectmode="extended")
+            for col, text, w in (("side", "구분", 45), ("price", "가격", 100), ("vol", "수량", 85), ("krw", "금액", 80)):
+                ot.heading(col, text=text)
+                ot.column(col, width=w, anchor="e" if col != "side" else "center")
+            ot.tag_configure("ask", foreground="#1d4ed8")
+            ot.tag_configure("bid", foreground="#b91c1c")
+            ot.pack(fill="both", expand=True)
+            self.order_trees[coin] = ot
             self.cards[coin] = (price, sub, tree, trend, hold)
-        f.rowconfigure(0, weight=1)
-        self.cash = ttk.Label(f, text="", foreground="#333")
-        self.cash.grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        f.rowconfigure(1, weight=1)
+        self.drift_box = tk.Frame(f, bg="#fef3c7", highlightbackground="#f59e0b", highlightthickness=1)
+        self.drift_msg = tk.Label(self.drift_box, text="", bg="#fef3c7", justify="left", anchor="w",
+                                  font=("맑은 고딕", 10))
+        self.drift_msg.pack(side="left", fill="x", expand=True, padx=8, pady=6)
+        db = tk.Frame(self.drift_box, bg="#fef3c7")
+        db.pack(side="right", padx=6)
+        ttk.Button(db, text="현행 기준으로 바꾸기", command=self.apply_drift).pack(fill="x", pady=1)
+        ttk.Button(db, text="BTC·ETH·XRP 예약 전체 취소", command=lambda: self.cancel_coin(None)).pack(fill="x", pady=1)
+        ttk.Button(db, text="나중에", command=lambda: self.drift_box.grid_remove()).pack(fill="x", pady=1)
+        self.auto_drift = tk.BooleanVar(value=self.cfg.get("auto_apply_drift", False))
+        tk.Checkbutton(db, text="앞으로 자동 반영", variable=self.auto_drift, bg="#fef3c7",
+                       command=self.toggle_auto_drift).pack(anchor="w")
+        self.drift_box.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+        self.drift_box.grid_remove()
+        bottom = ttk.Frame(f)
+        bottom.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.cash = ttk.Label(bottom, text="", foreground="#333")
+        self.cash.pack(side="left")
+        ttk.Button(bottom, text="레벨 변화 지금 확인", command=lambda: self.engine.request("check_drift")).pack(side="right")
 
     def render_board(self):
         total = 0.0
@@ -254,6 +287,63 @@ class App:
         if self.icon:
             self.icon.title = "\n".join(f"{c} {p:,.0f}" for c, (p, _) in data.items() if c in fr.COINS)
 
+    def render_orders(self, by_coin):
+        for coin, ot in self.order_trees.items():
+            ot.delete(*ot.get_children())
+            for o in sorted(by_coin.get(coin, []), key=lambda o: -o["price"]):
+                ot.insert("", "end", iid=o["uuid"], tags=(o["side"],), values=(
+                    "매도" if o["side"] == "ask" else "매수", fmt(o["price"]), f"{o['volume']:g}",
+                    fmt(o["price"] * o["volume"])))
+
+    def render_drift(self, drift):
+        if not drift:
+            self.drift_box.grid_remove()
+            return
+        lines = ["⚠ 피보나치 금액이 유의적으로 바뀌었습니다 (0.5% 이상)"]
+        for coin, ch in drift.items():
+            lines.append(f"{coin}: " + " · ".join(f"{n} {a:,.0f}→{b:,.0f} ({(b / a - 1) * 100:+.1f}%)" for n, a, b in ch))
+        self.drift_msg.config(text="\n".join(lines))
+        self.drift_box.grid()
+
+    def fib_sim_note(self):
+        return ("\n\n※ 설정 탭의 '모의 모드'가 켜져 있어 새 주문은 실제로 나가지 않고 기록만 됩니다."
+                if self.cfg["simulate"] or not self.engine.api else "")
+
+    def apply_drift(self):
+        if messagebox.askyesno("현행 기준으로 바꾸기",
+                               "지금 캔들로 레벨을 다시 계산하고,\nBTC·ETH·XRP 예약 주문 중 새 플랜과 다른 것은 취소한 뒤 새 가격으로 다시 겁니다."
+                               + self.fib_sim_note() + "\n\n진행할까요?", icon="warning"):
+            self.drift_box.grid_remove()
+            self.engine.request("apply_plan", True, None, "현행 기준으로 바꾸기")
+            self.nb.select(2)  # 주문 탭에서 결과 확인
+
+    def toggle_auto_drift(self):
+        on = self.auto_drift.get()
+        if on and not messagebox.askyesno("자동 반영", "앞으로 레벨이 유의적으로 바뀌면 확인 없이 자동으로 주문을 새 가격으로 바꿉니다.\n켤까요?"
+                                          + self.fib_sim_note(), icon="warning"):
+            self.auto_drift.set(False)
+            return
+        self.cfg["auto_apply_drift"] = on
+        core.save_config(self.cfg)
+
+    def cancel_selected(self, coin):
+        sel = self.order_trees[coin].selection()
+        if not sel:
+            messagebox.showinfo("취소", "표에서 취소할 주문을 선택하세요 (Ctrl/Shift로 여러 개).")
+            return
+        if messagebox.askyesno("선택 취소", f"{coin} 예약 주문 {len(sel)}건을 업비트에서 실제로 취소할까요?"):
+            self.engine.request("cancel_orders", [coin], list(sel))
+
+    def cancel_coin(self, coin):
+        name = coin or "BTC·ETH·XRP"
+        if messagebox.askyesno("전체 취소", f"{name} 예약(미체결) 주문을 업비트에서 전부 실제로 취소할까요?", icon="warning"):
+            self.engine.request("cancel_orders", [coin] if coin else None, None)
+
+    def replan_coin(self, coin):
+        if messagebox.askyesno("플랜대로 다시 걸기", f"{coin} 예약 주문을 지금 플랜과 비교해서, 다른 것은 취소하고 플랜대로 다시 겁니다."
+                               + self.fib_sim_note() + "\n\n진행할까요?"):
+            self.engine.request("apply_plan", False, [coin], f"{coin} 플랜대로 다시 걸기")
+
     # ---------------- 자동매매 (물타기) ----------------
     def build_grid(self, nb):
         f = ttk.Frame(nb, padding=8)
@@ -269,7 +359,7 @@ class App:
         self.g_fields = {}
         for key, label, val, w in (("coins", "코인", ",".join(g["coins"]), 16), ("unit_krw", "1회", g["unit_krw"], 8),
                                    ("drop_pct", "하락%", g["drop_pct"], 5), ("profit_krw", "익절원", g["profit_krw"], 6),
-                                   ("max_krw", "한도", g["max_krw"], 9)):
+                                   ("max_krw", "코인한도", g["max_krw"], 8), ("total_max_krw", "전체한도", g["total_max_krw"], 9)):
             ttk.Label(bar, text=label).pack(side="left", padx=(8, 2))
             e = ttk.Entry(bar, width=w)
             e.insert(0, str(val))
@@ -280,7 +370,7 @@ class App:
         ttk.Label(f, text="규칙: 시작 매수 → 마지막 매수가 대비 하락%마다 1회 금액 추가 매수 → (2회 이상 샀으면) 본전에 절반 매도"
                           " → 사이클 수익이 익절원 이상이면 전량 매도 후 다시 시작. BTC·ETH·XRP는 제외.",
                   foreground="#555", wraplength=1000).pack(anchor="w", pady=4)
-        cols = (("coin", "코인", 60), ("price", "현재가", 100), ("buys", "매수", 45), ("cost", "원가", 85),
+        cols = (("status", "상태", 90), ("coin", "코인", 55), ("price", "현재가", 95), ("buys", "매수", 40), ("cost", "원가", 80),
                 ("avg", "평단", 95), ("pnl", "평가손익", 80), ("next", "다음 매수가", 100), ("be", "본전 절반가", 100),
                 ("tp", "익절가", 100), ("cyc", "사이클", 55), ("tot", "누적 수익", 85), ("own", "기존 보유(별도)", 110))
         self.grid_tree = ttk.Treeview(f, columns=[c for c, _, _ in cols], show="headings", height=5)
@@ -306,7 +396,7 @@ class App:
         for r in rows:
             cost, tot, pnl = cost + r["cost"], tot + r["profit_total"], pnl + r["pnl"]
             self.grid_tree.insert("", "end", iid=r["coin"], tags=("up" if r["pnl"] > 0 else "down",), values=(
-                r["coin"], num(r["price"]), r["buys"], f"{r['cost']:,.0f}", num(r["avg"]), f"{r['pnl']:+,.0f}",
+                r["status"], r["coin"], num(r["price"]), r["buys"], f"{r['cost']:,.0f}", num(r["avg"]), f"{r['pnl']:+,.0f}",
                 num(r["next_buy"]), num(r["breakeven"]), num(r["tp"]), r["cycles"], f"{r['profit_total']:+,.0f}",
                 self.own_text(r)))
         g = self.cfg["grid"]
@@ -339,7 +429,8 @@ class App:
             blocked = [c for c in coins if c in core.GRID_BLOCKED]
             new = {"coins": [c for c in coins if c not in core.GRID_BLOCKED],
                    "unit_krw": int(float(fl["unit_krw"].get())), "drop_pct": float(fl["drop_pct"].get()),
-                   "profit_krw": int(float(fl["profit_krw"].get())), "max_krw": int(float(fl["max_krw"].get()))}
+                   "profit_krw": int(float(fl["profit_krw"].get())), "max_krw": int(float(fl["max_krw"].get())),
+                   "total_max_krw": int(float(fl["total_max_krw"].get()))}
         except ValueError as e:
             messagebox.showerror("자동매매", f"숫자를 확인하세요: {e}")
             return
@@ -358,7 +449,8 @@ class App:
         going_live = self.g_on.get() and not self.g_sim.get() and (g["simulate"] or not g["enabled"])
         if going_live and not messagebox.askyesno(
                 "자동매매 실전", f"⚠ 실전으로 켜면 승인 없이 업비트에 시장가 주문이 자동으로 나갑니다.\n"
-                f"코인 {', '.join(new['coins'])} · 1회 {new['unit_krw']:,}원 · 코인별 한도 {new['max_krw']:,}원\n\n진행할까요?",
+                f"코인 {', '.join(new['coins'])} · 1회 {new['unit_krw']:,}원 · 코인별 한도 {new['max_krw']:,}원 · "
+                f"전체 한도 {new['total_max_krw']:,}원\n\n진행할까요?",
                 icon="warning"):
             return
         holding = any(st.get("qty") for st in g["state"].values())
@@ -624,6 +716,10 @@ class App:
             elif kind == "hold":
                 self.hold = ev[1]
                 self.render_board()
+            elif kind == "open_orders":
+                self.render_orders(ev[1])
+            elif kind == "drift":
+                self.render_drift(ev[1])
             elif kind == "grid":
                 self.render_grid(ev[1])
             elif kind == "proposal":
