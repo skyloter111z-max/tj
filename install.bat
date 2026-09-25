@@ -4,10 +4,17 @@ echo === FibTrader 설치/업데이트 ===
 if not exist C:\fib mkdir C:\fib
 cd /d C:\fib
 set U=https://raw.githubusercontent.com/skyloter111z-max/tj/claude/fib-plan-upbit-recalc-ynzvut
-for %%f in (fib_recalc.py fib_orders.py fib_check.py fibtrader_core.py fibtrader.pyw) do (
+for %%f in (fib_recalc.py fib_orders.py fib_check.py fibtrader_core.py fibtrader_theme.py fibtrader_widgets.py fibtrader.pyw) do (
   curl -s -f -o %%f %U%/%%f || (echo [실패] %%f 다운로드 & pause & exit /b 1)
   echo 받음: %%f
 )
+echo.
+echo 글꼴(Barlow) 받는 중...
+if not exist C:\fib\fonts mkdir C:\fib\fonts
+set G=https://raw.githubusercontent.com/google/fonts/main/ofl
+curl -s -f -o C:\fib\fonts\Barlow-Regular.ttf %G%/barlow/Barlow-Regular.ttf && echo 받음: Barlow-Regular.ttf || echo [참고] Barlow-Regular.ttf 글꼴을 못 받았습니다. 기본 글꼴로 표시됩니다.
+curl -s -f -o C:\fib\fonts\Barlow-Bold.ttf %G%/barlow/Barlow-Bold.ttf && echo 받음: Barlow-Bold.ttf || echo [참고] Barlow-Bold.ttf 글꼴을 못 받았습니다. 기본 글꼴로 표시됩니다.
+curl -s -f -o C:\fib\fonts\BarlowCondensed-SemiBold.ttf %G%/barlowcondensed/BarlowCondensed-SemiBold.ttf && echo 받음: BarlowCondensed-SemiBold.ttf || echo [참고] BarlowCondensed-SemiBold.ttf 글꼴을 못 받았습니다. 기본 글꼴로 표시됩니다.
 echo.
 echo 라이브러리 설치 중...
 python -m pip install -q pystray pillow

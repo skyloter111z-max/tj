@@ -33,6 +33,7 @@ DEFAULTS = {
     "volume_tol_pct": 10,           # 매도 수량이 이 % 안에서만 다르면 그대로 둠 (매일 모으기로 보유량이 조금씩 늘어서)
     "dca_daily": {"BTC": 25_000, "ETH": 30_000, "XRP": 15_000},  # 업비트 코인 모으기 (매일 05시대)
     "progress": {c: {"sell_done": 0, "buy_done": 0} for c in fr.COINS},
+    "ui": {"charts_open": [], "inv_charts_open": [], "near_highlight_pct": 5},  # 화면 상태 (차트 펼침, 근접 강조 %)
     "auto_apply_drift": False,      # 레벨이 유의적으로 바뀌면 자동으로 주문을 새 레벨로 바꿀지
     "levels": {},                   # 고정 플랜 레벨 {coin: {sells, buys, stop, at}}
     "grid": {                       # 자동매매(물타기): 피보나치와 별개, 승인 없이 자동 주문
@@ -52,6 +53,18 @@ DEFAULTS = {
 GRID_BLOCKED = set(fr.COINS)  # 피보나치 코인은 자동매매 금지
 FEE = 0.0005
 MIN_SELL_KRW = 5_500  # 업비트 최소 주문 5,000원 + 수수료·가격 변동 여유
+
+
+def fmtp(v):
+    """가격 표시 (지수 표기 금지). 1,000 이상은 정수, 그 아래는 가격대에 맞는 소수 자리."""
+    if v is None:
+        return "-"
+    a = abs(v)
+    if a >= 1000:
+        return f"{v:,.0f}"
+    d = 1 if a >= 100 else 2 if a >= 10 else 3 if a >= 1 else 6
+    t = f"{v:,.{d}f}"
+    return t.rstrip("0").rstrip(".") if "." in t else t
 
 
 def now():
@@ -296,6 +309,11 @@ class Engine(threading.Thread):
         else:
             self.emit("done", [f"{reason}: 바꿀 주문이 없습니다."])
 
+    def load_candles(self, key, coin, unit, count):
+        """차트용 캔들. unit: 분(int) 또는 'days'. 결과는 ("candles", key, [(시가, 고가, 저가, 종가)])."""
+        cs = fc.candles(unit, coin, count)
+        self.emit("candles", key, [(c["opening_price"], c["high_price"], c["low_price"], c["trade_price"]) for c in cs])
+
     def cancel_orders(self, coins=None, uuids=None):
         """피보나치 코인의 미체결 주문 취소 (uuids를 주면 그 주문만). 사용자가 직접 누른 취소라 모의 모드와 상관없이 실제로 취소."""
         if not self.api:
@@ -321,16 +339,25 @@ class Engine(threading.Thread):
         self.check_fills()
 
     def refresh_board(self):
-        board = {"_levels_at": ", ".join(f"{c} {v.get('at', '')}" for c, v in self.cfg["levels"].items())}
+        board = {"_levels_at": min((v.get("at", "") for v in self.cfg["levels"].values()), default="")}
         for coin in fr.COINS:
             h4, h1 = fc.candles(240, coin, 60), fc.candles(60, coin, 60)
+            ind = []
+            for label, cs in (("4h", h4), ("1h", h1)):
+                closes = [c["trade_price"] for c in cs]
+                m = fc.ma(closes, 20)
+                slope = (m - fc.ma(closes[:-3], 20)) / m * 100
+                ind.append((label, "위" if closes[-1] > m else "아래", (closes[-1] / m - 1) * 100, slope, fc.rsi(closes)))
             board[coin] = {"price": self.prices.get(coin), "levels": self.levels.get(coin, []),
-                           "trend": f"4h {fc.trend(h4)}\n1h {fc.trend(h1)}",
+                           "trend": f"4h {fc.trend(h4)}\n1h {fc.trend(h1)}", "ind": ind,
+                           "candles": [(c["opening_price"], c["high_price"], c["low_price"], c["trade_price"]) for c in h4[-48:]],
                            "change24": fc.pct(h1[-1]["trade_price"], h1[-24]["opening_price"])}
         dca = sum(self.cfg["dca_daily"].values())
+        board["_dca"] = dca
+        if self.api:
+            board["_krw_free"] = self.api.holdings()[1]
         if self.api and dca:
-            krw = self.api.holdings()[1]
-            board["_cash"] = f"주문 가능 현금 {krw:,.0f}원 · 모으기 하루 {dca:,}원 → 약 {krw / dca:,.0f}일분"
+            board["_cash"] = f"주문 가능 현금 {board['_krw_free']:,.0f}원 · 모으기 하루 {dca:,}원 → 약 {board['_krw_free'] / dca:,.0f}일분"
         elif dca:
             board["_cash"] = f"모으기 하루 {dca:,}원 (한 달 약 {dca * 30:,}원)"
         self.last_board = time.time()
@@ -600,7 +627,7 @@ class Engine(threading.Thread):
             self.db.add("grid_trades", now().isoformat(), 0, coin, pend["side"], px, vol,
                         funds + fee if pend["side"] == "bid" else funds - fee, "사후 확인")
             self.alert("grid", f"{coin} 주문 사후 확인", f"결과를 몰랐던 {'매수' if pend['side'] == 'bid' else '매도'} "
-                       f"{vol:g}개 @ {px:,.4g} 체결을 장부에 반영했습니다.")
+                       f"{vol:g}개 @ {fmtp(px)} 체결을 장부에 반영했습니다.")
         save_config(self.cfg)
         return True
 
@@ -616,7 +643,7 @@ class Engine(threading.Thread):
             return "투자유의 지정"
         if prev and abs(price / prev - 1) > 0.15:  # 30초 사이 15% 넘게 움직임 = 시세 오류나 급변
             st["pause_until"] = t + 1800
-            self.alert("fail", f"{coin} 급변 감지 · 30분 정지", f"{prev:,.4g} → {price:,.4g} ({(price / prev - 1) * 100:+.1f}%)")
+            self.alert("fail", f"{coin} 급변 감지 · 30분 정지", f"{fmtp(prev)} → {fmtp(price)} ({(price / prev - 1) * 100:+.1f}%)")
             return "급변"
         if t - st.get("last_trade_ts", 0) < 60:
             return "직전 매매 1분 이내"
@@ -665,7 +692,7 @@ class Engine(threading.Thread):
                 return self.grid_cap_alert("total", f"자동매매 전체 원가 {total_cost:,.0f}원 · 전체 한도 {g['total_max_krw']:,}원")
             qty, krw, px, _ = self.grid_trade(coin, "bid", price, unit)
             st.update(qty=qty, cost=krw, buys=1, ref=px, halved=False, realized=0.0)
-            self.alert("grid", f"{tag}{coin} 시작 매수", f"{px:,.4g}원에 {krw:,.0f}원 매수 (1회)")
+            self.alert("grid", f"{tag}{coin} 시작 매수", f"{fmtp(px)}원에 {krw:,.0f}원 매수 (1회)")
         else:
             value = st["qty"] * price * (1 - FEE)
             pnl = st["realized"] + value - st["cost"]
@@ -678,7 +705,7 @@ class Engine(threading.Thread):
                 st["profit_total"] += pnl
                 st["cycles"] += 1
                 self.alert("grid", f"{tag}{coin} 익절 {pnl:+,.0f}원",
-                           f"{px:,.4g}원에 전량 매도 · {st['buys']}회 매수 사이클 · 누적 {st['profit_total']:,.0f}원")
+                           f"{fmtp(px)}원에 전량 매도 · {st['buys']}회 매수 사이클 · 누적 {st['profit_total']:,.0f}원")
                 st.update(qty=0.0, cost=0.0, buys=0, ref=None, halved=False, realized=0.0)
             elif (g["half_at_breakeven"] and st["buys"] >= 2 and not st["halved"] and price >= breakeven
                   and st["qty"] / 2 * price >= MIN_SELL_KRW):  # 반씩 나눠도 업비트 최소 주문 이상일 때만
@@ -687,7 +714,7 @@ class Engine(threading.Thread):
                 frac = min(qty / before, 1)  # 실제로 판 비율만큼만 원가를 덜어낸다
                 st["realized"] += krw - st["cost"] * frac
                 st.update(qty=before - qty, cost=st["cost"] * (1 - frac), halved=True, ref=px)
-                self.alert("grid", f"{tag}{coin} 본전 절반 매도", f"{px:,.4g}원에 {qty:g}개 매도 ({krw:,.0f}원)")
+                self.alert("grid", f"{tag}{coin} 본전 절반 매도", f"{fmtp(px)}원에 {qty:g}개 매도 ({krw:,.0f}원)")
             elif price <= st["ref"] * (1 - drop):
                 if st["cost"] + unit > g["max_krw"]:
                     return self.grid_cap_alert(coin, f"{coin} 원가 {st['cost']:,.0f}원 · 코인 한도 {g['max_krw']:,}원")
@@ -696,7 +723,7 @@ class Engine(threading.Thread):
                 qty, krw, px, _ = self.grid_trade(coin, "bid", price, unit)
                 st.update(qty=st["qty"] + qty, cost=st["cost"] + krw, buys=st["buys"] + 1, ref=px, halved=False)
                 self.alert("grid", f"{tag}{coin} 물타기 {st['buys']}회",
-                           f"{px:,.4g}원에 {krw:,.0f}원 매수 · 평단 {st['cost'] / st['qty']:,.4g} · 원가 {st['cost']:,.0f}원")
+                           f"{fmtp(px)}원에 {krw:,.0f}원 매수 · 평단 {fmtp(st['cost'] / st['qty'])} · 원가 {st['cost']:,.0f}원")
             else:
                 return
         save_config(self.cfg)
@@ -743,7 +770,7 @@ class Engine(threading.Thread):
         st.update(qty=0.0, cost=0.0, buys=0, ref=None, halved=False, realized=0.0)
         self.cfg["grid"]["coins"] = [c for c in self.cfg["grid"]["coins"] if c != coin]
         save_config(self.cfg)
-        self.alert("grid", f"{coin} 청산", f"{px:,.4g}원에 전량 매도 · 손익 {pnl:+,.0f}원 · 자동매매 목록에서 뺐습니다")
+        self.alert("grid", f"{coin} 청산", f"{fmtp(px)}원에 전량 매도 · 손익 {pnl:+,.0f}원 · 자동매매 목록에서 뺐습니다")
 
     def emergency_stop(self, cancel_all):
         self.cfg["grid"]["enabled"] = False
