@@ -35,6 +35,7 @@ DEFAULTS = {
     "progress": {c: {"sell_done": 0, "buy_done": 0} for c in fr.COINS},
     "ui": {"charts_open": [], "inv_charts_open": [], "near_highlight_pct": 5},  # 화면 상태 (차트 펼침, 근접 강조 %)
     "auto_apply_drift": False,      # 레벨이 유의적으로 바뀌면 자동으로 주문을 새 레벨로 바꿀지
+    "stopped": None,                # 긴급 정지 상태 {"at", "mode", "grid"} (재개할 때 되돌릴 값). None이면 정상
     "levels": {},                   # 고정 플랜 레벨 {coin: {sells, buys, stop, at}}
     "grid": {                       # 자동매매(물타기): 피보나치와 별개, 승인 없이 자동 주문
         "enabled": True,
@@ -488,10 +489,19 @@ class Engine(threading.Thread):
         if self.cfg["mode"] == "semi":
             self.alert("proposal", "주문 변경 제안", f"{reason}\n변경 {len(todo)}건. 대시보드 '주문' 탭에서 승인하세요.")
 
-    def execute(self, proposal_id):
+    def execute(self, proposal_id, selected=None):
+        """selected: 실행할 todo 번호 목록 (주문 탭에서 체크한 행). None이면 전부."""
         p = self.proposal
         if not p or p["id"] != proposal_id:
             self.emit("done", ["제안이 바뀌었습니다. 다시 확인하세요."])
+            return
+        if self.cfg.get("stopped"):
+            self.emit("done", ["긴급 정지 중이라 실행하지 않았습니다. 상단의 [재개]를 누른 뒤 다시 승인하세요."])
+            return
+        pick = set(range(len(p["todo"]))) if selected is None else set(selected)
+        chosen = [t for i, t in enumerate(p["todo"]) if i in pick]
+        if not chosen:
+            self.emit("done", ["선택한 주문이 없습니다."])
             return
         sim = self.cfg["simulate"] or not self.api
         if not sim:
@@ -505,14 +515,14 @@ class Engine(threading.Thread):
                 self.emit("done", ["승인 사이에 업비트 주문 상태가 바뀌어 실행하지 않았습니다. 새 제안을 확인하세요."])
                 self.make_proposal("상태 변경 후 다시 비교", force=True)
                 return
-            need = sum(o["price"] * o["volume"] for k, _, o in todo if k == "place" and o["side"] == "bid")
-            freed = sum(o["price"] * o["volume"] for k, _, o in todo if k == "cancel" and o["side"] == "bid")
+            need = sum(o["price"] * o["volume"] for k, _, o in chosen if k == "place" and o["side"] == "bid")
+            freed = sum(o["price"] * o["volume"] for k, _, o in chosen if k == "cancel" and o["side"] == "bid")
             if need > krw_free + freed + 1:
                 self.emit("done", [f"현금 부족으로 실행하지 않았습니다: 새 매수 주문 {need:,.0f}원 / 주문 가능 {krw_free + freed:,.0f}원"])
                 self.alert("fail", "주문 실행 중단 · 현금 부족", f"필요 {need:,.0f}원, 가능 {krw_free + freed:,.0f}원")
                 return
         results, count, failed = [], self.db.actions_today(), []
-        for kind, market, o in p["todo"]:
+        for kind, market, o in chosen:
             krw = o["price"] * o["volume"]
             tag = "[모의] " if sim else ""
             if kind == "place" and krw > self.cfg["max_order_krw"]:
@@ -549,6 +559,7 @@ class Engine(threading.Thread):
         self.known_orders = None  # 방금 취소한 주문을 체결로 오인하지 않도록 다시 읽는다
         self.last_exec = time.time()
         self.emit("done", results)
+        self.emit("proposal", None)  # 실행한 제안은 화면·배지에서 내린다 (실전은 아래에서 다시 비교)
         if failed:
             self.alert("fail", f"주문 실행 중 {len(failed)}건 실패", "\n".join(failed[:5]))
         if not sim:
@@ -811,6 +822,9 @@ class Engine(threading.Thread):
         self.alert("grid", f"{coin} 청산", f"{fmtp(px)}원에 전량 매도 · 손익 {pnl:+,.0f}원 · 자동매매 목록에서 뺐습니다")
 
     def emergency_stop(self, cancel_all):
+        if not self.cfg.get("stopped"):  # 재개할 때 되돌릴 값
+            self.cfg["stopped"] = {"at": now().strftime("%m-%d %H:%M"), "mode": self.cfg["mode"],
+                                   "grid": self.cfg["grid"]["enabled"]}
         self.cfg["grid"]["enabled"] = False
         self.cfg["mode"] = "alert"
         save_config(self.cfg)
@@ -826,6 +840,21 @@ class Engine(threading.Thread):
             self.known_orders = None
         self.alert("stop", "긴급 정지", "\n".join(msgs))
         self.emit("done", msgs)
+
+    def resume(self):
+        """긴급 정지 해제: 정지 전 모드·자동매매 켜짐 상태로 되돌린다 (취소한 주문은 되살리지 않음)."""
+        st = self.cfg.get("stopped")
+        if not st:
+            return
+        self.cfg["mode"] = st.get("mode", "semi")
+        self.cfg["grid"]["enabled"] = st.get("grid", False)
+        self.cfg["stopped"] = None
+        save_config(self.cfg)
+        self.alert("stop", "재개", f"모드 '{'반자동' if self.cfg['mode'] == 'semi' else '알림만'}' · 자동매매 "
+                                 f"{'켜짐' if self.cfg['grid']['enabled'] else '꺼짐'}으로 되돌렸습니다.")
+        self.emit("done", ["긴급 정지를 풀었습니다."])
+        if self.cfg["mode"] == "semi":
+            self.make_proposal("재개 후 플랜과 비교", force=True)
 
     # ---------- 메인 루프 ----------
     def run(self):

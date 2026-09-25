@@ -9,26 +9,41 @@ import fibtrader_theme as T
 
 
 class Tabs(tk.Frame):
-    """상단바 안에 들어가는 탭 + 본문 전환. ttk.Notebook 대신 (탭을 상단바 한 줄에 넣기 위해)."""
+    """상단바 안에 들어가는 탭 + 본문 전환. ttk.Notebook 대신 (탭을 상단바 한 줄에 넣기 위해).
+    탭 옆 배지(숫자)는 set_badge로. 0이면 숨긴다."""
 
     def __init__(self, parent, bar):
         super().__init__(parent, bg=T.GROUND)
-        self.bar, self.pages, self.labels, self.current = bar, [], [], None
+        self.bar, self.pages, self.labels, self.badges, self.current = bar, [], [], [], None
         self.on_change = None
 
     def add(self, frame, text):
         idx = len(self.pages)
-        holder = tk.Frame(self.bar, bg=T.PANEL)
-        holder.pack(side="left")
-        lab = tk.Label(holder, text=text.strip(), bg=T.PANEL, fg=T.MUTED, font=T.F["kr"], padx=16, cursor="hand2")
-        lab.pack(fill="y", expand=True, ipady=9)
+        holder = tk.Frame(self.bar, bg=T.PANEL, cursor="hand2")
+        holder.pack(side="left", fill="y")
         line = tk.Frame(holder, bg=T.PANEL, height=2)
         line.pack(fill="x", side="bottom")
-        lab.bind("<Button-1>", lambda e: self.select(idx))
+        inner = tk.Frame(holder, bg=T.PANEL)
+        inner.pack(fill="both", expand=True, padx=16)
+        lab = tk.Label(inner, text=text.strip(), bg=T.PANEL, fg=T.MUTED, font=T.F["kr_tab"])
+        lab.pack(side="left", ipady=9)
+        badge = tk.Label(inner, text="", bg=T.DOWN, fg=T.GROUND, font=T.F["tag"], width=2)
+        for w in (holder, inner, lab, badge):
+            w.bind("<Button-1>", lambda e: self.select(idx))
         self.pages.append(frame)
         self.labels.append((lab, line))
+        self.badges.append(badge)
         if self.current is None:
             self.select(0)
+
+    def set_badge(self, idx, n, bg=T.DOWN):
+        b = self.badges[idx]
+        if n:
+            b.config(text=str(n) if n < 100 else "99+", bg=bg, width=2 if n < 10 else 3)
+            if not b.winfo_ismapped():
+                b.pack(side="left", padx=(6, 0))
+        elif b.winfo_ismapped():
+            b.pack_forget()
 
     def select(self, which):
         idx = which if isinstance(which, int) else self.pages.index(which)
@@ -318,3 +333,533 @@ class SummaryBar(tk.Frame):
         u.config(text=unit)
         if label is not None:
             lab.config(text=label)
+
+
+def _txt(c, x, y, text, fg, font, anchor):
+    return c.create_text(x, y, text=text, fill=fg, font=T.F[font], anchor=anchor)
+
+
+def draw_check(c, x, y, state):
+    """12~14px 체크박스. state: True(켜짐 ACCENT 채움 + ✓) / False(빈 칸) / "some"(일부, –)."""
+    s = 13
+    x0, y0 = x, y - s / 2
+    if state:
+        c.create_rectangle(x0, y0, x0 + s, y0 + s, fill=T.ACCENT, outline=T.ACCENT)
+        if state == "some":
+            c.create_line(x0 + 3, y, x0 + s - 3, y, fill=T.GROUND, width=2)
+        else:
+            c.create_line(x0 + 3, y, x0 + 5.5, y + 3, x0 + s - 3, y - 3.5, fill=T.GROUND, width=2)
+    else:
+        c.create_rectangle(x0, y0, x0 + s, y0 + s, outline=T.MUTED)
+
+
+def draw_tag(c, x, y, text, color, anchor="w", dash=False, fill="", fg=None, font="kr_xs"):
+    """1px 테두리 태그. x는 anchor 기준 (w: 왼쪽, e: 오른쪽, center: 가운데)."""
+    tw = T.measure(font, text) + 12
+    x0 = x if anchor == "w" else x - tw if anchor == "e" else x - tw / 2
+    c.create_rectangle(x0, y - 9, x0 + tw, y + 9, outline=color, fill=fill, dash=(2, 2) if dash else ())
+    c.create_text(x0 + tw / 2, y, text=text, fill=fg or color, font=T.F[font])
+    return tw
+
+
+class Table(tk.Canvas):
+    """캔버스 표 (Treeview 대신: 칸별 색·태그·체크박스·두 줄 칸·그룹 행·막대를 그릴 수 있다).
+
+    cols: [{"key", "title", "w", "anchor"("w"/"e"/"center"), "grow"(남는 폭 비율)}]
+    row: {"id", "cells": {key: 글자 | {"text","fg","font","sub","subfg","tag":(글자,색,점선),"draw":fn(c,x0,x1,y)}},
+          "check": 체크 가능 여부, "dim": 흐리게(60%), "bg": 배경, "group": 그룹 제목(그룹 행), "right": 그룹 오른쪽 글자,
+          "dash": 점선 테두리}
+    fit=True면 행 수에 맞춰 높이를 바꾸고, 아니면 안에서 휠로 스크롤한다 (보이는 행만 그림).
+    """
+    HEAD = 32
+
+    def __init__(self, parent, cols, rh=38, bg=T.PANEL, check=False, fit=False, empty=None, on_click=None,
+                 on_check=None, selectable=False, min_rows=3, pad=16, head=True):
+        super().__init__(parent, bg=bg, highlightthickness=0, height=self.HEAD + rh * min_rows)
+        self.cols, self.rh, self.bgc, self.check, self.fit = cols, rh, bg, check, fit
+        self.empty, self.on_click, self.on_check, self.selectable = empty, on_click, on_check, selectable
+        self.min_rows, self.pad, self.head = min_rows, pad, head
+        self.rows, self.checked, self.selected, self.offset = [], set(), None, 0
+        self.btn_hits, self._xs = [], {}
+        self.bind("<Configure>", lambda e: self.draw())
+        self.bind("<Button-1>", self.click)
+
+    # ---- 데이터 ----
+    def set_rows(self, rows):
+        ids = {r.get("id") for r in rows if r.get("check")}
+        self.checked &= ids
+        if rows == self.rows and rows:
+            return
+        self.rows = rows
+        if self.fit:
+            h = self.content_h()
+            if int(self.cget("height")) != h:
+                self.config(height=h)
+        self.draw()
+
+    def row_h(self, r):
+        if r.get("group") is not None:
+            return 34
+        if r.get("wrap") and self._xs:  # 펼친 행: 내용 줄 수만큼 높게
+            x0, x1 = self._xs[r["wrap"]]
+            width = max(x1 - x0 - 8, 40)
+            v = r["cells"][r["wrap"]]
+            text = v["text"] if isinstance(v, dict) else str(v)
+            lines = sum(max(1, -(-T.measure("kr", part) // int(width))) for part in text.split("\n"))
+            return max(self.rh, 14 + lines * 19 + (40 if r.get("button") else 0))
+        return r.get("h", self.rh)
+
+    def head_h(self):
+        return self.HEAD if self.head else 0
+
+    def content_h(self):
+        body = sum(self.row_h(r) for r in self.rows) if self.rows else (110 if self.empty else self.rh)
+        return self.head_h() + body + 1
+
+    def checkable(self):
+        return [r["id"] for r in self.rows if r.get("check")]
+
+    def set_all(self, on):
+        self.checked = set(self.checkable()) if on else set()
+        self.draw()
+        if self.on_check:
+            self.on_check()
+
+    # ---- 배치 ----
+    def xs(self, w):
+        fixed = sum(c["w"] for c in self.cols)
+        grow = sum(c.get("grow", 0) for c in self.cols) or 1
+        extra = max(0, w - 2 * self.pad - fixed)
+        out, x = {}, self.pad
+        for c in self.cols:
+            cw = c["w"] + extra * c.get("grow", 0) / grow
+            out[c["key"]] = (x, x + cw)
+            x += cw
+        return out
+
+    def draw(self):
+        self.delete("all")
+        w, h = max(self.winfo_width(), 200), max(self.winfo_height(), 40)
+        xs = self._xs = self.xs(w)
+        self.btn_hits = []
+        if self.fit:  # 펼친 행 높이가 폭에 따라 바뀌므로 그릴 때마다 맞춘다
+            need = self.content_h()
+            if int(self.cget("height")) != need:
+                self.config(height=need)
+        hh = self.head_h()
+        total = sum(self.row_h(r) for r in self.rows)
+        self.offset = max(0, min(self.offset, total - (h - hh)))
+        y = hh - self.offset
+        for r in self.rows:
+            rh = self.row_h(r)
+            if y + rh >= hh and y < h:
+                self.draw_row(r, xs, y, rh, w)
+            y += rh
+        if not self.rows and self.empty:
+            lines = self.empty if isinstance(self.empty, (list, tuple)) else [self.empty]
+            y0 = hh + 40 if self.fit else hh + (h - hh) / 2 - 20  # 스크롤 표는 가운데에
+            for i, line in enumerate(lines):
+                _txt(self, w / 2, y0 + i * 22, line, T.MUTED if i else T.TEXT, "kr" if i == 0 else "kr_s", "center")
+        if self.head:
+            self.create_rectangle(0, 0, w, hh, fill=self.bgc, outline="")
+            for c in self.cols:
+                x0, x1 = xs[c["key"]]
+                if c["key"] == "chk" and self.check:
+                    ids = self.checkable()
+                    n = len(self.checked & set(ids))
+                    draw_check(self, x0, hh / 2, bool(ids) and (True if n == len(ids) else "some" if n else False))
+                    continue
+                a = c.get("anchor", "w")
+                x = x0 + 4 if a == "w" else x1 - 4 if a == "e" else (x0 + x1) / 2
+                _txt(self, x, hh / 2, c.get("title", ""), T.MUTED, "kr_xs", a)
+            self.create_line(0, hh - 1, w, hh - 1, fill=T.DIVIDER)
+        if total > h - hh:  # 얇은 스크롤 막대
+            frac = (h - hh) / total
+            top = hh + (h - hh) * self.offset / total
+            self.create_rectangle(w - 5, top, w - 2, top + (h - hh) * frac, fill=T.DIVIDER, outline="")
+
+    def draw_row(self, r, xs, y, rh, w):
+        cy = y + (self.rh / 2 if r.get("wrap") else rh / 2)
+        if r.get("group") is not None:
+            self.create_rectangle(0, y, w, y + rh, fill=T.blend(T.TEXT, self.bgc, 0.04), outline="")
+            x = self.pad
+            _txt(self, x, cy, r["group"], T.TEXT, "sym_s", "w")
+            x += T.measure("sym_s", r["group"]) + 12
+            _txt(self, x, cy, r.get("sub", ""), T.MUTED, "kr_xs", "w")
+            if r.get("right"):
+                _txt(self, w - self.pad, cy, r["right"], T.MUTED, "kr_xs", "e")
+            self.create_line(0, y + rh - 1, w, y + rh - 1, fill=T.DIVIDER_SOFT)
+            return
+        bg = r.get("bg")
+        if self.selectable and self.selected is not None and r.get("id") == self.selected:
+            bg = T.ROW_SELECTED
+        if bg:
+            self.create_rectangle(0, y, w, y + rh, fill=bg, outline="")
+        if r.get("dash"):
+            self.create_rectangle(2, y + 2, w - 2, y + rh - 2, outline=T.UP, dash=(3, 3))
+        dim = r.get("dim")
+        base = bg or self.bgc
+        col = (lambda c: T.blend(c, base, 0.6) if dim and c and c.startswith("#") else c)  # noqa: E731
+        for c in self.cols:
+            key = c["key"]
+            x0, x1 = xs[key]
+            if key == "chk":
+                if self.check and r.get("check"):
+                    draw_check(self, x0, cy, r["id"] in self.checked)
+                continue
+            v = r["cells"].get(key)
+            if v is None:
+                continue
+            if not isinstance(v, dict):
+                v = {"text": str(v)}
+            if v.get("draw"):
+                v["draw"](self, x0 + 4, x1 - 4, cy)
+                continue
+            a = c.get("anchor", "w")
+            if v.get("tag"):
+                t, tc, dash = (list(v["tag"]) + [False])[:3]
+                tx = x0 + 4 if a == "w" else x1 - 4 if a == "e" else (x0 + x1) / 2
+                draw_tag(self, tx, cy, t, col(tc), anchor=a, dash=dash)
+                continue
+            font = v.get("font") or ("num" if a == "e" else "kr")
+            x = x0 + 4 if a == "w" else x1 - 4 if a == "e" else (x0 + x1) / 2
+            if r.get("wrap") == key:
+                self.create_text(x0 + 4, cy - 9, text=v.get("text", ""), fill=col(v.get("fg", T.TEXT)), font=T.F[font],
+                                 anchor="nw", width=x1 - x0 - 8)
+                if r.get("button"):
+                    bt, cb = r["button"]
+                    bw = T.measure("kr_btn", bt) + 24
+                    by = y + rh - 40
+                    self.create_rectangle(x0 + 4, by, x0 + 4 + bw, by + 28, fill=T.ACCENT, outline=T.ACCENT)
+                    self.create_text(x0 + 4 + bw / 2, by + 14, text=bt, fill=T.GROUND, font=T.F["kr_btn"])
+                    self.btn_hits.append((x0 + 4, by, x0 + 4 + bw, by + 28, cb))
+                continue
+            text = T.fit(v.get("text", ""), font, x1 - x0 - 8)
+            sub = v.get("sub")
+            if sub:
+                _txt(self, x, cy - 8, text, col(v.get("fg", T.TEXT)), font, a)
+                _txt(self, x, cy + 9, T.fit(sub, "kr_xs", x1 - x0 - 8), col(v.get("subfg", T.MUTED)), "kr_xs", a)
+            elif v.get("after"):  # 같은 줄 뒤에 작은 보조 글자 (예: "1차 매도  20%")
+                _txt(self, x, cy, text, col(v.get("fg", T.TEXT)), font, "w")
+                _txt(self, x + T.measure(font, text) + 6, cy + 1, v["after"], col(T.MUTED), "kr_xs", "w")
+            else:
+                _txt(self, x, cy, text, col(v.get("fg", T.TEXT)), font, a)
+        self.create_line(0, y + rh - 1, w, y + rh - 1, fill=T.DIVIDER_SOFT)
+
+    # ---- 입력 ----
+    def row_at(self, y):
+        yy = self.head_h() - self.offset
+        for r in self.rows:
+            rh = self.row_h(r)
+            if yy <= y < yy + rh:
+                return r
+            yy += rh
+        return None
+
+    def click(self, e):
+        for x0, y0, x1, y1, cb in self.btn_hits:
+            if x0 <= e.x <= x1 and y0 <= e.y <= y1:
+                cb()
+                return
+        w = max(self.winfo_width(), 200)
+        xs = self.xs(w)
+        in_chk = "chk" in xs and xs["chk"][0] - 6 <= e.x <= xs["chk"][1] + 4
+        if e.y < self.head_h():
+            if in_chk and self.check:
+                ids = self.checkable()
+                self.set_all(len(self.checked & set(ids)) < len(ids))
+            return
+        r = self.row_at(e.y)
+        if not r or r.get("group") is not None:
+            return
+        if self.check and r.get("check") and (in_chk or not self.on_click):
+            self.checked.symmetric_difference_update({r["id"]})
+            self.draw()
+            if self.on_check:
+                self.on_check()
+            return
+        if self.selectable:
+            self.selected = r.get("id")
+            self.draw()
+        if self.on_click:
+            self.on_click(r.get("id"))
+
+    def on_wheel(self, steps):
+        """휠 한 칸 = 3줄. 이 표가 스크롤할 게 없으면 False (바깥 페이지가 스크롤)."""
+        if self.fit or sum(self.row_h(r) for r in self.rows) <= self.winfo_height() - self.head_h():
+            return False
+        self.offset = max(0, self.offset + steps * 36)
+        self.draw()
+        return True
+
+
+class StatCells(tk.Frame):
+    """요약 칸 (투자내역·자동매매·주문): 같은 폭 칸, 라벨(11px MUTED) + 값(Condensed 큰 글자) + 아래 보조 줄."""
+
+    def __init__(self, parent, cells, big=True, bg=T.PANEL):
+        super().__init__(parent, bg=bg, highlightthickness=1, highlightbackground=T.DIVIDER)
+        self.vals = {}
+        for i, (key, label) in enumerate(cells):
+            self.columnconfigure(i * 2, weight=1, uniform="cell")
+            if i:
+                tk.Frame(self, bg=T.DIVIDER, width=1).grid(row=0, column=i * 2 - 1, sticky="ns")
+            cell = tk.Frame(self, bg=bg)
+            cell.grid(row=0, column=i * 2, sticky="nsew", padx=18, pady=(12, 10))
+            lab = tk.Label(cell, text=label, bg=bg, fg=T.MUTED, font=T.F["kr_xs"], anchor="w")
+            lab.pack(anchor="w")
+            row = tk.Frame(cell, bg=bg)
+            row.pack(anchor="w")
+            val = tk.Label(row, text="-", bg=bg, fg=T.TEXT, font=T.F["sum_val_l" if big else "sum_val"], anchor="w")
+            val.pack(side="left")
+            unit = tk.Label(row, text="", bg=bg, fg=T.TEXT, font=T.F["sum_val_l" if big else "sum_val"], anchor="w")
+            unit.pack(side="left")
+            extra = tk.Label(row, text="", bg=bg, fg=T.MUTED, font=T.F["num_s"], anchor="sw")
+            extra.pack(side="left", padx=(8, 0), anchor="s", pady=(0, 6))
+            sub = tk.Label(cell, text="", bg=bg, fg=T.MUTED, font=T.F["kr_xs"], anchor="w")
+            sub.pack(anchor="w")
+            self.vals[key] = (val, unit, sub, lab, extra)
+
+    def set(self, key, text, unit="", color=T.TEXT, sub="", extra="", extra_color=None, label=None):
+        val, u, s, lab, ex = self.vals[key]
+        val.config(text=text, fg=color)
+        u.config(text=unit, fg=color)
+        s.config(text=sub)
+        ex.config(text=extra, fg=extra_color or color)
+        if label is not None:
+            lab.config(text=label)
+
+
+class CoinList(tk.Canvas):
+    """현황 1b 왼쪽 목록. groups: [(제목, 링크 글자|None, [item])].
+    item: {"id", "lines": [(왼쪽 [(글자,색,글꼴)], 오른쪽 [(글자,색,글꼴)])], "dim", "h"}"""
+
+    def __init__(self, parent, on_select=None, on_link=None):
+        super().__init__(parent, bg=T.PANEL, highlightthickness=0, width=280)
+        self.groups, self.selected, self.offset = [], None, 0
+        self.on_select, self.on_link = on_select, on_link
+        self.hits = []
+        self.bind("<Configure>", lambda e: self.draw())
+        self.bind("<Button-1>", self.click)
+
+    def set(self, groups, selected):
+        if groups == self.groups and selected == self.selected:
+            return
+        self.groups, self.selected = groups, selected
+        self.draw()
+
+    def on_wheel(self, steps):
+        self.offset = max(0, self.offset + steps * 30)
+        self.draw()
+        return True
+
+    def draw(self):
+        self.delete("all")
+        w, h = max(self.winfo_width(), 100), max(self.winfo_height(), 100)
+        total = sum(30 + sum(it.get("h", 90) for it in items) + 8 for _, _, items in self.groups)
+        self.offset = min(self.offset, max(0, total - h))
+        y = -self.offset
+        self.hits = []
+        for gi, (title, link, items) in enumerate(self.groups):
+            if gi:
+                self.create_line(0, y, w, y, fill=T.DIVIDER)
+                y += 8
+            _txt(self, 16, y + 16, title, T.MUTED, "kr_xs", "w")
+            if link:
+                tid = _txt(self, w - 16, y + 16, link, T.ACCENT, "kr_xs", "e")
+                self.hits.append((y, y + 30, ("link", title), self.bbox(tid)))
+            y += 30
+            for it in items:
+                ih = it.get("h", 90)
+                sel = it["id"] == self.selected
+                if sel:
+                    self.create_rectangle(0, y, w, y + ih, fill=T.ROW_SELECTED, outline="")
+                    self.create_rectangle(0, y, 3, y + ih, fill=T.ACCENT, outline="")
+                base = T.ROW_SELECTED if sel else T.PANEL
+                col = (lambda c: T.blend(c, base, 0.6) if it.get("dim") else c)  # noqa: E731
+                n = len(it["lines"])
+                step = (ih - 20) / max(n, 1)
+                for li, (left, right) in enumerate(it["lines"]):
+                    ly = y + 10 + step * (li + 0.5)
+                    x = 18
+                    for text, fg, font in left:
+                        _txt(self, x, ly, text, col(fg), font, "w")
+                        x += T.measure(font, text) + 6
+                    x = w - 16
+                    for text, fg, font in reversed(right):
+                        _txt(self, x, ly, text, col(fg), font, "e")
+                        x -= T.measure(font, text) + 4
+                self.hits.append((y, y + ih, ("item", it["id"]), None))
+                y += ih
+
+    def click(self, e):
+        for y0, y1, (kind, val), box in self.hits:
+            if kind == "link" and box and box[0] - 4 <= e.x <= box[2] + 4 and box[1] - 4 <= e.y <= box[3] + 4:
+                if self.on_link:
+                    self.on_link(val)
+                return
+            if kind == "item" and y0 <= e.y < y1:
+                if self.on_select:
+                    self.on_select(val)
+                return
+
+
+class Ruler(tk.Canvas):
+    """현황 1b 가격 눈금자: 레벨을 실제 가격 비율 위치에 가로줄로 (이름 120 | 선 | 가격 150 | 대비 80).
+    rows: [{"name","sub","price","pct","color","kind"(sell/buy/now/stop/outside),"near"}]"""
+
+    def __init__(self, parent):
+        super().__init__(parent, bg=T.GROUND, highlightthickness=1, highlightbackground=T.DIVIDER)
+        self.rows = []
+        self.bind("<Configure>", lambda e: self.draw())
+
+    def set(self, rows):
+        if rows == self.rows:
+            return
+        self.rows = rows
+        self.draw()
+
+    def draw(self):
+        self.delete("all")
+        w, h = max(self.winfo_width(), 200), max(self.winfo_height(), 120)
+        rows = [r for r in self.rows if r.get("price")]
+        if not rows:
+            _txt(self, w / 2, h / 2, "레벨 계산 중…", T.MUTED, "kr_s", "center")
+            return
+        prices = [r["price"] for r in rows]
+        hi, lo = max(prices) * 1.03, min(prices) * 0.97
+        top, bot = 22, h - 22
+        pos = sorted(((top + (hi - r["price"]) / (hi - lo) * (bot - top), r) for r in rows), key=lambda t: t[0])
+        gap = min(24, (bot - top) / max(len(pos) - 1, 1))  # 글자가 겹치지 않게 최소 간격
+        ys = [p for p, _ in pos]
+        for i in range(1, len(ys)):
+            ys[i] = max(ys[i], ys[i - 1] + gap)
+        over = ys[-1] - bot if ys else 0
+        if over > 0:
+            for i in range(len(ys) - 1, -1, -1):
+                lim = bot if i == len(ys) - 1 else ys[i + 1] - gap
+                ys[i] = min(ys[i], lim)
+        placed = [(y, r) for y, (_, r) in zip(ys, pos)]
+        xn, xp1, xpc = 16, w - 16 - 80 - 12, w - 16
+        line0, line1 = xn + 150, xp1 - 150 - 12
+        sell1 = next((y for y, r in placed if r["kind"] == "sell" and r.get("first")), None)
+        buy1 = next((y for y, r in placed if r["kind"] == "buy" and r.get("first")), None)
+        if sell1 is not None and buy1 is not None:  # 관망 구간 (1차 매도 ~ 1차 매수)
+            self.create_rectangle(1, sell1, w - 1, buy1, fill=T.blend(T.ACCENT, T.GROUND, 0.07), outline="")
+        for y, r in placed:
+            kind, color = r["kind"], r.get("color", T.TEXT)
+            if r.get("near") and kind != "now":
+                self.create_rectangle(1, y - gap / 2 + 1, w - 1, y + gap / 2 - 1, fill=T.ROW_NEAR, outline="")
+            if kind == "now":
+                self.create_rectangle(1, y - 18, w - 1, y + 18, fill=T.ROW_CURRENT, outline="")
+                _txt(self, xn, y, r["name"], T.TEXT, "kr_b", "w")
+                self.create_line(line0, y, line1, y, fill=T.TEXT, width=2)
+                _txt(self, xp1, y, T.fmtp(r["price"]), T.TEXT, "num_l", "e")
+                continue
+            x = xn
+            _txt(self, x, y, r["name"], color, "kr", "w")
+            if r.get("sub"):
+                _txt(self, x + T.measure("kr", r["name"]) + 5, y + 1, r["sub"], T.MUTED, "kr_xxs", "w")
+            dash = (3, 3) if kind in ("stop", "outside") else ()
+            self.create_line(line0, y, line1, y, fill=T.blend(color, T.GROUND, 0.45), dash=dash)
+            _txt(self, xp1, y, T.fmtp(r["price"]), T.TEXT if kind != "outside" else T.MUTED, "num_cell", "e")
+            if r.get("pct") is not None:
+                _txt(self, xpc, y, f"{r['pct']:+.1f}%", color, "num", "e")
+
+
+class Toggle(tk.Canvas):
+    """34×18 스위치. 켜짐 ACCENT, 꺼짐 UP."""
+
+    def __init__(self, parent, value=False, command=None, bg=T.PANEL):
+        super().__init__(parent, width=34, height=18, bg=bg, highlightthickness=0, cursor="hand2")
+        self.value, self.command = value, command
+        self.bind("<Button-1>", lambda e: self.command and self.command(not self.value))
+        self.draw()
+
+    def set(self, v):
+        self.value = v
+        self.draw()
+
+    def draw(self):
+        self.delete("all")
+        col = T.ACCENT if self.value else T.UP
+        self.create_rectangle(0, 0, 33, 17, fill=col, outline=col)
+        x = 18 if self.value else 2
+        self.create_rectangle(x, 2, x + 13, 15, fill=T.TEXT, outline="")
+
+
+class Segmented(tk.Frame):
+    """세그먼트 필터 (1px DIVIDER 테두리, 선택 칸 ACCENT)."""
+
+    def __init__(self, parent, options, value, command, bg=T.PANEL):
+        super().__init__(parent, bg=bg, highlightthickness=1, highlightbackground=T.DIVIDER)
+        self.labels, self.command = {}, command
+        for name in options:
+            s = tk.Label(self, text=name, font=T.F["kr_s"], padx=12, pady=4, cursor="hand2")
+            s.pack(side="left")
+            s.bind("<Button-1>", lambda e, n=name: self.pick(n))
+            self.labels[name] = s
+        self.set(value)
+
+    def set(self, value):
+        self.value = value
+        for n, s in self.labels.items():
+            s.config(bg=T.ACCENT if n == value else T.PANEL, fg=T.GROUND if n == value else T.TEXT)
+
+    def pick(self, n):
+        self.set(n)
+        self.command(n)
+
+
+def scroll_page(parent, bg=T.GROUND):
+    """세로 스크롤 본문. (바깥 프레임, 안쪽 body) 반환. 휠은 포인터가 안에 있을 때만."""
+    outer = tk.Frame(parent, bg=bg)
+    canvas = tk.Canvas(outer, bg=bg, highlightthickness=0)
+    body = tk.Frame(canvas, bg=bg)
+    win = canvas.create_window(0, 0, window=body, anchor="nw")
+    bar = tk.Canvas(outer, width=6, bg=bg, highlightthickness=0)
+
+    def sync(*_):
+        canvas.configure(scrollregion=(0, 0, canvas.winfo_width(), max(body.winfo_reqheight(), canvas.winfo_height())))
+        draw_bar()
+
+    def draw_bar(*_):
+        bar.delete("all")
+        a, b = canvas.yview()
+        if b - a < 0.999:
+            hh = bar.winfo_height()
+            bar.create_rectangle(1, a * hh, 5, b * hh, fill=T.DIVIDER, outline="")
+
+    def yview(*args):
+        canvas.yview(*args)
+        draw_bar()
+
+    body.bind("<Configure>", sync)
+    canvas.bind("<Configure>", lambda e: (canvas.itemconfigure(win, width=e.width), sync()))
+    canvas.configure(yscrollcommand=lambda a, b: draw_bar())
+
+    def on_wheel(steps):
+        if canvas.yview() == (0.0, 1.0):
+            return False
+        yview("scroll", steps, "units")
+        return True
+
+    outer.on_wheel = on_wheel
+    bar.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+    outer.canvas = canvas
+    return outer, body
+
+
+def install_wheel(root):
+    """마우스 휠을 한 곳에서 받아, 포인터 아래 위젯부터 바깥으로 올라가며 on_wheel이 있는 곳에 넘긴다
+    (표 안에서 굴리면 표가, 표 끝이면 바깥 페이지가 스크롤)."""
+    def handle(steps, e):
+        w = root.winfo_containing(e.x_root, e.y_root)
+        while w is not None:
+            fn = getattr(w, "on_wheel", None)
+            if fn and fn(steps):
+                return
+            w = getattr(w, "master", None)
+    root.bind_all("<MouseWheel>", lambda e: handle(-1 if e.delta > 0 else 1, e))
+    root.bind_all("<Button-4>", lambda e: handle(-1, e))
+    root.bind_all("<Button-5>", lambda e: handle(1, e))

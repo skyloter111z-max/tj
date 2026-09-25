@@ -145,6 +145,19 @@ ok(len(ex.open) == 1, f"11a 승인 사이 변경 → 실행 안 함 (거래소 �
 ex.open.clear(); ex.bal["KRW"] = 100_000
 e.make_proposal("t", force=True, coins=["BTC"]); pid = e.proposal["id"]; e.execute(pid)
 ok(len(ex.open) == 0, "11b 매수 주문 필요 현금 > 보유 현금 → 실행 안 함")
+ex.bal["KRW"] = 10_000_000
+e.make_proposal("t", force=True, coins=["BTC"]); p = e.proposal
+sells = [i for i, (k, _, o) in enumerate(p["todo"]) if k == "place" and o["side"] == "ask"]
+e.execute(p["id"], sells)
+ok(len(ex.open) == len(sells) and all(o["side"] == "ask" for o in ex.open.values()),
+   f"11c 주문 탭에서 고른 행만 실행 (매도 {len(sells)}건만, 매수 안 함)")
+ex.open.clear()
+e.make_proposal("t", force=True, coins=["BTC"]); pid = e.proposal["id"]
+e.emergency_stop(False); e.execute(pid)
+ok(len(ex.open) == 0 and cfg["mode"] == "alert", "11d 긴급 정지 중에는 승인해도 실행 안 함")
+e.cfg["stopped"]["grid"] = True; assert not cfg["grid"]["enabled"]
+e.resume()
+ok(cfg["mode"] == "semi" and cfg["grid"]["enabled"] and not cfg.get("stopped"), "11e 재개하면 정지 전 모드·자동매매로 복귀")
 fr.get = orig_get
 
 # 12 설정 파일 손상 → 백업으로 복구

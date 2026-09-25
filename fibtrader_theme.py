@@ -53,10 +53,12 @@ def setup_fonts(root):
     # 음수 크기 = 픽셀 (스펙이 px 기준)
     F.update({
         "kr": (kr, -13), "kr_b": (kr, -13, "bold"), "kr_s": (kr, -12), "kr_xs": (kr, -11), "kr_btn": (kr, -13, "bold"),
-        "kr_title": (kr, -16, "bold"), "kr_big": (kr, -20, "bold"),
+        "kr_title": (kr, -16, "bold"), "kr_big": (kr, -20, "bold"), "kr_tab": (kr, -14),
+        "kr_panel": (kr, -17, "bold"), "kr_xxs": (kr, -10),
         "num": (num, -13), "num_b": (num, -13, "bold"), "num_cell": (num, -15), "num_cell_b": (num, -15, "bold"),
         "num_s": (num, -12), "num_xs": (num, -11),
-        "brand": (cf, -18, cond_w), "sym": (cf, -20, cond_w), "price": (cf, -42, cond_w), "chg": (cf, -20, cond_w),
+        "brand": (cf, -18, cond_w), "sym": (cf, -20, cond_w), "sym_s": (cf, -16, cond_w), "price": (cf, -42, cond_w),
+        "price_xl": (cf, -56, cond_w), "chg": (cf, -20, cond_w), "num_l": (cf, -20, cond_w), "btn": (cf, -14, cond_w),
         "sum_val": (cf, -19, cond_w), "sum_val_l": (cf, -30, cond_w), "panel_t": (cf, -17, cond_w),
         "ghost": (cf, -13, cond_w), "tag": (num, -11, "bold"),
     })
@@ -78,7 +80,16 @@ def apply_ttk(root):
                     upperbordercolor=MUTED, lowerbordercolor=MUTED, indicatormargin=(0, 0, 6, 0))
         s.map(w, indicatorbackground=[("selected", ACCENT)], indicatorforeground=[("selected", GROUND)],
               background=[("active", GROUND)])
+    for w in ("TCheckbutton", "TRadiobutton"):  # 카드(PANEL) 위에 놓이는 체크·라디오
+        s.configure("Panel." + w, background=PANEL)
+        s.map("Panel." + w, background=[("active", PANEL)])
     s.configure("TEntry", fieldbackground=PANEL, foreground=TEXT, insertcolor=TEXT, bordercolor=DIVIDER)
+    s.configure("Card.TEntry", fieldbackground=GROUND, foreground=TEXT, insertcolor=TEXT, bordercolor=DIVIDER,
+                lightcolor=GROUND, darkcolor=GROUND, padding=(8, 6))
+    s.map("Card.TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
+    s.configure("Card.TCombobox", fieldbackground=GROUND, foreground=TEXT, background=GROUND, arrowcolor=TEXT,
+                bordercolor=DIVIDER, padding=(6, 5))
+    s.map("Card.TCombobox", fieldbackground=[("readonly", GROUND)], foreground=[("readonly", TEXT)])
     s.configure("TCombobox", fieldbackground=PANEL, foreground=TEXT, background=PANEL, arrowcolor=TEXT)
     s.map("TCombobox", fieldbackground=[("readonly", PANEL)], foreground=[("readonly", TEXT)])
     s.configure("TButton", background=PANEL, foreground=TEXT, bordercolor=DIVIDER, relief="flat", padding=(12, 5),
@@ -145,6 +156,48 @@ def fmtq(v):
     """수량: 원본 소수 자리 (최대 8자리, 끝의 0 제거)."""
     s = f"{v:.8f}".rstrip("0").rstrip(".")
     return s or "0"
+
+
+QTY_DP = {"BTC": 8, "ETH": 6, "XRP": 3}  # 수량 소수 자리 고정 (스펙 8장, 모든 탭 공통)
+
+
+def fmtq_c(coin, v):
+    """코인별 고정 자릿수 수량. 목록에 없는 코인은 원본 자리(끝의 0 제거)."""
+    if v is None:
+        return "-"
+    d = QTY_DP.get(coin)
+    return f"{v:,.{d}f}" if d is not None else fmtq(v)
+
+
+_FONTS, _WIDTHS = {}, {}
+
+
+def measure(key, text):
+    """글자 폭(px). Tk 호출이 느려서 같은 글꼴·글자는 한 번만 잰다."""
+    k = (key, text)
+    w = _WIDTHS.get(k)
+    if w is None:
+        f = _FONTS.get(key)
+        if f is None:
+            f = _FONTS[key] = tkfont.Font(font=F[key])
+        if len(_WIDTHS) > 5000:
+            _WIDTHS.clear()
+        w = _WIDTHS[k] = f.measure(text)
+    return w
+
+
+def fit(text, key, width):
+    """칸 폭에 맞게 자르고 말줄임(…)."""
+    if width <= 0 or measure(key, text) <= width:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if measure(key, text[:mid] + "…") <= width:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo] + "…"
 
 
 def chg_color(v):
