@@ -1335,6 +1335,26 @@ class App:
         lab(chk, "BTC·ETH·XRP는 제외. 코인은 쉼표나 띄어쓰기로 나눠 적습니다. 코인 칸에 적고 [저장]한 코인만 사고팝니다.",
             "kr_xs", fg=T.MUTED).pack(side="left")
         T.Btn(chk, "저장", self.save_grid, "primary").pack(side="right")
+        # 현금 보호 (실전): 주문 가능 원화 기준 단계별로 매수를 줄인다
+        cbox = tk.Frame(self.g_rule_body, bg=T.PANEL, highlightthickness=1, highlightbackground=T.DIVIDER)
+        cbox.pack(fill="x", padx=16, pady=(0, 12))
+        ch = tk.Frame(cbox, bg=T.PANEL)
+        ch.pack(fill="x", padx=12, pady=(10, 6))
+        lab(ch, "현금 보호", "kr_b").pack(side="left")
+        lab(ch, "주문 가능 원화(피보나치 예약에 묶인 돈 제외) 기준. 코인 모으기는 업비트 앱에서 직접 조절하라고 알림을 보냅니다.",
+            "kr_xs", fg=T.MUTED).pack(side="left", padx=10)
+        cr = tk.Frame(cbox, bg=T.PANEL)
+        cr.pack(fill="x", padx=12, pady=(0, 10))
+        self.g_cash = {}
+        for key, label, unit in (("cash_warn", "주의 (모으기 절반 알림)", "원 미만"),
+                                 ("cash_floor_start", "위험 (새 시작 매수 중지)", "원 미만"),
+                                 ("cash_floor_all", "비상 (모든 매수 중지)", "원 미만")):
+            lab(cr, label, "kr_xs", fg=T.MUTED).pack(side="left", padx=(0 if key == "cash_warn" else 14, 4))
+            e = ttk.Entry(cr, style="Card.TEntry", justify="right", width=11, font=T.F["num"])
+            e.insert(0, f"{g.get(key, 0):,}")
+            e.pack(side="left")
+            lab(cr, unit, "kr_xs", fg=T.MUTED).pack(side="left", padx=(4, 0))
+            self.g_cash[key] = e
         # 하락 코인 자동 추가 (추천 목록 안에서만)
         dp = g["dip"]
         dbox = tk.Frame(self.g_rule_body, bg=T.PANEL, highlightthickness=1, highlightbackground=T.DIVIDER)
@@ -1564,6 +1584,9 @@ class App:
                    "min_pct": abs(num(df["min_pct"].get())), "max_pct": abs(num(df["max_pct"].get())),
                    "min_vol_eok": num(df["min_vol_eok"].get()), "per_day": int(num(df["per_day"].get())),
                    "max_coins": int(num(df["max_coins"].get()))}
+            cash = {k: int(num(e.get())) for k, e in self.g_cash.items()}
+            if not cash["cash_warn"] >= cash["cash_floor_start"] >= cash["cash_floor_all"] >= 0:
+                raise ValueError("현금 보호: 주의 ≥ 위험 ≥ 비상 순서로 적어 주세요")
             if dip["min_pct"] >= dip["max_pct"]:
                 raise ValueError("하락 범위: 앞 숫자가 뒤 숫자보다 작아야 합니다")
         except ValueError as e:
@@ -1625,6 +1648,7 @@ class App:
         g.update(new, enabled=self.g_on.get(), simulate=self.g_sim.get(), half_at_breakeven=self.g_half.get(),
                  reinvest=self.g_reinvest.get(), auto_exit_warning=self.g_autoexit.get())
         g["dip"].update(dip)
+        g.update(cash)
         core.save_config(self.cfg)
         self.set_grid_fields()
         self.render_watch()

@@ -53,6 +53,9 @@ DEFAULTS = {
         "total_max_krw": 1_500_000, # 자동매매 전체 원가 한도 (여러 코인이 같이 빠질 때)
         "reinvest": True,           # 수익 재투자: 실현 수익만큼 전체 한도를 늘린다 (내 돈은 설정한 한도까지만)
         "auto_exit_warning": True,  # 투자유의(상장폐지 심사) 지정되면 자동매매 보유분을 바로 청산
+        "cash_warn": 7_000_000,     # 현금 보호 (실전): 주문 가능 원화가 이 아래면 '주의' 알림 (코인 모으기 줄이기)
+        "cash_floor_start": 4_000_000,  # 이 아래로 내려가면 새 코인 시작 매수 중지 (물타기는 계속) + 모으기 중지 알림
+        "cash_floor_all": 2_000_000,    # 이 아래로 내려가면 자동매매 매수 전부 중지 (매도는 계속)
         "max_trades_per_day": 200,  # 하루 실전 거래가 이보다 많으면 버그·폭주로 보고 자동매매를 끈다
         "state": {},
         "dip": {                    # 하락 코인 자동 추가: 추천 목록(대형 알트) 안에서만, 잡코인 제외
@@ -498,6 +501,12 @@ class Engine(threading.Thread):
                 self.grid_dip()
             except Exception as e:  # 조회 실패 시 5분 뒤 다시
                 print("dip", e)
+            if time.time() - getattr(self, "_cash_ts", 0) > 300:  # 현금 단계 5분마다
+                self._cash_ts = time.time()
+                try:
+                    self.cash_stage_check()
+                except Exception as e:
+                    print("cash", e)
             for coin in self.grid_coins():
                 if coin in self.prices:
                     try:
@@ -883,6 +892,8 @@ class Engine(threading.Thread):
         if st["qty"] <= 0:  # 새 사이클 시작
             if total_cost + unit > self.grid_total_cap():
                 return self.grid_cap_alert("total", f"자동매매 전체 원가 {total_cost:,.0f}원 · 전체 한도 {self.grid_total_cap():,.0f}원")
+            if not self.grid_cash_ok("start", unit):
+                return
             qty, krw, px, _ = self.grid_trade(coin, "bid", price, unit)
             st.update(qty=qty, cost=krw, buys=1, ref=px, halved=False, realized=0.0)
             self.alert("grid", f"{tag}{coin} 시작 매수", f"{fmtp(px)}원에 {krw:,.0f}원 매수 (1회)")
@@ -918,6 +929,8 @@ class Engine(threading.Thread):
                     return self.grid_cap_alert(coin, f"{coin} 원가 {st['cost']:,.0f}원 + 다음 매수 {unit:,.0f}원 · 코인 한도 {g['max_krw']:,}원")
                 if total_cost + unit > self.grid_total_cap():
                     return self.grid_cap_alert("total", f"자동매매 전체 원가 {total_cost:,.0f}원 · 전체 한도 {self.grid_total_cap():,.0f}원")
+                if not self.grid_cash_ok("add", unit):
+                    return
                 qty, krw, px, _ = self.grid_trade(coin, "bid", price, unit)
                 st.update(qty=st["qty"] + qty, cost=st["cost"] + krw, buys=st["buys"] + 1, ref=px, halved=False)
                 self.alert("grid", f"{tag}{coin} 물타기 {st['buys']}회",
@@ -925,6 +938,57 @@ class Engine(threading.Thread):
             else:
                 return
         save_config(self.cfg)
+
+    def krw_free(self, max_age=20):
+        """업비트 주문 가능 원화 (예약 주문에 묶인 돈 제외). 20초 캐시. API 없으면 None."""
+        if not self.api:
+            return None
+        c = getattr(self, "_krw_cache", None)
+        if c and time.time() - c[0] < max_age:
+            return c[1]
+        acc = {a["currency"]: float(a["balance"]) for a in self.api.call("GET", "/accounts")}
+        v = acc.get("KRW", 0.0)
+        self._krw_cache = (time.time(), v)
+        return v
+
+    def grid_cash_ok(self, kind, amount):
+        """현금 보호 (실전만): 산 뒤 주문 가능 원화가 보호선 아래로 내려가면 매수하지 않는다.
+        kind='start': 새 코인 시작 매수 (보호선 cash_floor_start), 'add': 물타기 (보호선 cash_floor_all).
+        피보나치 예약 매수에 묶인 돈은 원래 주문 가능 원화에서 빠져 있어서 건드리지 않는다."""
+        g = self.cfg["grid"]
+        if g["simulate"] or not self.api:
+            return True
+        free = self.krw_free()
+        floor = g.get("cash_floor_start", 0) if kind == "start" else g.get("cash_floor_all", 0)
+        if free - amount < floor:
+            what = "새 코인 시작 매수" if kind == "start" else "물타기 매수"
+            self.grid_cap_alert(f"cash_{kind}", f"주문 가능 원화 {free:,.0f}원 → {what} 중지 (보호선 {floor:,.0f}원). "
+                                                "파는 것(본전 절반·익절)은 계속합니다.")
+            return False
+        self._krw_cache = (time.time(), free - amount)
+        return True
+
+    def cash_stage_check(self):
+        """주문 가능 원화 단계가 바뀌면 알림 (코인 모으기는 업비트 앱에서 직접 조절해야 해서 알려만 준다)."""
+        g = self.cfg["grid"]
+        free = self.krw_free(max_age=60)
+        if free is None:
+            return
+        stage = (3 if free < g.get("cash_floor_all", 0) else 2 if free < g.get("cash_floor_start", 0)
+                 else 1 if free < g.get("cash_warn", 0) else 0)
+        prev = g.get("cash_stage", 0)
+        if stage == prev:
+            return
+        g["cash_stage"] = stage
+        save_config(self.cfg)
+        msg = {0: ("현금 평시 복귀", f"주문 가능 원화 {free:,.0f}원. 코인 모으기를 원래대로(하루 7만) 되돌려도 됩니다."),
+               1: ("현금 주의 단계", f"주문 가능 원화 {free:,.0f}원 (주의선 {g['cash_warn']:,}원 아래). "
+                                 "업비트 앱에서 코인 모으기를 절반(하루 3.5만)으로 줄이세요."),
+               2: ("현금 위험 단계", f"주문 가능 원화 {free:,.0f}원 (위험선 {g['cash_floor_start']:,}원 아래). "
+                                 "자동매매 새 시작 매수를 멈췄습니다(물타기는 계속). 업비트 앱에서 코인 모으기를 일시 중지하세요."),
+               3: ("현금 비상 단계", f"주문 가능 원화 {free:,.0f}원 (비상선 {g['cash_floor_all']:,}원 아래). "
+                                 "자동매매 매수를 모두 멈췄습니다. 매도는 계속합니다. 코인 모으기는 중지 상태로 두세요.")}[stage]
+        self.alert("fail" if stage > prev else "grid", *msg)
 
     def grid_realized(self):
         """자동매매 누적 실현 수익 (끝난 사이클 + 진행 중 사이클의 절반 매도분, 수수료 뺀 금액)."""

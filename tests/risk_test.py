@@ -51,7 +51,8 @@ class Ex:
 
 def mk(**grid):
     d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
-    cfg = core.load_config(); cfg["grid"].update(dict(simulate=False, coins=["ADA"], unit_krw=5000, profit_krw=250, max_krw=150000), **grid)
+    cfg = core.load_config(); cfg["grid"].update(dict(simulate=False, coins=["ADA"], unit_krw=5000, profit_krw=250, max_krw=150000,
+                                                      cash_warn=0, cash_floor_start=0, cash_floor_all=0), **grid)  # 현금 보호는 19번에서만
     e = core.Engine(cfg, core.DB(os.path.join(d, "t.db")), queue.Queue()); ex = Ex(); e.api = ex
     return e, ex, cfg
 def step(e, ex, p, skip_rate=True):
@@ -240,6 +241,23 @@ flags["ADA"] = {"warning": True, "caution": {}}
 e.grid_check_warnings(force=True)
 ok(st["qty"] == 0 and "ADA" not in cfg["grid"]["coins"] and ex.bal["ADA"] < 1e-9, "18b 투자유의 지정: 자동매매 보유분 즉시 청산, 목록에서 제외")
 fr.get = orig_get
+
+# 19 현금 보호: 주문 가능 원화가 보호선 아래면 새 시작 매수 중지, 비상선 아래면 물타기도 중지
+e, ex, cfg = mk(unit_krw=10000, cash_floor_start=100_000, cash_floor_all=50_000, cash_warn=200_000)
+ex.bal["KRW"] = 105_000
+step(e, ex, 340)
+ok(e.grid_state("ADA")["qty"] == 0, "19a 사고 나면 10만 원(위험선) 아래 → 새 시작 매수 안 함")
+ex.bal["KRW"] = 200_000; e._krw_cache = None
+step(e, ex, 340)
+ok(e.grid_state("ADA")["buys"] == 1, "19b 현금 충분 → 시작 매수")
+ex.bal["KRW"] = 55_000; e._krw_cache = None
+step(e, ex, 320)  # 5.9% 하락 = 물타기 조건
+ok(e.grid_state("ADA")["buys"] == 1, "19c 물타기 조건이어도 사고 나면 5만 원(비상선) 아래 → 물타기 안 함")
+ex.bal["KRW"] = 90_000; e._krw_cache = None
+step(e, ex, 320)
+ok(e.grid_state("ADA")["buys"] == 2, "19d 위험 단계(10만 아래)여도 비상선 위면 물타기는 함")
+e._krw_cache = None; e.cash_stage_check()
+ok(cfg["grid"]["cash_stage"] == 2, f"19e 현금 단계 알림 (위험 단계={cfg['grid'].get('cash_stage')})")
 
 # 12 설정 파일 손상 → 백업으로 복구
 d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
