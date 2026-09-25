@@ -120,6 +120,33 @@ def todo_key(todo):
     return json.dumps([(k, m, o["side"], o["price"], round(o["volume"], 6)) for k, m, o in todo])
 
 
+class PriceFeed(threading.Thread):
+    """화면용 실시간 시세: 2초마다 현재가, 1분마다 보유 수량. 주문·알림 판단은 Engine이 한다."""
+
+    def __init__(self, engine, events, every=2.0):
+        super().__init__(daemon=True)
+        self.engine, self.events, self.every = engine, events, every
+        self.stop_event = engine.stop_event
+        self.last_hold = 0
+
+    def run(self):
+        while not self.stop_event.is_set():
+            try:
+                coins = fr.COINS + [c for c in self.engine.grid_coins() if c not in fr.COINS]
+                ts = fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in coins))
+                self.events.put(("live", {t["market"][4:]: (t["trade_price"], t["signed_change_rate"] * 100)
+                                          for t in ts}))
+                api = self.engine.api
+                if api and time.time() - self.last_hold > 60:
+                    acc = api.call("GET", "/accounts")
+                    hold = {a["currency"]: float(a["balance"]) + float(a["locked"]) for a in acc}
+                    self.events.put(("hold", hold))
+                    self.last_hold = time.time()
+            except Exception:
+                pass  # 다음 주기에 다시
+            self.stop_event.wait(self.every)
+
+
 class Engine(threading.Thread):
     def __init__(self, cfg, db, events):
         super().__init__(daemon=True)

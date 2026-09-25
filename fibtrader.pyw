@@ -68,10 +68,13 @@ class App:
         self.proposal = None
         self.prices = {}
         self.board = {}
+        self.live = {}      # coin -> (현재가, 24h 등락%)
+        self.hold = {}      # currency -> 보유 수량
+        self.strip = {}     # coin -> 상단 시세 라벨
 
         self.root = tk.Tk()
         self.root.title("FibTrader")
-        self.root.geometry("1040x680")
+        self.root.geometry("1120x720")
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
         style = ttk.Style()
         style.configure("Treeview", rowheight=22)
@@ -82,6 +85,8 @@ class App:
         self.status = ttk.Label(top, text="시작 중…")
         self.status.pack(side="left")
         ttk.Button(top, text="긴급 정지", command=self.emergency).pack(side="right")
+        self.strip_bar = tk.Frame(self.root, bg="#111827")
+        self.strip_bar.pack(fill="x", padx=6, pady=(0, 6))
 
         nb = ttk.Notebook(self.root)
         nb.pack(fill="both", expand=True, padx=6, pady=(0, 6))
@@ -96,6 +101,7 @@ class App:
         if pystray:
             threading.Thread(target=self.run_tray, daemon=True).start()
         self.engine.start()
+        core.PriceFeed(self.engine, self.events).start()
         self.root.after(300, self.pump)
 
     # ---------------- 트레이 ----------------
@@ -163,10 +169,12 @@ class App:
             box = ttk.LabelFrame(f, text=f"  {coin}  ", padding=6)
             box.grid(row=0, column=i, sticky="nsew", padx=4)
             f.columnconfigure(i, weight=1)
-            price = ttk.Label(box, text="-", style="Big.TLabel")
-            price.pack(anchor="w")
+            price = tk.Label(box, text="-", font=("맑은 고딕", 20, "bold"), anchor="w")
+            price.pack(fill="x")
             sub = ttk.Label(box, text="", foreground="#555")
             sub.pack(anchor="w")
+            hold = ttk.Label(box, text="", foreground="#111", font=("맑은 고딕", 10, "bold"))
+            hold.pack(anchor="w")
             tree = ttk.Treeview(box, columns=("price", "name", "dist"), show="headings", height=9)
             for col, text, w in (("price", "가격", 110), ("name", "구분", 90), ("dist", "현재가 대비", 80)):
                 tree.heading(col, text=text)
@@ -178,20 +186,26 @@ class App:
             tree.pack(fill="x", pady=4)
             trend = ttk.Label(box, text="", justify="left", foreground="#333", wraplength=300)
             trend.pack(anchor="w")
-            self.cards[coin] = (price, sub, tree, trend)
+            self.cards[coin] = (price, sub, tree, trend, hold)
         f.rowconfigure(0, weight=1)
         self.cash = ttk.Label(f, text="", foreground="#333")
         self.cash.grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     def render_board(self):
-        for coin, (price_l, sub, tree, trend) in self.cards.items():
+        total = 0.0
+        for coin, (price_l, sub, tree, trend, hold_l) in self.cards.items():
             p = self.prices.get(coin)
             b = self.board.get(coin, {})
-            price_l.config(text=f"{fmt(p)} 원")
-            ch = b.get("change24")
+            live = self.live.get(coin)
+            ch = live[1] if live else b.get("change24")
+            price_l.config(text=f"{fmt(p)} 원", fg="#b91c1c" if (ch or 0) > 0 else "#1d4ed8" if (ch or 0) < 0 else "#111")
             pg = self.cfg["progress"][coin]
-            sub.config(text=(f"24시간 {ch:+.1f}% · " if ch is not None else "")
+            sub.config(text=(f"{'전일 대비' if live else '24시간'} {ch:+.2f}% · " if ch is not None else "")
                        + f"매도 {pg['sell_done']}/3 · 매수 {pg['buy_done']}/3 체결")
+            q = self.hold.get(coin)
+            if q is not None and p:
+                total += q * p
+                hold_l.config(text=f"보유 {q:g} {coin} · 평가 {q * p:,.0f}원")
             trend.config(text=b.get("trend", ""))
             tree.delete(*tree.get_children())
             items = self.engine.levels.get(coin, [])
@@ -204,7 +218,41 @@ class App:
                 tree.insert("", "end", values=(fmt(lvl), name + (" ✓" if done else ""), dist), tags=(tag,))
         cash = self.board.get("_cash", "")
         at = self.board.get("_levels_at", "")
-        self.cash.config(text=f"{cash}\n레벨 기준 시각: {at}")
+        krw = self.hold.get("KRW")
+        tot = f"BTC·ETH·XRP 평가 {total:,.0f}원" + (f" + 현금 {krw:,.0f}원 = {total + krw:,.0f}원" if krw is not None else "") \
+            if total else ""
+        self.cash.config(text="\n".join(x for x in (tot, cash, f"레벨 기준 시각: {at}") if x))
+
+    def render_strip(self, data):
+        for coin, (price, ch) in data.items():
+            if coin not in self.strip:
+                row = 0 if coin in fr.COINS else 1  # 윗줄 피보나치, 아랫줄 자동매매
+                if row == 1 and not any(c not in fr.COINS for c in self.strip):
+                    tk.Label(self.strip_bar, text="자동매매", bg="#111827", fg="#9ca3af",
+                             font=("맑은 고딕", 9)).grid(row=1, column=0, sticky="w", padx=(7, 0))
+                if row == 0 and not self.strip:
+                    tk.Label(self.strip_bar, text="피보나치", bg="#111827", fg="#9ca3af",
+                             font=("맑은 고딕", 9)).grid(row=0, column=0, sticky="w", padx=(7, 0))
+                col = 1 + sum(1 for c in self.strip if (c in fr.COINS) == (row == 0))
+                lab = tk.Label(self.strip_bar, bg="#111827", fg="white", font=("맑은 고딕", 11, "bold"), padx=7, pady=2,
+                               anchor="w")
+                lab.grid(row=row, column=col, sticky="w")
+                self.strip[coin] = lab
+            lab = self.strip[coin]
+            old = self.live.get(coin, (price, ch))[0]
+            arrow = "▲" if ch > 0 else "▼" if ch < 0 else "-"
+            num = f"{price:,.0f}" if price >= 100 else f"{price:,.2f}"
+            lab.config(text=f"{coin} {num} {arrow}{abs(ch):.2f}%",
+                       fg="#fca5a5" if ch > 0 else "#93c5fd" if ch < 0 else "white")
+            if price != old:  # 가격이 바뀌면 잠깐 배경 깜빡임
+                lab.config(bg="#7f1d1d" if price > old else "#1e3a8a")
+                lab.after(500, lambda l=lab: l.config(bg="#111827"))
+        self.live.update(data)
+        for coin in fr.COINS:
+            if coin in data:
+                self.prices[coin] = data[coin][0]
+        if self.icon:
+            self.icon.title = "\n".join(f"{c} {p:,.0f}" for c, (p, _) in data.items() if c in fr.COINS)
 
     # ---------------- 자동매매 (물타기) ----------------
     def build_grid(self, nb):
@@ -535,10 +583,9 @@ class App:
             if kind == "status":
                 self.status.config(text=ev[1])
             elif kind == "prices":
-                self.prices = ev[1]
-                self.render_board()
-                if self.icon:
-                    self.icon.title = "FibTrader\n" + "\n".join(f"{c} {v:,.0f}" for c, v in self.prices.items())
+                if not self.live:  # 실시간 시세가 오기 전까지만 엔진 가격 사용
+                    self.prices = dict(ev[1])
+                    self.render_board()
             elif kind == "board":
                 self.board = ev[1]
                 self.render_board()
@@ -551,6 +598,12 @@ class App:
                 if akind in POPUP_KINDS:
                     self.popup(title, msg)
                 changed_logs = True
+            elif kind == "live":
+                self.render_strip(ev[1])
+                self.render_board()
+            elif kind == "hold":
+                self.hold = ev[1]
+                self.render_board()
             elif kind == "grid":
                 self.render_grid(ev[1])
             elif kind == "proposal":
