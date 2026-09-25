@@ -282,7 +282,7 @@ class App:
                   foreground="#555", wraplength=1000).pack(anchor="w", pady=4)
         cols = (("coin", "코인", 60), ("price", "현재가", 100), ("buys", "매수", 45), ("cost", "원가", 85),
                 ("avg", "평단", 95), ("pnl", "평가손익", 80), ("next", "다음 매수가", 100), ("be", "본전 절반가", 100),
-                ("tp", "익절가", 100), ("cyc", "사이클", 55), ("tot", "누적 수익", 85))
+                ("tp", "익절가", 100), ("cyc", "사이클", 55), ("tot", "누적 수익", 85), ("own", "기존 보유(별도)", 110))
         self.grid_tree = ttk.Treeview(f, columns=[c for c, _, _ in cols], show="headings", height=5)
         for c, t, w in cols:
             self.grid_tree.heading(c, text=t)
@@ -307,10 +307,21 @@ class App:
             cost, tot, pnl = cost + r["cost"], tot + r["profit_total"], pnl + r["pnl"]
             self.grid_tree.insert("", "end", iid=r["coin"], tags=("up" if r["pnl"] > 0 else "down",), values=(
                 r["coin"], num(r["price"]), r["buys"], f"{r['cost']:,.0f}", num(r["avg"]), f"{r['pnl']:+,.0f}",
-                num(r["next_buy"]), num(r["breakeven"]), num(r["tp"]), r["cycles"], f"{r['profit_total']:+,.0f}"))
+                num(r["next_buy"]), num(r["breakeven"]), num(r["tp"]), r["cycles"], f"{r['profit_total']:+,.0f}",
+                self.own_text(r)))
         g = self.cfg["grid"]
         state = ("꺼짐" if not g["enabled"] else "모의" if g["simulate"] or not self.engine.api else "실전")
         self.grid_sum.config(text=f"[{state}] 투입 원가 {cost:,.0f}원 · 평가손익 {pnl:+,.0f}원 · 누적 실현 {tot:+,.0f}원")
+
+    def own_text(self, r):
+        """업비트 실제 잔고에서 자동매매 몫을 뺀 기존 보유분 (모의면 전체 잔고가 기존 보유)."""
+        bal = self.hold.get(r["coin"])
+        if bal is None:
+            return "-"
+        g = self.cfg["grid"]
+        mine = 0 if g["simulate"] or not self.engine.api else r["qty"]
+        own = max(bal - mine, 0)
+        return f"{own:g}개 ({own * r['price']:,.0f}원)" if own > 1e-12 else "없음"
 
     def render_grid_log(self):
         self.grid_log.delete(*self.grid_log.get_children())

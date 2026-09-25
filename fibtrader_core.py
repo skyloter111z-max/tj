@@ -395,6 +395,14 @@ class Engine(threading.Thread):
         if sim:
             qty, krw = (amount * (1 - FEE) / price, amount) if side == "bid" else (amount, amount * price * (1 - FEE))
         else:
+            if side == "ask":  # 주문 가능 잔고보다 많이 팔지 않는다 (기존 보유분을 직접 팔았거나 주문에 묶였을 때)
+                acc = {a["currency"]: float(a["balance"]) for a in self.api.call("GET", "/accounts")}
+                avail = acc.get(coin, 0.0)
+                if avail < amount * 0.999:
+                    self.alert("grid", f"{coin} 잔고 부족", f"팔 수량 {amount:g}개 중 주문 가능 {avail:g}개만 매도합니다.")
+                    amount = avail
+                if amount * price < 5_000:
+                    raise RuntimeError(f"{coin} 매도 가능 금액이 5,000원 미만이라 매도하지 못했습니다.")
             r = self.api.market_buy(market, amount) if side == "bid" else self.api.market_sell(market, amount)
             vol, funds, fee = self.api.filled(r["uuid"])
             qty, krw = (vol, funds + fee) if side == "bid" else (vol, funds - fee)
@@ -417,10 +425,10 @@ class Engine(threading.Thread):
             breakeven = avg / (1 - FEE)
             if pnl >= g["profit_krw"]:
                 qty, krw, px, _ = self.grid_trade(coin, "ask", price, st["qty"])
-                pnl = st["realized"] + krw - st["cost"]
+                pnl = st["realized"] + krw - st["cost"] * min(qty / st["qty"], 1)  # 잔고 부족으로 덜 팔았으면 그만큼 원가만
                 st["profit_total"] += pnl
                 st["cycles"] += 1
-                self.alert("grid", f"{tag}{coin} 익절 +{pnl:,.0f}원",
+                self.alert("grid", f"{tag}{coin} 익절 {pnl:+,.0f}원",
                            f"{px:,.4g}원에 전량 매도 · {st['buys']}회 매수 사이클 · 누적 {st['profit_total']:,.0f}원")
                 st.update(qty=0.0, cost=0.0, buys=0, ref=None, halved=False, realized=0.0)
             elif (g["half_at_breakeven"] and st["buys"] >= 2 and not st["halved"] and price >= breakeven
@@ -466,7 +474,7 @@ class Engine(threading.Thread):
         if st["qty"] <= 0 or coin not in self.prices:
             return
         qty, krw, px, sim = self.grid_trade(coin, "ask", self.prices[coin], st["qty"])
-        pnl = st["realized"] + krw - st["cost"]
+        pnl = st["realized"] + krw - st["cost"] * min(qty / st["qty"], 1)
         st["profit_total"] += pnl
         st.update(qty=0.0, cost=0.0, buys=0, ref=None, halved=False, realized=0.0)
         self.cfg["grid"]["coins"] = [c for c in self.cfg["grid"]["coins"] if c != coin]
