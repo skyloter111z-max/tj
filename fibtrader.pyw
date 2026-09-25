@@ -1261,7 +1261,7 @@ class App:
             os.startfile(path)  # 엑셀(또는 기본 프로그램)로 바로 연다
 
     # ---------------- ③ 자동매매 (12-4) ----------------
-    GRID_FIELDS = (("coins", "코인", "", 3), ("unit_krw", "1회", "원", 1), ("drop_pct", "하락", "%", 1),
+    GRID_FIELDS = (("coins", "코인", "", 3), ("unit_krw", "1회", "원", 1), ("multiplier", "배수", "배", 1), ("drop_pct", "하락", "%", 1),
                    ("profit_krw", "익절", "원", 1), ("max_krw", "코인한도", "원", 1), ("total_max_krw", "전체한도", "원", 1))
 
     def build_grid(self, nb):
@@ -1289,7 +1289,8 @@ class App:
         fields = tk.Frame(self.g_rule_body, bg=T.PANEL)
         fields.pack(fill="x", padx=16)
         self.g_fields = {}
-        vals = {"coins": ",".join(g["coins"]), "unit_krw": f"{g['unit_krw']:,}", "drop_pct": f"{g['drop_pct']:g}",
+        vals = {"coins": ",".join(g["coins"]), "unit_krw": f"{g['unit_krw']:,}", "multiplier": f"{g.get('multiplier', 1.0):g}",
+                "drop_pct": f"{g['drop_pct']:g}",
                 "profit_krw": f"{g['profit_krw']:,}", "max_krw": f"{g['max_krw']:,}", "total_max_krw": f"{g['total_max_krw']:,}"}
         for i, (key, label, unit, weight) in enumerate(self.GRID_FIELDS):
             fields.columnconfigure(i, weight=weight, uniform="gf" if weight == 1 else None)
@@ -1361,7 +1362,7 @@ class App:
                 {"key": "avg", "title": "평단 · 매수", "w": 100, "anchor": "e"},
                 {"key": "pnl", "title": "손익(수수료 뺌)", "w": 96, "anchor": "e"},
                 {"key": "pos", "title": "다음 매수 ← 현재 → 익절", "w": 200, "anchor": "center"},
-                {"key": "next", "title": "다음 매수가", "w": 90, "anchor": "e"},
+                {"key": "next", "title": "다음 매수가 · 금액", "w": 120, "anchor": "e"},
                 {"key": "tp", "title": "익절가", "w": 90, "anchor": "e"},
                 {"key": "cyc", "title": "사이클", "w": 60, "anchor": "e"},
                 {"key": "tot", "title": "누적 수익", "w": 80, "anchor": "e"},
@@ -1391,12 +1392,17 @@ class App:
         dp = g["dip"]
         dip = (f" · 감시 중(−{dp['min_pct']:g}% 이상 하락 시 시작, 하루 {dp['per_day']}개)" if dp["enabled"]
                else " · 감시 꺼짐")
-        self.g_rule_sum.config(text=f"1회 {g['unit_krw']:,}원 · 하락 {g['drop_pct']:g}%마다 추가 · 익절 {g['profit_krw']:,}원 · "
+        mult = g.get("multiplier", 1.0)
+        self.g_rule_sum.config(text=f"1회 {g['unit_krw']:,}원 · " + (f"추가 매수 {mult:g}배씩 · " if mult > 1 else "") +
+                                    f"하락 {g['drop_pct']:g}%마다 추가 · 익절 {g['profit_krw']:,}원 · "
                                     f"코인한도 {g['max_krw']:,}원 · 전체한도 {g['total_max_krw']:,}원 · "
                                     f"본전 절반 {'켬' if g['half_at_breakeven'] else '끔'}" + dip)
         for w in self.g_chips.winfo_children():
             w.destroy()
-        steps = ["시작 매수", f"마지막 매수가 대비 {g['drop_pct']:g}% 하락마다 1회 금액 추가 매수",
+        mult = g.get("multiplier", 1.0)
+        amounts = " → ".join(f"{g['unit_krw'] * mult ** i:,.0f}" for i in range(5)) + " …" if mult > 1 else ""
+        steps = ["시작 매수", (f"{g['drop_pct']:g}% 하락마다 직전 매수의 {mult:g}배 추가 매수 ({amounts})" if mult > 1
+                           else f"마지막 매수가 대비 {g['drop_pct']:g}% 하락마다 1회 금액 추가 매수"),
                  "2회 이상 샀으면 본전에 절반 매도" if g["half_at_breakeven"] else "본전 절반 매도 안 함",
                  f"사이클 수익이 익절 {g['profit_krw']:,}원 이상이면 전량 매도", "다시 시작"]
         for i, text in enumerate(steps, start=1):
@@ -1470,7 +1476,8 @@ class App:
                 "pnl": {"text": f"{pnl:+,.0f}" if r["qty"] else "-", "fg": T.chg_color(pnl),
                         "sub": f"수수료 전 {gross:+,.0f}" if r["qty"] else None},
                 "pos": {"draw": self.pos_bar(r["next_buy"], r["tp"], p)},
-                "next": {"text": T.fmtp(r["next_buy"]) if r["next_buy"] else "-", "fg": T.UP, "sub": pct(r["next_buy"])},
+                "next": {"text": T.fmtp(r["next_buy"]) if r["next_buy"] else "-", "fg": T.UP,
+                         "sub": f"{pct(r['next_buy'])} · {r['next_amt']:,.0f}원" if r["next_buy"] and r.get("next_amt") else pct(r["next_buy"])},
                 "tp": {"text": T.fmtp(r["tp"]) if r["tp"] else "-", "fg": T.DOWN, "sub": pct(r["tp"])},
                 "cyc": str(r["cycles"]), "tot": {"text": f"{done:+,.0f}", "fg": T.chg_color(done)},
                 "own": {"text": self.own_text(r), "fg": T.MUTED, "font": "num_s"}}})
@@ -1525,7 +1532,8 @@ class App:
             coins = list(dict.fromkeys(c.upper() for c in re.split(r"[\s,，/;·]+", fl["coins"].get()) if c))
             blocked = [c for c in coins if c in core.GRID_BLOCKED]
             new = {"coins": [c for c in coins if c not in core.GRID_BLOCKED],
-                   "unit_krw": int(num(fl["unit_krw"].get())), "drop_pct": num(fl["drop_pct"].get()),
+                   "unit_krw": int(num(fl["unit_krw"].get())), "multiplier": num(fl["multiplier"].get()),
+                   "drop_pct": num(fl["drop_pct"].get()),
                    "profit_krw": int(num(fl["profit_krw"].get())), "max_krw": int(num(fl["max_krw"].get())),
                    "total_max_krw": int(num(fl["total_max_krw"].get()))}
             df = self.g_dipf
@@ -1548,9 +1556,24 @@ class App:
             messagebox.showerror("자동매매", f"업비트 원화마켓에 없는 코인입니다: {', '.join(unknown)}\n"
                                             "기호를 확인하세요 (예: BCH, SOL, DOGE, ADA).")
             return
+        if not 1 <= new["multiplier"] <= 3:
+            messagebox.showerror("자동매매", "배수는 1~3 사이로 적어 주세요. (1 = 매번 같은 금액, 2 = 마틴게일)")
+            return
         if new["unit_krw"] < 5000:
             messagebox.showerror("자동매매", "업비트 최소 주문이 5,000원이라 1회 금액은 5,000원 이상이어야 합니다.")
             return
+        if new["multiplier"] > 1 and new["multiplier"] != g.get("multiplier", 1.0):
+            steps, cum, amt, n = [], 0, new["unit_krw"], 0
+            while cum + amt <= new["max_krw"] and n < 12:  # 코인 한도 안에서 몇 번까지 사는지
+                cum += amt
+                n += 1
+                steps.append(f"{n}회 {amt:,.0f}원 (누적 {cum:,.0f}원, 시작 대비 약 {(1 - (1 - new['drop_pct'] / 100) ** (n - 1)) * -100:.0f}%)")
+                amt = round(new["unit_krw"] * new["multiplier"] ** n / 10) * 10
+            if not messagebox.askyesno(
+                    "마틴게일 (배수 매수)", f"추가 매수 금액이 {new['multiplier']:g}배씩 커집니다. 코인 1개 기준:\n\n" + "\n".join(steps)
+                    + f"\n\n→ 그다음 {amt:,.0f}원은 코인 한도 {new['max_krw']:,}원을 넘어 사지 않습니다."
+                    f"\n전체 한도 {new['total_max_krw']:,}원에 닿으면 모든 코인의 추가 매수가 멈춥니다.\n\n저장할까요?", icon="warning"):
+                return
         going_live = self.g_on.get() and not self.g_sim.get() and (g["simulate"] or not g["enabled"])
         if going_live and not messagebox.askyesno(
                 "자동매매 실전", f"⚠ 실전으로 켜면 승인 없이 업비트에 시장가 주문이 자동으로 나갑니다.\n"
@@ -1589,7 +1612,8 @@ class App:
 
     def set_grid_fields(self):
         g = self.cfg["grid"]
-        vals = {"coins": ",".join(g["coins"]), "unit_krw": f"{g['unit_krw']:,}", "drop_pct": f"{g['drop_pct']:g}",
+        vals = {"coins": ",".join(g["coins"]), "unit_krw": f"{g['unit_krw']:,}", "multiplier": f"{g.get('multiplier', 1.0):g}",
+                "drop_pct": f"{g['drop_pct']:g}",
                 "profit_krw": f"{g['profit_krw']:,}", "max_krw": f"{g['max_krw']:,}", "total_max_krw": f"{g['total_max_krw']:,}"}
         for k, e in self.g_fields.items():
             e.delete(0, "end")

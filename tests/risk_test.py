@@ -209,6 +209,15 @@ tr = core.build_journal(e.db, sim=False)
 ok(st["qty"] == 0 and "ADA" not in cfg["grid"]["coins"] and tr[-1]["kind"] == "장부 정리 (추정)"
    and abs(sum(t["pnl"] or 0 for t in tr) - st["profit_total"]) < 0.5, "15b 장부 정리: 장부 0, 목록 제외, 일지 합계 = 엔진 누적")
 
+# 16 마틴게일(배수 2): 추가 매수 1만 → 2만 → 4만, 코인 한도를 넘는 다음 매수는 안 함
+e, ex, cfg = mk(unit_krw=10000, multiplier=2.0, max_krw=70000, profit_krw=100000)
+ex.bal["KRW"] = 10_000_000
+for p in (340, 323, 306, 290, 275, 260):
+    step(e, ex, p)
+tr = [t for t in core.build_journal(e.db, sim=False) if t["side"] == "bid"]
+amts = [round(t["krw"]) for t in tr]
+ok(amts == [10000, 20000, 40000], f"16 마틴게일 매수 금액 {amts} (4번째 8만은 한도 7만 초과라 안 삼)")
+
 # 12 설정 파일 손상 → 백업으로 복구
 d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
 c = core.load_config(); c["grid"]["state"] = {"ADA": {"qty": 1.23}}; core.save_config(c); core.save_config(c)

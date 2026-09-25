@@ -44,7 +44,8 @@ DEFAULTS = {
         "enabled": True,
         "simulate": True,           # 켜 두면 가상으로만 사고판다
         "coins": ["BCH", "SOL", "DOGE"],
-        "unit_krw": 10_000,         # 1회 매수 금액
+        "unit_krw": 10_000,         # 1회 매수 금액 (시작 매수)
+        "multiplier": 1.0,          # 추가 매수 금액 배수: 1 = 매번 같은 금액, 2 = 마틴게일 (1만 → 2만 → 4만 …)
         "drop_pct": 5.0,            # 마지막 매수가(또는 절반 매도가) 대비 이만큼 떨어지면 추가 매수
         "profit_krw": 500,          # 사이클 수익(수수료 뺀 뒤)이 이 금액 이상이면 전량 매도
         "half_at_breakeven": True,  # 2회 이상 산 뒤 본전(수수료 포함)에 오면 절반 매도
@@ -889,8 +890,9 @@ class Engine(threading.Thread):
                 st.update(qty=before - qty, cost=st["cost"] * (1 - frac), halved=True, ref=px)
                 self.alert("grid", f"{tag}{coin} 본전 절반 매도", f"{fmtp(px)}원에 {qty:g}개 매도 ({krw:,.0f}원)")
             elif price <= st["ref"] * (1 - drop):
+                unit = self.grid_next_amount(st)  # 마틴게일이면 직전 매수의 배수
                 if st["cost"] + unit > g["max_krw"]:
-                    return self.grid_cap_alert(coin, f"{coin} 원가 {st['cost']:,.0f}원 · 코인 한도 {g['max_krw']:,}원")
+                    return self.grid_cap_alert(coin, f"{coin} 원가 {st['cost']:,.0f}원 + 다음 매수 {unit:,.0f}원 · 코인 한도 {g['max_krw']:,}원")
                 if total_cost + unit > g["total_max_krw"]:
                     return self.grid_cap_alert("total", f"자동매매 전체 원가 {total_cost:,.0f}원 · 전체 한도 {g['total_max_krw']:,}원")
                 qty, krw, px, _ = self.grid_trade(coin, "bid", price, unit)
@@ -900,6 +902,12 @@ class Engine(threading.Thread):
             else:
                 return
         save_config(self.cfg)
+
+    def grid_next_amount(self, st):
+        """다음 추가 매수 금액. 배수 1이면 1회 금액 그대로, 2면 1만 → 2만 → 4만 … (이번 사이클 매수 횟수 기준)."""
+        g = self.cfg["grid"]
+        mult = max(1.0, float(g.get("multiplier", 1.0)))
+        return round(g["unit_krw"] * mult ** max(st.get("buys", 0), 0) / 10) * 10 if st.get("buys") else g["unit_krw"]
 
     def grid_cap_alert(self, key, msg):
         """한도 도달 알림은 같은 한도에 대해 1시간에 한 번만."""
@@ -930,7 +938,8 @@ class Engine(threading.Thread):
                          "pnl": pnl, "next_buy": st["ref"] * (1 - g["drop_pct"] / 100) if st["ref"] else None,
                          "breakeven": avg / (1 - FEE) if avg and st["buys"] >= 2 and not st["halved"] else None,
                          "tp": tp, "cycles": st["cycles"], "profit_total": st["profit_total"],
-                         "fee_total": st.get("fee_total", 0.0), "realized": st["realized"]})
+                         "fee_total": st.get("fee_total", 0.0), "realized": st["realized"],
+                         "next_amt": self.grid_next_amount(st) if st["ref"] else None})
         return rows
 
     def grid_refresh(self):
