@@ -19,8 +19,8 @@ COINS = ["BTC", "ETH", "XRP"]
 API = "https://api.upbit.com/v1"
 
 # fib-plan.md 1번 표 (수량). 새 캡처를 받으면 여기를 갱신.
-HOLDINGS = {"BTC": 0.04532286, "ETH": 1.5967, "XRP": 1128.37215229}
-CASH_KRW = 18_223_184
+HOLDINGS = {"BTC": 0.04532286, "ETH": 1.5967, "XRP": 1300.62}
+CASH_KRW = 17_863_004
 BUY_BUDGET = 9_100_000
 BUY_SPLIT = {"BTC": 0.4, "ETH": 0.4, "XRP": 0.2}
 
