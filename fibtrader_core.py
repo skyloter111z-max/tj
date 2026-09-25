@@ -764,7 +764,10 @@ class Engine(threading.Thread):
         listed = set(self.grid_coins())
         for coin in self.grid_tracked():
             st, p = self.grid_state(coin), self.prices.get(coin)
-            if not p:
+            if not p:  # 시세를 아직 못 받은 코인도 목록에 있다는 건 보여 준다
+                rows.append({"status": "시세 대기", "coin": coin, "price": None, "buys": st["buys"], "cost": st["cost"],
+                             "qty": st["qty"], "avg": None, "pnl": 0, "next_buy": None, "breakeven": None, "tp": None,
+                             "cycles": st["cycles"], "profit_total": st["profit_total"]})
                 continue
             q = st["qty"]
             avg = st["cost"] / q if q else None

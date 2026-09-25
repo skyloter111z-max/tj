@@ -8,6 +8,7 @@
 import ctypes
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -814,7 +815,7 @@ class App:
         ttk.Label(f, text="규칙: 시작 매수 → 마지막 매수가 대비 하락%마다 1회 금액 추가 매수 → (2회 이상 샀으면) 본전에 절반 매도"
                           " → 사이클 수익이 익절원 이상이면 전량 매도 후 다시 시작. BTC·ETH·XRP는 제외.",
                   style="Muted.TLabel", wraplength=1300).pack(anchor="w", pady=8)
-        cols = (("status", "상태", 90), ("coin", "코인", 60), ("price", "현재가", 100), ("buys", "매수", 45), ("cost", "원가", 85),
+        cols = (("status", "상태", 150), ("coin", "코인", 60), ("price", "현재가", 100), ("buys", "매수", 45), ("cost", "원가", 85),
                 ("avg", "평단", 100), ("pnl", "평가손익", 85), ("next", "다음 매수가", 105), ("be", "본전 절반가", 105),
                 ("tp", "익절가", 105), ("cyc", "사이클", 55), ("tot", "누적 수익", 90), ("own", "기존 보유(별도)", 150))
         self.grid_tree = ttk.Treeview(f, columns=[c for c, _, _ in cols], show="headings", height=10)
@@ -829,6 +830,7 @@ class App:
         self.grid_sum = ttk.Label(row, text="")
         self.grid_sum.pack(side="left")
         T.Btn(row, "선택 코인 청산", self.grid_liquidate, bg=T.GROUND).pack(side="right")
+        T.Btn(row, "선택 코인 목록에 다시 넣기", self.grid_relist, bg=T.GROUND).pack(side="right", padx=8)
         ttk.Label(f, text="자동매매 거래 기록", style="Title.TLabel").pack(anchor="w", pady=(10, 6))
         self.grid_log = self.table(f, (("ts", "시간", 170), ("sim", "모의", 50), ("coin", "코인", 70), ("side", "구분", 60),
                                        ("price", "가격", 130), ("qty", "수량", 160), ("krw", "금액", 120)), 10)
@@ -868,7 +870,8 @@ class App:
     def save_grid(self):
         g, fl = self.cfg["grid"], self.g_fields
         try:
-            coins = [c.strip().upper() for c in fl["coins"].get().split(",") if c.strip()]
+            # 쉼표·띄어쓰기·슬래시 어느 것으로 나눠 적어도 된다 (예: "SOL DOGE ADA" / "SOL,DOGE")
+            coins = list(dict.fromkeys(c.upper() for c in re.split(r"[\s,，/;·]+", fl["coins"].get()) if c))
             blocked = [c for c in coins if c in core.GRID_BLOCKED]
             new = {"coins": [c for c in coins if c not in core.GRID_BLOCKED],
                    "unit_krw": int(float(fl["unit_krw"].get())), "drop_pct": float(fl["drop_pct"].get()),
@@ -907,7 +910,29 @@ class App:
             return
         g.update(new, enabled=self.g_on.get(), simulate=self.g_sim.get(), half_at_breakeven=self.g_half.get())
         core.save_config(self.cfg)
+        self.set_coins_field()
+        msg += f"\n자동매매 코인: {', '.join(new['coins']) or '없음'}"
         messagebox.showinfo("자동매매", msg)
+
+    def set_coins_field(self):
+        e = self.g_fields["coins"]
+        e.delete(0, "end")
+        e.insert(0, ",".join(self.cfg["grid"]["coins"]))
+
+    def grid_relist(self):
+        sel = self.grid_tree.selection()
+        if not sel:
+            messagebox.showinfo("자동매매", "표에서 다시 넣을 코인을 선택하세요.")
+            return
+        coin, g = sel[0], self.cfg["grid"]
+        if coin in g["coins"]:
+            messagebox.showinfo("자동매매", f"{coin}은 이미 자동매매 목록에 있습니다.")
+            return
+        g["coins"] = g["coins"] + [coin]
+        core.save_config(self.cfg)
+        self.set_coins_field()
+        messagebox.showinfo("자동매매", f"{coin}을 목록에 다시 넣었습니다. 이어서 자동으로 사고팝니다.\n"
+                                     f"자동매매 코인: {', '.join(g['coins'])}")
 
     def grid_liquidate(self):
         sel = self.grid_tree.selection()
