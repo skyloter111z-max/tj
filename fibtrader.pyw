@@ -453,7 +453,7 @@ class App:
         for coin in fr.COINS:
             if coin in data:
                 self.prices[coin] = data[coin][0]
-        grid = [c for c in self.engine.grid_coins() if c not in fr.COINS]
+        grid = [c for c in self.engine.grid_tracked() if c not in fr.COINS]
         held = [a["currency"] for a in self.accounts if a["currency"] in self.live and a["qty"] > 0
                 and a["currency"] not in fr.COINS and a["currency"] not in grid]
         pick = lambda cs: [(c, self.live[c][0], self.live[c][1]) for c in cs if c in self.live]  # noqa: E731

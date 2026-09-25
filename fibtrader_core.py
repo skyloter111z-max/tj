@@ -182,7 +182,7 @@ class PriceFeed(threading.Thread):
             try:
                 if self.krw_markets is None:
                     self.krw_markets = {m["market"][4:] for m in fr.get("/market/all") if m["market"].startswith("KRW-")}
-                coins = list(dict.fromkeys(fr.COINS + self.engine.grid_coins() + self.held))
+                coins = list(dict.fromkeys(fr.COINS + self.engine.grid_tracked() + self.held))
                 ts = fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in coins))
                 self.events.put(("live", {t["market"][4:]: (t["trade_price"], t["signed_change_rate"] * 100,
                                                             t["signed_change_price"]) for t in ts}))
@@ -375,7 +375,7 @@ class Engine(threading.Thread):
 
     # ---------- 감시 ----------
     def check_prices(self):
-        coins = fr.COINS + [c for c in self.grid_coins() if c not in fr.COINS]
+        coins = fr.COINS + [c for c in self.grid_tracked() if c not in fr.COINS]
         tickers = fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in coins))
         near = self.cfg["near_pct"]
         for t in tickers:
@@ -397,6 +397,14 @@ class Engine(threading.Thread):
                 elif abs(dist) > near * 2 and key in self.alert_state:
                     del self.alert_state[key]
         self.emit("prices", dict(self.prices))
+        g = self.cfg["grid"]
+        if self.api and not g["simulate"]:  # 결과 확인 중 주문은 자동매매가 꺼졌거나 목록에서 빠져도 끝까지 확정
+            for coin in self.grid_tracked():
+                if self.grid_state(coin).get("pending") and (not g["enabled"] or coin not in self.grid_coins()):
+                    try:
+                        self.grid_resolve_pending(coin)
+                    except Exception as e:
+                        self.alert("fail", f"{coin} 주문 확인 오류", str(e))
         if self.cfg["grid"]["enabled"]:
             try:
                 self.grid_check_warnings()
@@ -556,7 +564,14 @@ class Engine(threading.Thread):
 
     # ---------- 자동매매 (물타기 그리드) ----------
     def grid_coins(self):
+        """자동매매 대상(코인 칸에 적힌 것). 이 코인만 사고판다."""
         return [c for c in self.cfg["grid"]["coins"] if c not in GRID_BLOCKED]
+
+    def grid_tracked(self):
+        """화면·한도 계산에 넣을 코인: 대상 코인 + 목록에서 뺐지만 자동매매로 산 수량(또는 확인 중 주문)이 남은 코인."""
+        extra = [c for c, st in self.cfg["grid"]["state"].items()
+                 if c not in GRID_BLOCKED and (st.get("qty", 0) > 0 or st.get("pending"))]
+        return list(dict.fromkeys(self.grid_coins() + extra))
 
     def grid_state(self, coin):
         return self.cfg["grid"]["state"].setdefault(coin, {
@@ -696,7 +711,7 @@ class Engine(threading.Thread):
             return
         unit, drop = g["unit_krw"], g["drop_pct"] / 100
         tag = "[모의] " if g["simulate"] or not self.api else ""
-        total_cost = sum(self.grid_state(c)["cost"] for c in self.grid_coins())
+        total_cost = sum(self.grid_state(c)["cost"] for c in self.grid_tracked())  # 목록에서 뺀 보유분도 한도에 포함
         if st["qty"] <= 0:  # 새 사이클 시작
             if total_cost + unit > g["total_max_krw"]:
                 return self.grid_cap_alert("total", f"자동매매 전체 원가 {total_cost:,.0f}원 · 전체 한도 {g['total_max_krw']:,}원")
@@ -746,7 +761,8 @@ class Engine(threading.Thread):
 
     def grid_view(self):
         g, rows = self.cfg["grid"], []
-        for coin in self.grid_coins():
+        listed = set(self.grid_coins())
+        for coin in self.grid_tracked():
             st, p = self.grid_state(coin), self.prices.get(coin)
             if not p:
                 continue
@@ -756,7 +772,8 @@ class Engine(threading.Thread):
             # 익절가: realized + q*x*(1-FEE) - cost = profit
             tp = (g["profit_krw"] + st["cost"] - st["realized"]) / (q * (1 - FEE)) if q else None
             t = time.time()
-            status = ("결과 확인 중" if st.get("pending") else "투자유의 중지" if st.get("blocked")
+            status = ("결과 확인 중" if st.get("pending") else "목록에서 뺌 · 보유 중" if coin not in listed
+                      else "투자유의 중지" if st.get("blocked")
                       else f"정지 {int((st['pause_until'] - t) // 60) + 1}분" if st.get("pause_until", 0) > t else "정상")
             rows.append({"status": status, "coin": coin, "price": p, "buys": st["buys"], "cost": st["cost"], "qty": q, "avg": avg,
                          "pnl": pnl, "next_buy": st["ref"] * (1 - g["drop_pct"] / 100) if st["ref"] else None,
