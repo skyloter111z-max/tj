@@ -765,7 +765,7 @@ class Engine(threading.Thread):
         for coin in self.grid_tracked():
             st, p = self.grid_state(coin), self.prices.get(coin)
             if not p:  # 시세를 아직 못 받은 코인도 목록에 있다는 건 보여 준다
-                rows.append({"status": "시세 대기", "coin": coin, "price": None, "buys": st["buys"], "cost": st["cost"],
+                rows.append({"status": "시세 대기", "listed": coin in listed, "coin": coin, "price": None, "buys": st["buys"], "cost": st["cost"],
                              "qty": st["qty"], "avg": None, "pnl": 0, "next_buy": None, "breakeven": None, "tp": None,
                              "cycles": st["cycles"], "profit_total": st["profit_total"]})
                 continue
@@ -775,14 +775,22 @@ class Engine(threading.Thread):
             # 익절가: realized + q*x*(1-FEE) - cost = profit
             tp = (g["profit_krw"] + st["cost"] - st["realized"]) / (q * (1 - FEE)) if q else None
             t = time.time()
-            status = ("결과 확인 중" if st.get("pending") else "목록에서 뺌 · 보유 중" if coin not in listed
+            status = ("결과 확인 중" if st.get("pending") else "조회만 · 매매 안 함" if coin not in listed
                       else "투자유의 중지" if st.get("blocked")
-                      else f"정지 {int((st['pause_until'] - t) // 60) + 1}분" if st.get("pause_until", 0) > t else "정상")
-            rows.append({"status": status, "coin": coin, "price": p, "buys": st["buys"], "cost": st["cost"], "qty": q, "avg": avg,
+                      else f"정지 {int((st['pause_until'] - t) // 60) + 1}분" if st.get("pause_until", 0) > t else "자동매매 중")
+            rows.append({"status": status, "listed": coin in listed, "coin": coin, "price": p, "buys": st["buys"], "cost": st["cost"], "qty": q, "avg": avg,
                          "pnl": pnl, "next_buy": st["ref"] * (1 - g["drop_pct"] / 100) if st["ref"] else None,
                          "breakeven": avg / (1 - FEE) if avg and st["buys"] >= 2 and not st["halved"] else None,
                          "tp": tp, "cycles": st["cycles"], "profit_total": st["profit_total"]})
         return rows
+
+    def grid_refresh(self):
+        """[조회] 버튼: 자동매매 대상·보유 코인 시세를 바로 받아 표를 새로 그린다 (주문은 안 함)."""
+        coins = self.grid_tracked()
+        if coins:
+            for t in fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in coins)):
+                self.prices[t["market"][4:]] = t["trade_price"]
+        self.emit("grid", self.grid_view())
 
     def grid_liquidate(self, coin):
         st = self.grid_state(coin)

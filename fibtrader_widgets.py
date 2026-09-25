@@ -54,7 +54,7 @@ class Ticker(tk.Canvas):
 
     def __init__(self, parent):
         super().__init__(parent, bg=T.GROUND, height=self.LINE, highlightthickness=0)
-        self.groups, self.prev, self.flash = [], {}, {}
+        self.groups, self.prev, self.flash, self.fonts, self.unflash, self.widths = [], {}, {}, None, None, {}
         self.bind("<Configure>", lambda e: self.draw())
 
     def set(self, groups):
@@ -64,15 +64,32 @@ class Ticker(tk.Canvas):
                 old = self.prev.get(coin)
                 if old is not None and price != old:
                     self.flash[coin] = (T.UP if price > old else T.DOWN)
-                    self.after(500, lambda c=coin: (self.flash.pop(c, None), self.draw()))
                 self.prev[coin] = price
+        if self.flash and not self.unflash:  # 바뀐 코인이 여럿이어도 깜빡임 끄기는 한 번만 다시 그림
+            self.unflash = self.after(500, self._clear_flash)
         self.groups = groups
+        self.draw()
+
+    def _clear_flash(self):
+        self.flash.clear()
+        self.unflash = None
         self.draw()
 
     def draw(self):
         self.delete("all")
         w = max(self.winfo_width(), 200)
-        f_lab, f_sym, f_num = (tkfont.Font(font=T.F[k]) for k in ("kr_xs", "num_b", "num"))
+        if self.fonts is None:  # 글꼴 객체는 한 번만 만든다 (매번 만들면 윈도우에서 느림)
+            self.fonts = tuple(tkfont.Font(font=T.F[k]) for k in ("kr_xs", "num_b", "num"))
+        fonts, cache = self.fonts, self.widths
+
+        def mw(fi, txt):  # 글자 폭 재기는 느려서(Tk 호출) 같은 글자는 한 번만 잰다
+            k = (fi, txt)
+            if k not in cache:
+                if len(cache) > 2000:
+                    cache.clear()
+                cache[k] = fonts[fi].measure(txt)
+            return cache[k]
+
         x, y, line = 18, self.LINE / 2, 0
         for gi, (gname, items) in enumerate(self.groups):
             if not items:
@@ -84,22 +101,22 @@ class Ticker(tk.Canvas):
                     self.create_line(x + 4, y - 9 + line * self.LINE, x + 4, y + 9 + line * self.LINE, fill=T.DIVIDER)
                     x += 18
             self.create_text(x, y + line * self.LINE, text=gname, fill=T.MUTED, font=T.F["kr_xs"], anchor="w")
-            x += f_lab.measure(gname) + 10
+            x += mw(0, gname) + 10
             for i, (coin, price, ch) in enumerate(items):
                 ptxt, ctxt = T.fmtp(price), f"{T.arrow(ch)}{abs(ch):.2f}%"
-                width = f_sym.measure(coin) + 6 + f_num.measure(ptxt) + 6 + f_num.measure(ctxt) + 18
+                width = mw(1, coin) + 6 + mw(2, ptxt) + 6 + mw(2, ctxt) + 18
                 if x + width > w - 10 and x > 120:
-                    x, line = 18 + f_lab.measure(gname) + 10, line + 1
+                    x, line = 18 + mw(0, gname) + 10, line + 1
                 cy = y + line * self.LINE
                 if coin in self.flash:
                     self.create_rectangle(x - 4, cy - 12, x + width - 12, cy + 12,
                                           fill=T.blend(self.flash[coin], T.GROUND, 0.25), outline="")
                 self.create_text(x, cy, text=coin, fill=T.TEXT, font=T.F["num_b"], anchor="w")
-                x += f_sym.measure(coin) + 6
+                x += mw(1, coin) + 6
                 self.create_text(x, cy, text=ptxt, fill=T.TEXT, font=T.F["num"], anchor="w")
-                x += f_num.measure(ptxt) + 6
+                x += mw(2, ptxt) + 6
                 self.create_text(x, cy, text=ctxt, fill=T.chg_color(ch), font=T.F["num"], anchor="w")
-                x += f_num.measure(ctxt) + 8
+                x += mw(2, ctxt) + 8
                 if i < len(items) - 1:
                     self.create_text(x, cy, text="|", fill=T.DIVIDER, font=T.F["num"], anchor="w")
                     x += 10
@@ -119,6 +136,8 @@ class Ladder(tk.Canvas):
         self.bind("<Button-1>", self.click)
 
     def set_rows(self, rows, rh=None):
+        if rows == self.rows and (not rh or rh == self.rh):
+            return  # 내용이 그대로면 다시 그리지 않는다 (2초마다 같은 표를 새로 그리던 부분)
         self.rows = rows
         if rh:
             self.rh = rh
@@ -128,6 +147,14 @@ class Ladder(tk.Canvas):
         if int(self.cget("height")) != h:
             self.config(height=h)
         self.draw()
+
+    _num = None
+
+    @classmethod
+    def num_font(cls):
+        if cls._num is None:
+            cls._num = tkfont.Font(font=T.F["num"])
+        return cls._num
 
     def cols(self, w):
         fixed = {"chk": 18, "name": 78, "pct": 96, "qty": 86, "amt": 76}
@@ -190,7 +217,7 @@ class Ladder(tk.Canvas):
                 pct = r["pct"]
                 x1 = xs["pct"][1] - 4
                 txt = f"{pct:+.1f}%"
-                tw = tkfont.Font(font=T.F["num"]).measure(txt)
+                tw = self.num_font().measure(txt)
                 self.create_text(x1, ym, text=txt, fill=color, font=T.F["num"], anchor="e")
                 bx1 = x1 - tw - 6
                 blen = max(0, min(40, abs(pct) * 1.5, bx1 - xs["pct"][0] - 4))  # 칸 밖(가격)으로 넘지 않게

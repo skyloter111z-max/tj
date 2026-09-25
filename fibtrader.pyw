@@ -155,6 +155,7 @@ class App:
         self.sim_banner = lab(self.root, "모의 모드 · 승인해도 실제 주문은 나가지 않습니다", "kr_s", fg=T.ACCENT_200,
                               bg=T.BANNER_BG, height=1, pady=3)
 
+        self.stale = set()
         self.nb = W.Tabs(self.root, tabbar)
         self.nb.pack(fill="both", expand=True)
         self.build_board(self.nb)
@@ -164,6 +165,8 @@ class App:
         self.build_logs(self.nb)
         self.build_settings(self.nb)
         self.refresh_chrome()
+        self.nb.on_change = self.redraw_stale  # 탭을 누르면 밀린 화면을 그 탭만 그린다
+        self.root.bind("<Map>", lambda e: e.widget is self.root and self.root.after(50, self.redraw_stale))
 
         self.icon = None
         if pystray:
@@ -211,6 +214,7 @@ class App:
     # ---------------- 창 ----------------
     def show(self):
         self.root.deiconify()
+        self.root.after(50, self.redraw_stale)
         self.root.lift()
         self.root.focus_force()
         if self.icon:
@@ -393,7 +397,30 @@ class App:
         rows.sort(key=lambda r: -r["price"])
         return rows
 
+    def shown(self, tab):
+        """그 탭이 지금 화면에 보이는지. 안 보이면 다시 그리지 않고 표시만 해 뒀다가 보일 때 그린다 (가볍게)."""
+        try:
+            on = self.root.state() not in ("withdrawn", "iconic") and self.nb.index() == tab
+        except tk.TclError:
+            return False
+        if not on:
+            self.stale.add(tab)
+        return on
+
+    def redraw_stale(self, *_):
+        if self.shown(0) and 0 in self.stale:
+            self.stale.discard(0)
+            self.render_board()
+        if self.shown(1) and 1 in self.stale:
+            self.stale.discard(1)
+            if self.accounts:
+                self.render_invest()
+        if self.live and self.root.state() not in ("withdrawn", "iconic"):
+            self.render_strip({})
+
     def render_board(self):
+        if not self.shown(0):
+            return
         total = 0.0
         for coin, c in self.cards.items():
             p = self.prices.get(coin)
@@ -454,6 +481,10 @@ class App:
         for coin in fr.COINS:
             if coin in data:
                 self.prices[coin] = data[coin][0]
+        if self.icon and data:
+            self.icon.title = "\n".join(f"{c} {v[0]:,.0f} ({v[1]:+.2f}%)" for c, v in data.items() if c in fr.COINS)
+        if self.root.state() in ("withdrawn", "iconic"):  # 트레이에 숨어 있으면 그리지 않는다
+            return
         grid = [c for c in self.engine.grid_tracked() if c not in fr.COINS]
         held = [a["currency"] for a in self.accounts if a["currency"] in self.live and a["qty"] > 0
                 and a["currency"] not in fr.COINS and a["currency"] not in grid]
@@ -462,8 +493,6 @@ class App:
         if self.nb.index() == 1:  # 투자내역에서는 보유 코인도
             groups.append(("보유", pick(held)))
         self.ticker.set(groups)
-        if self.icon:
-            self.icon.title = "\n".join(f"{c} {v[0]:,.0f} ({v[1]:+.2f}%)" for c, v in data.items() if c in fr.COINS)
 
     def render_orders(self, by_coin):
         self.open_orders = by_coin
@@ -556,6 +585,7 @@ class App:
         if messagebox.askyesno("선택 취소", f"{coin} 예약 주문 {len(sel)}건을 업비트에서 실제로 취소할까요?"):
             self.engine.request("cancel_orders", [coin], sel)
             self.cards[coin]["ladder"].checked.clear()
+            self.cards[coin]["ladder"].draw()
 
     def cancel_coin(self, coin):
         name = coin or "BTC·ETH·XRP"
@@ -718,6 +748,8 @@ class App:
             core.save_config(self.cfg)
 
     def render_invest(self):
+        if not self.shown(1):
+            return
         krw = 0.0
         items = []
         for a in self.accounts:
@@ -815,6 +847,13 @@ class App:
         ttk.Label(f, text="규칙: 시작 매수 → 마지막 매수가 대비 하락%마다 1회 금액 추가 매수 → (2회 이상 샀으면) 본전에 절반 매도"
                           " → 사이클 수익이 익절원 이상이면 전량 매도 후 다시 시작. BTC·ETH·XRP는 제외.",
                   style="Muted.TLabel", wraplength=1300).pack(anchor="w", pady=8)
+        head = ttk.Frame(f)
+        head.pack(fill="x", pady=(0, 6))
+        ttk.Label(head, text="자동매매 대상 코인 조회", style="Title.TLabel").pack(side="left")
+        ttk.Label(head, text="코인 칸에 적힌 코인 + 자동매매로 산 수량이 남은 코인 · 30초마다 갱신 · "
+                             "사고파는 건 코인 칸에 적고 [저장]한 코인만",
+                  style="Muted.TLabel").pack(side="left", padx=10)
+        T.Btn(head, "조회", lambda: self.engine.request("grid_refresh"), bg=T.GROUND).pack(side="right")
         cols = (("status", "상태", 150), ("coin", "코인", 60), ("price", "현재가", 100), ("buys", "매수", 45), ("cost", "원가", 85),
                 ("avg", "평단", 100), ("pnl", "평가손익", 85), ("next", "다음 매수가", 105), ("be", "본전 절반가", 105),
                 ("tp", "익절가", 105), ("cyc", "사이클", 55), ("tot", "누적 수익", 90), ("own", "기존 보유(별도)", 150))
@@ -824,13 +863,13 @@ class App:
             self.grid_tree.column(c, width=w, anchor="e" if c not in ("coin", "status") else "center")
         self.grid_tree.tag_configure("up", foreground=T.UP)
         self.grid_tree.tag_configure("down", foreground=T.DOWN)
+        self.grid_tree.tag_configure("off", foreground=T.MUTED)
         self.grid_tree.pack(fill="x")
         row = ttk.Frame(f)
         row.pack(fill="x", pady=8)
         self.grid_sum = ttk.Label(row, text="")
         self.grid_sum.pack(side="left")
         T.Btn(row, "선택 코인 청산", self.grid_liquidate, bg=T.GROUND).pack(side="right")
-        T.Btn(row, "선택 코인 목록에 다시 넣기", self.grid_relist, bg=T.GROUND).pack(side="right", padx=8)
         ttk.Label(f, text="자동매매 거래 기록", style="Title.TLabel").pack(anchor="w", pady=(10, 6))
         self.grid_log = self.table(f, (("ts", "시간", 170), ("sim", "모의", 50), ("coin", "코인", 70), ("side", "구분", 60),
                                        ("price", "가격", 130), ("qty", "수량", 160), ("krw", "금액", 120)), 10)
@@ -841,7 +880,7 @@ class App:
         cost = tot = pnl = 0
         for r in rows:
             cost, tot, pnl = cost + r["cost"], tot + r["profit_total"], pnl + r["pnl"]
-            self.grid_tree.insert("", "end", iid=r["coin"], tags=("up" if r["pnl"] > 0 else "down",), values=(
+            self.grid_tree.insert("", "end", iid=r["coin"], tags=("off",) if not r.get("listed", True) else ("up" if r["pnl"] > 0 else "down",), values=(
                 r["status"], r["coin"], num(r["price"]), r["buys"], f"{r['cost']:,.0f}", num(r["avg"]), f"{r['pnl']:+,.0f}",
                 num(r["next_buy"]), num(r["breakeven"]), num(r["tp"]), r["cycles"], f"{r['profit_total']:+,.0f}",
                 self.own_text(r)))
@@ -918,21 +957,6 @@ class App:
         e = self.g_fields["coins"]
         e.delete(0, "end")
         e.insert(0, ",".join(self.cfg["grid"]["coins"]))
-
-    def grid_relist(self):
-        sel = self.grid_tree.selection()
-        if not sel:
-            messagebox.showinfo("자동매매", "표에서 다시 넣을 코인을 선택하세요.")
-            return
-        coin, g = sel[0], self.cfg["grid"]
-        if coin in g["coins"]:
-            messagebox.showinfo("자동매매", f"{coin}은 이미 자동매매 목록에 있습니다.")
-            return
-        g["coins"] = g["coins"] + [coin]
-        core.save_config(self.cfg)
-        self.set_coins_field()
-        messagebox.showinfo("자동매매", f"{coin}을 목록에 다시 넣었습니다. 이어서 자동으로 사고팝니다.\n"
-                                     f"자동매매 코인: {', '.join(g['coins'])}")
 
     def grid_liquidate(self):
         sel = self.grid_tree.selection()
