@@ -271,9 +271,10 @@ class Engine(threading.Thread):
             f"{c}: 매도 {', '.join(f'{p:,.0f}' for p in v['sells'])} / 매수 {', '.join(f'{p:,.0f}' for p in v['buys'])}"
             for c, v in new_all.items()))
 
-    def check_drift(self):
-        """고정 레벨과 지금 계산이 유의미하게(0.5% 넘게) 달라졌는지. 화면 알림판에 띄우고, 자동 반영이 켜져 있으면 반영."""
-        drift = {}
+    def check_drift(self, manual=False):
+        """고정 레벨과 지금 계산이 유의미하게(0.5% 넘게) 달라졌는지. 화면 알림판에 띄우고, 자동 반영이 켜져 있으면 반영.
+        manual=True(버튼): 변화가 없어도 코인별 기준점과 레벨 비교표를 결과 창으로 보낸다."""
+        drift, report = {}, {}
         for coin in fr.COINS:
             fresh, lv, pg = fo.compute_levels(coin), self.cfg["levels"][coin], self.cfg["progress"][coin]
             done_sells = lv["sells"][:pg["sell_done"]]
@@ -285,7 +286,16 @@ class Engine(threading.Thread):
             changed = [(n, a, b) for n, a, b in pairs if abs(b / a - 1) > 0.005]
             if changed:
                 drift[coin] = changed
+            pv = fresh["pivots"]
+            report[coin] = {"price": fresh["price"], "H_w": pv["H_w"], "H_w_date": pv["H_w_date"], "L": pv["L"],
+                            "L_date": pv["L_date"], "H_d": pv["H_d"], "H_d_date": pv["H_d_date"],
+                            "rows": sorted(pairs, key=lambda x: -x[1]) + [("매수 중단선", lv["stop"], fresh["stop"])]}
         self.last_levels = time.time()
+        if manual:  # 결과 창 하나로 보여 주고 (알림 팝업은 따로 안 띄움), 변화가 있으면 알림판도 켠다
+            self.emit("drift_report", report, drift)
+            self._drift_sig = json.dumps(drift, sort_keys=True)
+            self.emit("drift", drift)
+            return
         sig = json.dumps(drift, sort_keys=True)
         if sig == getattr(self, "_drift_sig", None):
             return

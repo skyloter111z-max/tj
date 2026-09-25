@@ -222,6 +222,7 @@ class App:
             self.quit()
 
     def quit(self):
+        self.closing = True
         self.engine.stop_event.set()
         if self.icon:
             self.icon.stop()
@@ -272,7 +273,8 @@ class App:
         self.sumbar = W.SummaryBar(f, [("coins", "코인 평가 (BTC·ETH·XRP)"), ("cash", "현금"), ("total", "총자산"),
                                        ("free", "주문 가능 현금"), ("dca", "모으기"), ("lvl", "레벨 기준 시각")])
         self.sumbar.pack(side="bottom", fill="x")
-        T.Btn(self.sumbar, "레벨 변화 지금 확인", lambda: self.engine.request("check_drift")).pack(side="right", padx=16)
+        self.drift_btn = T.Btn(self.sumbar, "레벨 변화 지금 확인", self.check_drift_now)
+        self.drift_btn.pack(side="right", padx=16)
 
         self.cards_wrap = tk.Frame(f, bg=T.GROUND)
         self.cards_wrap.pack(fill="both", expand=True, padx=18, pady=18)
@@ -476,6 +478,53 @@ class App:
         self.drift_msg.config(text="\n".join(lines))
         if not self.drift_box.winfo_ismapped():
             self.drift_box.pack(fill="x", padx=18, pady=(18, 0), before=self.cards_wrap)
+
+    def check_drift_now(self):
+        self.drift_btn.config(text="확인 중…")
+        self.engine.request("check_drift", True)
+
+    def show_drift_report(self, report, drift):
+        """[레벨 변화 지금 확인] 결과 창: 코인별 기준점 + 고정 레벨 vs 지금 계산."""
+        self.drift_btn.config(text="레벨 변화 지금 확인")
+        w = tk.Toplevel(self.root, bg=T.PANEL)
+        w.title("피보나치 레벨 확인")
+        w.attributes("-topmost", True)
+        n = sum(len(v) for v in drift.values())
+        head = "변화 없음 — 걸어 둔 레벨이 지금 계산과 같습니다" if not n else f"⚠ {n}개 레벨이 0.5% 넘게 달라졌습니다"
+        lab(w, head, "kr_title", fg=T.TEXT if not n else T.UP).pack(anchor="w", padx=20, pady=(16, 4))
+        lab(w, "지금 레벨 = 설정에 고정된 가격(예약 주문 기준) · 새 계산 = 방금 업비트 캔들로 다시 계산한 가격",
+            "kr_s", fg=T.MUTED).pack(anchor="w", padx=20, pady=(0, 10))
+        for coin, r in report.items():
+            box = tk.Frame(w, bg=T.PANEL, highlightthickness=1, highlightbackground=T.DIVIDER)
+            box.pack(fill="x", padx=20, pady=4)
+            lab(box, f"{coin}   현재가 {T.fmtp(r['price'])}", "kr_b").pack(anchor="w", padx=12, pady=(8, 2))
+            lab(box, f"기준점  주봉 고점 {T.fmtp(r['H_w'])} ({r['H_w_date']}) · 저점 {T.fmtp(r['L'])} ({r['L_date']}) · "
+                     f"일봉 고점 {T.fmtp(r['H_d'])} ({r['H_d_date']})", "kr_s", fg=T.MUTED).pack(anchor="w", padx=12)
+            g = tk.Frame(box, bg=T.PANEL)
+            g.pack(fill="x", padx=12, pady=(6, 10))
+            for j, h in enumerate(("구분", "지금 레벨", "새 계산", "차이")):
+                lab(g, h, "kr_xs", fg=T.MUTED, anchor="e" if j else "w").grid(row=0, column=j, sticky="ew", padx=8)
+            for i, (name, a, b) in enumerate(r["rows"], start=1):
+                d = (b / a - 1) * 100 if a else 0
+                big = abs(d) > 0.5
+                col = T.DOWN if "매도" in name else T.UP if "매수" in name and "중단" not in name else T.MUTED
+                lab(g, name, "kr_s", fg=col, anchor="w").grid(row=i, column=0, sticky="ew", padx=8)
+                lab(g, T.fmtp(a), "num", anchor="e").grid(row=i, column=1, sticky="ew", padx=8)
+                lab(g, T.fmtp(b), "num", anchor="e").grid(row=i, column=2, sticky="ew", padx=8)
+                lab(g, f"{d:+.2f}%" if big else "같음", "num_b" if big else "num_s",
+                    fg=T.UP if big else T.MUTED, anchor="e").grid(row=i, column=3, sticky="ew", padx=8)
+            for j in range(4):
+                g.columnconfigure(j, minsize=(110, 130, 130, 80)[j])
+        row = tk.Frame(w, bg=T.PANEL)
+        row.pack(fill="x", padx=20, pady=14)
+        if n:
+            T.Btn(row, "현행 기준으로 바꾸기", lambda: (w.destroy(), self.apply_drift()), "primary").pack(side="right", padx=4)
+        T.Btn(row, "닫기", w.destroy).pack(side="right", padx=4)
+        w.update_idletasks()  # 내용 크기에 맞춰 메인 창 가운데에
+        ww, wh = w.winfo_reqwidth(), w.winfo_reqheight()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - ww) // 2
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - wh) // 2)
+        w.geometry(f"{ww}x{wh}+{max(0, x)}+{max(0, y)}")
 
     def fib_sim_note(self):
         return ("\n\n※ 설정 탭의 '모의 모드'가 켜져 있어 새 주문은 실제로 나가지 않고 기록만 됩니다."
@@ -1104,6 +1153,8 @@ class App:
         self.refresh_chrome()
 
     def pump(self):
+        if getattr(self, "closing", False):
+            return
         while not self.ui_calls.empty():
             self.ui_calls.get_nowait()()
         changed_logs = False
@@ -1129,6 +1180,8 @@ class App:
                     self.popup(title, msg)
                 changed_logs = True
             elif kind == "live":
+                if getattr(self, "closing", False):
+                    return
                 self.render_strip(ev[1])
                 self.render_board()
                 if self.accounts:
@@ -1151,6 +1204,8 @@ class App:
                 self.hist_tree.insert("", "end", values=("거래내역 조회 실패", "", "", "", "", "", "", ev[1][:60]))
             elif kind == "open_orders":
                 self.render_orders(ev[1])
+            elif kind == "drift_report":
+                self.show_drift_report(ev[1], ev[2])
             elif kind == "drift":
                 self.render_drift(ev[1])
             elif kind == "grid":
@@ -1160,6 +1215,7 @@ class App:
                 self.render_proposal()
             elif kind == "done":
                 self.executing = False
+                self.drift_btn.config(text="레벨 변화 지금 확인")  # 확인 중 오류가 나도 버튼 원래대로
                 self.btn_ok.config(text="승인·실행")
                 self.result.delete("1.0", "end")
                 self.result.insert("end", "\n".join(ev[1]))

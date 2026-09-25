@@ -159,9 +159,10 @@ def snap(coin, v):
 def compute_levels(coin):
     """지금 캔들로 계산한 플랜 레벨. sells: 1·2·3차 매도가, buys: 1·2·3차 매수가, stop: 매수 중단선."""
     weeks, days, price = fr.fetch(coin)
-    lv = fr.levels(fr.pivots(weeks, days, price))
+    pv = fr.pivots(weeks, days, price)
+    lv = fr.levels(pv)
     zones = fr.sell_zones(lv, price)
-    return {"price": price,
+    return {"price": price, "pivots": pv,
             "sells": [snap(coin, z["low"]) for z in zones[:len(fr.SELL_STEPS)]],
             "buys": [snap(coin, lv["retr"][r]) for r, _ in fr.BUY_STEPS],
             "stop": snap(coin, lv["retr"][0.786])}
