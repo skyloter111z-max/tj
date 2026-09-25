@@ -102,28 +102,72 @@ def snap(coin, v):
     return round(v / step) * step
 
 
-def plan_orders(coin, holding):
+def compute_levels(coin):
+    """지금 캔들로 계산한 플랜 레벨. sells: 1·2·3차 매도가, buys: 1·2·3차 매수가, stop: 매수 중단선."""
     weeks, days, price = fr.fetch(coin)
-    pv = fr.pivots(weeks, days, price)
-    lv = fr.levels(pv)
+    lv = fr.levels(fr.pivots(weeks, days, price))
     zones = fr.sell_zones(lv, price)
+    return {"price": price,
+            "sells": [snap(coin, z["low"]) for z in zones[:len(fr.SELL_STEPS)]],
+            "buys": [snap(coin, lv["retr"][r]) for r, _ in fr.BUY_STEPS],
+            "stop": snap(coin, lv["retr"][0.786])}
+
+
+def plan_orders(coin, holding, sell_done=0, buy_done=0, levels=None):
+    """플랜 주문 목록. sell_done/buy_done: 이미 체결된 단계 수 (그 단계는 건너뛴다).
+    levels를 주면 그 고정 레벨을 쓰고, 없으면 지금 캔들로 계산한다.
+    매도 수량 기준은 체결 전 보유량으로 되돌려 계산한다 (예: 1차 20% 체결 뒤엔 현재 보유 / 0.8)."""
+    lv = levels or compute_levels(coin)
+    price = lv.get("price") or fr.get(f"/ticker?markets=KRW-{coin}")[0]["trade_price"]
+    done_w = sum(w for _, w in fr.SELL_STEPS[:sell_done])
+    base = holding / (1 - done_w) if done_w < 1 else 0
     orders = []
-    for (name, w), z in zip(fr.SELL_STEPS, zones):
-        orders.append({"side": "ask", "label": f"{name} 매도 {w * 100:g}%",
-                       "price": snap(coin, z["low"]), "volume": int(holding * w * 1e8) / 1e8})
+    for i, (name, w) in enumerate(fr.SELL_STEPS):
+        if i < sell_done or i >= len(lv["sells"]):
+            continue
+        orders.append({"side": "ask", "step": i, "label": f"{name} 매도 {w * 100:g}%",
+                       "price": lv["sells"][i], "volume": int(base * w * 1e8) / 1e8})
     budget = fr.BUY_BUDGET * fr.BUY_SPLIT[coin]
     for i, (r, w) in enumerate(fr.BUY_STEPS):
-        p = snap(coin, lv["retr"][r])
-        if p >= price:
+        p = lv["buys"][i]
+        if i < buy_done or p >= price:
             continue
-        orders.append({"side": "bid", "label": f"{i + 1}차 매수 {r * 100:g}% ({w * 100:g}%)",
+        orders.append({"side": "bid", "step": i, "label": f"{i + 1}차 매수 {r * 100:g}% ({w * 100:g}%)",
                        "price": p, "volume": int(budget * w / p * 1e8) / 1e8})
     return price, [o for o in orders if o["price"] * o["volume"] >= MIN_ORDER_KRW]
 
 
-def same(o, plan):
+def same(o, plan, tol=0.03):
     return (o["side"] == plan["side"] and float(o["price"]) == plan["price"]
-            and abs(float(o["remaining_volume"]) - plan["volume"]) <= plan["volume"] * 0.01)
+            and abs(float(o["remaining_volume"]) - plan["volume"]) <= plan["volume"] * tol)
+
+
+def diff(api, holdings, coins=None, replace=True, progress=None, tol=0.03, levels=None):
+    """플랜과 실제 미체결 주문 비교.
+    rows: (상태, 코인, 주문) 목록. 상태는 유지/주문/취소/플랜 밖.
+    todo: 실행할 (cancel|place, market, 주문) 목록, 취소가 먼저 온다."""
+    rows, todo = [], []
+    for coin in coins or fr.COINS:
+        market = f"KRW-{coin}"
+        pg = (progress or {}).get(coin, {})
+        lv = dict(levels[coin], price=None) if levels and coin in levels else None
+        price, plan = plan_orders(coin, holdings[coin], pg.get("sell_done", 0), pg.get("buy_done", 0), lv)
+        existing = list(api.open_orders(market)) if api else []
+        for p in plan:
+            match = next((o for o in existing if same(o, p, tol)), None)
+            if match:
+                existing.remove(match)
+                rows.append(("유지", coin, p))
+            else:
+                todo.append(("place", market, p))
+                rows.append(("주문", coin, p))
+        for o in existing:
+            item = {"side": o["side"], "label": "플랜 밖", "price": float(o["price"]),
+                    "volume": float(o["remaining_volume"]), "uuid": o["uuid"]}
+            rows.append(("취소" if replace else "플랜 밖", coin, item))
+            if replace:
+                todo.insert(0, ("cancel", market, item))
+    return rows, todo
 
 
 def main():
@@ -144,28 +188,17 @@ def main():
         holdings = fr.HOLDINGS
         print("API 키 없음: fib_recalc.py의 HOLDINGS로 모의 실행")
 
-    todo = []
-    for coin in args.coins:
-        market = f"KRW-{coin}"
-        price, plan = plan_orders(coin, holdings[coin])
-        existing = api.open_orders(market) if api else []
-        print(f"\n== {coin} 현재가 {price:,.0f} / 보유 {holdings[coin]:g} ==")
-        for p in plan:
-            match = next((o for o in existing if same(o, p)), None)
-            if match:
-                existing.remove(match)
-                status = "유지 (이미 걸림)"
-            else:
-                todo.append(("place", market, p))
-                status = "새로 걸기"
-            print(f"  {p['label']:<18} {p['price']:>14,.0f} × {p['volume']:<14g}"
-                  f" ≈ {p['price'] * p['volume']:>12,.0f}원  [{status}]")
-        for o in existing:
-            side = "매도" if o["side"] == "ask" else "매수"
-            act = "취소" if args.replace else "그대로 둠 (--replace면 취소)"
-            print(f"  플랜 밖 {side:<14} {float(o['price']):>14,.0f} × {float(o['remaining_volume']):<14g}  [{act}]")
-            if args.replace:
-                todo.insert(0, ("cancel", market, o))
+    rows, todo = diff(api, holdings, args.coins, args.replace)
+    status = {"유지": "유지 (이미 걸림)", "주문": "새로 걸기", "취소": "취소", "플랜 밖": "그대로 둠 (--replace면 취소)"}
+    last = None
+    for st, coin, p in rows:
+        if coin != last:
+            print(f"\n== {coin} / 보유 {holdings[coin]:g} ==")
+            last = coin
+        side = "매도" if p["side"] == "ask" else "매수"
+        label = p["label"] if p["label"] != "플랜 밖" else f"플랜 밖 {side}"
+        print(f"  {label:<18} {p['price']:>14,.0f} × {p['volume']:<14g}"
+              f" ≈ {p['price'] * p['volume']:>12,.0f}원  [{status[st]}]")
 
     if not args.live:
         print("\n모의 실행이라 아무 주문도 넣지 않았습니다. 실제로 걸려면 --live")
@@ -180,7 +213,7 @@ def main():
         try:
             if kind == "cancel":
                 api.cancel(o["uuid"])
-                print(f"취소  {market} {o['side']} {float(o['price']):,.0f}")
+                print(f"취소  {market} {o['side']} {o['price']:,.0f}")
             else:
                 r = api.place(market, o["side"], o["volume"], o["price"])
                 print(f"주문  {market} {o['label']} {o['price']:,.0f} × {o['volume']:g}  uuid={r.get('uuid')}")
