@@ -1460,6 +1460,8 @@ class App:
             holding += 1 if r["qty"] else 0
             st = r["status"]
             tag = ("조회만", T.MUTED) if not listed else (st, self.STATUS_TAG.get(st, T.UP))
+            if self.ledger_mismatch(r):  # 업비트에서 직접 팔아 잔고가 장부보다 적음 → 매매하면 기존 보유분을 팔 수 있어 표시
+                tag = ("정리 필요", T.UP)
             pct = (lambda v: f"{(v / p - 1) * 100:+.1f}%" if v and p else "")  # noqa: E731
             rows.append({"id": r["coin"], "check": True, "dim": not listed, "cells": {
                 "st": {"tag": tag}, "coin": {"text": r["coin"], "font": "num_b", "sub": "감시로 시작" if r.get("auto") else None},
@@ -1670,18 +1672,49 @@ class App:
             lab(self.g_watch, f"{coin} {chg:+.1f}%" + (f"({note})" if note and not hit else ""), "num_xs" if not note else "kr_xs",
                 fg=col).pack(side="left", padx=(0, 10))
 
+    def ledger_mismatch(self, r):
+        """실전인데 업비트 실제 잔고가 자동매매 장부보다 적으면 True (업비트에서 직접 판 경우)."""
+        g = self.cfg["grid"]
+        bal = self.hold.get(r["coin"])
+        return (not g["simulate"] and self.engine.api and r["qty"] > 0 and bal is not None
+                and bal < r["qty"] * 0.99)
+
     def grid_liquidate(self):
         g = self.cfg["grid"]
+        rows = {r["coin"]: r for r in self.grid_rows}
         sel = [c for c in self.g_table.checked if g["state"].get(c, {}).get("qty")]
         if not sel:
             messagebox.showinfo("자동매매", "표에서 청산할 코인의 체크박스(☐)를 누르세요.\n(자동매매 보유분이 있는 코인만 청산됩니다)")
             return
-        if messagebox.askyesno("청산", f"{', '.join(sel)} 자동매매 보유분을 전량 시장가 매도하고 목록에서 뺄까요?\n"
-                                     "(기존 보유분은 건드리지 않습니다)", icon="warning"):
-            for coin in sel:
-                self.engine.request("grid_liquidate", coin)
-            self.g_table.checked.clear()
-            self.update_liq_btn()
+        live = not g["simulate"] and self.engine.api
+        sell, forget, lines = [], [], []
+        for c in sel:
+            r = rows.get(c)
+            p = self.grid_price(r)[0] if r else None
+            value = (r["qty"] * p) if r and p else 0
+            if r and self.ledger_mismatch(r):
+                forget.append(c)
+                lines.append(f"• {c}: 업비트 잔고({T.fmtq(self.hold.get(c, 0))}개)가 장부({T.fmtq(r['qty'])}개)보다 적습니다 "
+                             "(업비트에서 직접 파셨나요?) → 장부만 정리")
+            elif live and value < 5_500:
+                forget.append(c)
+                lines.append(f"• {c}: {value:,.0f}원어치라 업비트 최소 주문(5,000원) 미만이라 팔 수 없습니다 → 장부만 정리 "
+                             "(코인은 계좌에 남고 기존 보유로 표시)")
+            else:
+                sell.append(c)
+        msg = []
+        if sell:
+            msg.append(f"시장가로 전량 매도하고 목록에서 뺍니다: {', '.join(sell)}\n(기존 보유분은 건드리지 않습니다)")
+        if forget:
+            msg.append("장부만 정리합니다 (현재가로 판 것으로 추정해 투자일지에 기록):\n" + "\n".join(lines))
+        if not messagebox.askyesno("청산", "\n\n".join(msg) + "\n\n진행할까요?", icon="warning"):
+            return
+        for coin in sell:
+            self.engine.request("grid_liquidate", coin)
+        for coin in forget:
+            self.engine.request("grid_forget", coin)
+        self.g_table.checked.clear()
+        self.update_liq_btn()
 
     # ---------------- ④ 주문 (3a: 승인 흐름) ----------------
     def build_orders(self, nb):

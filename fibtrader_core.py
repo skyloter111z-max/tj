@@ -179,9 +179,9 @@ def build_journal(db, sim=None):
     """투자일지: 자동매매 거래 기록(grid_trades)을 처음부터 다시 따라가며 거래마다 수수료·실현 손익을 계산한다.
     엔진과 같은 방식(판 비율만큼 원가를 덜어냄)이라 매도 손익을 모두 더하면 엔진의 누적 실현과 같다.
     sim=None이면 전체, True면 모의만, False면 실전만. 모의와 실전 장부는 따로 따라간다."""
-    rows = db.query("SELECT rowid, ts, simulated, coin, side, price, qty, krw FROM grid_trades ORDER BY rowid")
+    rows = db.query("SELECT rowid, ts, simulated, coin, side, price, qty, krw, note FROM grid_trades ORDER BY rowid")
     book, out = {}, []
-    for rid, ts, s_, coin, side, price, qty, krw in rows:
+    for rid, ts, s_, coin, side, price, qty, krw, note in rows:
         s_ = bool(s_)
         if sim is not None and s_ != sim:
             continue
@@ -204,8 +204,8 @@ def build_journal(db, sim=None):
                 full = frac >= 0.999 or b["qty"] * price < 5_000
                 if full:
                     b.update(qty=0.0, cost=0.0, buys=0)
-                t.update(pnl=krw - base, base=base, kind="전량 매도" if full else "절반 매도", full=full,
-                         hold_cost=b["cost"])
+                t.update(pnl=krw - base, base=base, kind="장부 정리 (추정)" if note == "장부 정리" else
+                         "전량 매도" if full else "절반 매도", full=full, hold_cost=b["cost"])
             else:
                 t.update(kind="매도 (장부 없음)", full=False, hold_cost=0.0)
         out.append(t)
@@ -951,13 +951,48 @@ class Engine(threading.Thread):
             save_config(self.cfg)
             return
         before = st["qty"]
-        qty, krw, px, sim = self.grid_trade(coin, "ask", self.prices[coin], before)
+        live = not (self.cfg["grid"]["simulate"] or not self.api)
+        if live and before * self.prices[coin] < 5_000:
+            self.alert("fail", f"{coin} 청산 못 함 · 5,000원 미만",
+                       f"자동매매 보유분이 {before * self.prices[coin]:,.0f}원어치라 업비트 최소 주문(5,000원)보다 작아 팔 수 없습니다.\n"
+                       "자동매매 탭에서 체크하고 [선택 코인 청산]을 누르면 '장부만 정리'할 수 있습니다 (코인은 계좌에 남음).")
+            return
+        try:
+            qty, krw, px, sim = self.grid_trade(coin, "ask", self.prices[coin], before)
+        except RuntimeError as e:
+            self.alert("fail", f"{coin} 청산 실패", f"{e}\n장부는 그대로 두었습니다. 업비트에서 직접 팔았다면 [선택 코인 청산] → '장부만 정리'를 하세요.")
+            return
         pnl = st["realized"] + krw - st["cost"] * min(qty / before, 1)
         st["profit_total"] += pnl
         st.update(qty=0.0, cost=0.0, buys=0, ref=None, halved=False, realized=0.0)
         self.cfg["grid"]["coins"] = [c for c in self.cfg["grid"]["coins"] if c != coin]
         save_config(self.cfg)
         self.alert("grid", f"{coin} 청산", f"{fmtp(px)}원에 전량 매도 · 손익 {pnl:+,.0f}원 · 자동매매 목록에서 뺐습니다")
+
+    def grid_forget(self, coin):
+        """장부만 정리: 업비트에서 직접 팔았거나 5,000원 미만이라 못 파는 자동매매 보유분을 장부에서 지운다.
+        현재가로 판 것으로 추정해 투자일지에 '장부 정리'로 남긴다. 계좌에 남은 코인은 이후 기존 보유로 본다."""
+        st = self.grid_state(coin)
+        if st.get("pending"):
+            self.emit("done", [f"{coin}: 결과 확인 중인 주문이 있어 잠시 뒤 다시 시도하세요."])
+            return
+        g = self.cfg["grid"]
+        qty, cost = st["qty"], st["cost"]
+        if qty > 0:
+            px = self.prices.get(coin) or st.get("ref") or 0
+            krw = qty * px * (1 - FEE)
+            pnl = st["realized"] + krw - cost
+            st["profit_total"] += pnl
+            self.db.add("grid_trades", now().isoformat(), int(g["simulate"] or not self.api), coin, "ask", px, qty, krw, "장부 정리")
+            msg = (f"자동매매 장부에서 {qty:g}개 (원가 {cost:,.0f}원)를 지웠습니다. 현재가 {fmtp(px)}원 기준 손익 {pnl:+,.0f}원 (추정)으로 "
+                   "투자일지에 남겼습니다. 업비트 계좌에 남은 코인은 이제 기존 보유로 봅니다.")
+        else:
+            msg = "정리할 자동매매 보유분이 없어 목록에서만 뺐습니다."
+        st.update(qty=0.0, cost=0.0, buys=0, ref=None, halved=False, realized=0.0)
+        st.pop("auto", None)
+        g["coins"] = [c for c in g["coins"] if c != coin]
+        save_config(self.cfg)
+        self.alert("grid", f"{coin} 장부 정리", msg)
 
     def emergency_stop(self, cancel_all):
         if not self.cfg.get("stopped"):  # 재개할 때 되돌릴 값

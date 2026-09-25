@@ -197,6 +197,18 @@ day = core.journal_summary(tr, "date")
 ok(abs(sum(d["pnl"] for d in day.values()) - total) < 0.01 and sum(d["buys"] for d in day.values()) == sum(1 for t in tr if t["side"] == "bid"),
    "14b 일별 합계 = 거래별 합계")
 
+# 15 5,000원 미만 청산 → 주문 안 보내고 알림 / 장부 정리 → 장부 0, 목록에서 빠짐, 일지에 '장부 정리'
+e, ex, cfg = mk(unit_krw=5000)
+step(e, ex, 340)
+st = e.grid_state("ADA"); posts = ex.posts
+e.prices["ADA"] = 320.0
+e.grid_liquidate("ADA"); a = alerts(e)
+ok(ex.posts == posts and st["qty"] > 0 and any("5,000원 미만" in x for x in a), "15a 5,000원 미만은 청산 주문을 보내지 않고 알림")
+e.grid_forget("ADA")
+tr = core.build_journal(e.db, sim=False)
+ok(st["qty"] == 0 and "ADA" not in cfg["grid"]["coins"] and tr[-1]["kind"] == "장부 정리 (추정)"
+   and abs(sum(t["pnl"] or 0 for t in tr) - st["profit_total"]) < 0.5, "15b 장부 정리: 장부 0, 목록 제외, 일지 합계 = 엔진 누적")
+
 # 12 설정 파일 손상 → 백업으로 복구
 d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
 c = core.load_config(); c["grid"]["state"] = {"ADA": {"qty": 1.23}}; core.save_config(c); core.save_config(c)
