@@ -1114,7 +1114,8 @@ class App:
         f = tk.Frame(nb, bg=T.GROUND)
         nb.add(f, "자동매매")
         g = self.cfg["grid"]
-        self.g_stats = W.StatCells(f, [("state", "상태"), ("cost", "투입 원가"), ("pnl", "평가손익"), ("real", "누적 실현"),
+        self.g_stats = W.StatCells(f, [("state", "상태"), ("cost", "투입 원가"), ("pnl", "평가손익 (수수료 뺀 금액)"),
+                                       ("real", "누적 실현 (수수료 뺀 금액)"),
                                        ("cap", "전체 한도 사용")])
         self.g_stats.pack(fill="x")
         outer, body = W.scroll_page(f)
@@ -1204,7 +1205,7 @@ class App:
         cols = [{"key": "chk", "w": 26}, {"key": "st", "title": "상태", "w": 104},
                 {"key": "coin", "title": "코인", "w": 58}, {"key": "price", "title": "현재가", "w": 90, "anchor": "e"},
                 {"key": "avg", "title": "평단 · 매수", "w": 100, "anchor": "e"},
-                {"key": "pnl", "title": "평가손익", "w": 80, "anchor": "e"},
+                {"key": "pnl", "title": "손익(수수료 뺌)", "w": 96, "anchor": "e"},
                 {"key": "pos", "title": "다음 매수 ← 현재 → 익절", "w": 200, "anchor": "center"},
                 {"key": "next", "title": "다음 매수가", "w": 90, "anchor": "e"},
                 {"key": "tp", "title": "익절가", "w": 90, "anchor": "e"},
@@ -1291,12 +1292,16 @@ class App:
             return
         g = self.cfg["grid"]
         sim = g["simulate"] or not self.engine.api
-        rows, cost, pnl_t, tot, cycles, holding = [], 0.0, 0.0, 0.0, 0, 0
+        rows, cost, pnl_t, tot, cycles, holding, gross_t, fees = [], 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0
         for r in self.grid_rows:
             p, _ = self.grid_price(r)
             listed = r.get("listed", True)
             pnl = r["pnl"] + r["qty"] * ((p or 0) - (r["price"] or 0)) * (1 - core.FEE) if r["qty"] else 0
             cost, pnl_t, tot, cycles = cost + r["cost"], pnl_t + pnl, tot + r["profit_total"], cycles + r["cycles"]
+            # 수수료 전 손익 = 수수료 뺀 손익 + 보유분 매수 때 낸 수수료 + 지금 팔면 낼 수수료
+            gross = pnl + (r["cost"] * core.FEE + r["qty"] * (p or 0) * core.FEE if r["qty"] else 0)
+            gross_t += gross
+            fees += r.get("fee_total", 0.0)
             holding += 1 if r["qty"] else 0
             st = r["status"]
             tag = ("조회만", T.MUTED) if not listed else (st, self.STATUS_TAG.get(st, T.UP))
@@ -1305,7 +1310,8 @@ class App:
                 "st": {"tag": tag}, "coin": {"text": r["coin"], "font": "num_b", "sub": "감시로 시작" if r.get("auto") else None},
                 "price": {"text": T.fmtp(p), "fg": T.chg_color(self.grid_price(r)[1])},
                 "avg": {"text": T.fmtp(r["avg"]) if r["avg"] else "-", "sub": f"{r['buys']}회 · {r['cost']:,.0f}원"},
-                "pnl": {"text": f"{pnl:+,.0f}" if r["qty"] else "-", "fg": T.chg_color(pnl)},
+                "pnl": {"text": f"{pnl:+,.0f}" if r["qty"] else "-", "fg": T.chg_color(pnl),
+                        "sub": f"수수료 전 {gross:+,.0f}" if r["qty"] else None},
                 "pos": {"draw": self.pos_bar(r["next_buy"], r["tp"], p)},
                 "next": {"text": T.fmtp(r["next_buy"]) if r["next_buy"] else "-", "fg": T.UP, "sub": pct(r["next_buy"])},
                 "tp": {"text": T.fmtp(r["tp"]) if r["tp"] else "-", "fg": T.DOWN, "sub": pct(r["tp"])},
@@ -1321,8 +1327,9 @@ class App:
         self.g_stats.set("cost", T.fmtk(cost), "원",
                          sub=f"{holding}개 코인 · " + (f"각 {buys.pop()}회" if len(buys) == 1 else "매수 횟수 다름") if holding else "보유 없음")
         self.g_stats.set("pnl", T.fmtk(pnl_t, sign=True), "원", color=T.chg_color(pnl_t),
-                         sub=f"{pnl_t / cost * 100:+.2f}%" if cost else "")
-        self.g_stats.set("real", T.fmtk(tot, sign=True), "원", color=T.chg_color(tot), sub=f"완료 사이클 {cycles}")
+                         sub=(f"{pnl_t / cost * 100:+.2f}% · 수수료 전 {gross_t:+,.0f}원 (팔 때 수수료 포함 계산)" if cost else ""))
+        self.g_stats.set("real", T.fmtk(tot, sign=True), "원", color=T.chg_color(tot),
+                         sub=f"완료 사이클 {cycles} · 지금까지 낸 수수료 {fees:,.0f}원")
         cap = g["total_max_krw"]
         self.g_stats.set("cap", f"{cost / cap * 100:.1f}%" if cap else "-", sub=f"{cost:,.0f} / {cap:,}원")
 

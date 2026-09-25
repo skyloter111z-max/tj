@@ -651,6 +651,7 @@ class Engine(threading.Thread):
             price = funds / vol if vol else price
         self.db.add("grid_trades", now().isoformat(), int(sim), coin, side, price, qty, krw, "")
         st["last_trade_ts"] = time.time()
+        st["fee_total"] = st.get("fee_total", 0.0) + abs(qty * price - krw)  # 실제로 낸 수수료 누적 (화면 표시용)
         return qty, krw, price, sim
 
     def grid_resolve_pending(self, coin):
@@ -670,6 +671,7 @@ class Engine(threading.Thread):
             return False
         vol, funds, fee = res
         st.pop("pending")
+        st["fee_total"] = st.get("fee_total", 0.0) + fee
         if vol > 0:
             px = funds / vol
             if pend["side"] == "bid":
@@ -871,7 +873,8 @@ class Engine(threading.Thread):
             rows.append({"status": status, "listed": coin in listed, "auto": bool(st.get("auto")), "coin": coin, "price": p, "buys": st["buys"], "cost": st["cost"], "qty": q, "avg": avg,
                          "pnl": pnl, "next_buy": st["ref"] * (1 - g["drop_pct"] / 100) if st["ref"] else None,
                          "breakeven": avg / (1 - FEE) if avg and st["buys"] >= 2 and not st["halved"] else None,
-                         "tp": tp, "cycles": st["cycles"], "profit_total": st["profit_total"]})
+                         "tp": tp, "cycles": st["cycles"], "profit_total": st["profit_total"],
+                         "fee_total": st.get("fee_total", 0.0)})
         return rows
 
     def grid_refresh(self):
