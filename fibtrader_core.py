@@ -177,6 +177,12 @@ class DB:
                           day + "%")[0][0]
 
 
+def candle_row(c):
+    """업비트 캔들 → 차트용 (시가, 고가, 저가, 종가, KST 시각 'YYYY-MM-DDTHH:MM', 거래대금)."""
+    return (c["opening_price"], c["high_price"], c["low_price"], c["trade_price"],
+            c.get("candle_date_time_kst", "")[:16], c.get("candle_acc_trade_price", 0.0))
+
+
 def build_journal(db, sim=None):
     """투자일지: 자동매매 거래 기록(grid_trades)을 처음부터 다시 따라가며 거래마다 수수료·실현 손익을 계산한다.
     엔진과 같은 방식(판 비율만큼 원가를 덜어냄)이라 매도 손익을 모두 더하면 엔진의 누적 실현과 같다.
@@ -397,9 +403,9 @@ class Engine(threading.Thread):
             self.emit("done", [f"{reason}: 바꿀 주문이 없습니다."])
 
     def load_candles(self, key, coin, unit, count):
-        """차트용 캔들. unit: 분(int) 또는 'days'. 결과는 ("candles", key, [(시가, 고가, 저가, 종가)])."""
+        """차트용 캔들. unit: 분(int) 또는 'days'. 결과는 ("candles", key, [(시가, 고가, 저가, 종가, 시각, 거래대금)])."""
         cs = fc.candles(unit, coin, count)
-        self.emit("candles", key, [(c["opening_price"], c["high_price"], c["low_price"], c["trade_price"]) for c in cs])
+        self.emit("candles", key, [candle_row(c) for c in cs])
 
     def cancel_orders(self, coins=None, uuids=None):
         """피보나치 코인의 미체결 주문 취소 (uuids를 주면 그 주문만). 사용자가 직접 누른 취소라 모의 모드와 상관없이 실제로 취소."""
@@ -437,7 +443,7 @@ class Engine(threading.Thread):
                 ind.append((label, "위" if closes[-1] > m else "아래", (closes[-1] / m - 1) * 100, slope, fc.rsi(closes)))
             board[coin] = {"price": self.prices.get(coin), "levels": self.levels.get(coin, []),
                            "trend": f"4h {fc.trend(h4)}\n1h {fc.trend(h1)}", "ind": ind,
-                           "candles": [(c["opening_price"], c["high_price"], c["low_price"], c["trade_price"]) for c in h4[-48:]],
+                           "candles": [candle_row(c) for c in h4[-48:]],
                            "change24": fc.pct(h1[-1]["trade_price"], h1[-24]["opening_price"])}
         dca = sum(self.cfg["dca_daily"].values())
         board["_dca"] = dca

@@ -2,6 +2,7 @@
 
 모두 tk.Canvas/Frame으로 그린다. 가격이 바뀌면 텍스트만 다시 그리고 위젯은 새로 만들지 않는다.
 """
+import math
 import tkinter as tk
 import tkinter.font as tkfont
 
@@ -261,49 +262,145 @@ class Ladder(tk.Canvas):
 
 
 class Candles(tk.Canvas):
-    """캔들 차트 (스펙 6장). 양봉 UP, 음봉 DOWN, 몸통 64%, 꼬리 1px, 점선 기준선 + 라벨."""
+    """캔들 차트 (업비트 비슷하게): 오른쪽 가격 눈금, 아래 시간, 거래대금 막대, 현재가 태그,
+    마우스를 올리면 십자선 + 그 봉의 시가·고가·저가·종가·등락률. 양봉 UP, 음봉 DOWN."""
+    AXIS_W, TIME_H = 86, 18
 
     def __init__(self, parent, height=150):
-        super().__init__(parent, bg=T.GROUND, height=height, highlightthickness=1, highlightbackground=T.DIVIDER)
-        self.data, self.lines, self.unit = [], [], ""
+        super().__init__(parent, bg=T.GROUND, height=height, highlightthickness=1, highlightbackground=T.DIVIDER,
+                         cursor="crosshair")
+        self.data, self.lines, self.unit, self.geom = [], [], "", None
         self.bind("<Configure>", lambda e: self.draw())
+        self.bind("<Motion>", self.hover)
+        self.bind("<Leave>", lambda e: self.delete("xh"))
 
     def set(self, candles, lines, unit):
-        """candles: [(시가, 고가, 저가, 종가)] 오래된 것부터. lines: [(라벨, 가격, 색, 실선여부)]"""
+        """candles: [(시가, 고가, 저가, 종가[, 시각, 거래대금])] 오래된 것부터. lines: [(라벨, 가격, 색, 실선여부)]"""
         self.data, self.lines, self.unit = candles, lines, unit
         self.draw()
 
+    @staticmethod
+    def nice_step(span, n=5):
+        raw = span / max(n, 1)
+        mag = 10 ** math.floor(math.log10(raw)) if raw > 0 else 1
+        for m in (1, 2, 2.5, 5, 10):
+            if raw <= m * mag:
+                return m * mag
+        return 10 * mag
+
+    def tag(self, x, y, text, bg, fg=T.GROUND, anchor="w", font="num_xs", tags=()):
+        tid = self.create_text(x + (4 if anchor == "w" else -4), y, text=text, fill=fg, font=T.F[font], anchor=anchor, tags=tags)
+        x0, y0, x1, y1 = self.bbox(tid)
+        rid = self.create_rectangle(x0 - 4, y0 - 1, x1 + 4, y1 + 1, fill=bg, outline="", tags=tags)
+        self.tag_raise(tid, rid)
+
     def draw(self):
         self.delete("all")
-        w, h = max(self.winfo_width(), 100), max(self.winfo_height(), 60)
+        w, h = max(self.winfo_width(), 160), max(self.winfo_height(), 80)
         if not self.data:
             self.create_text(w / 2, h / 2, text="불러오는 중…", fill=T.MUTED, font=T.F["kr_xs"])
             return
+        px1 = w - self.AXIS_W  # 그림 영역 오른쪽 끝 (그 오른쪽은 가격 눈금)
+        top, bot = 8, h - self.TIME_H - 2
+        has_vol = len(self.data[0]) >= 6 and any(c[5] for c in self.data)
+        vol_h = (bot - top) * 0.16 if has_vol else 0
+        pbot = bot - vol_h - (4 if has_vol else 0)
         vals = [c[1] for c in self.data] + [c[2] for c in self.data] + [p for _, p, _, _ in self.lines if p]
         lo, hi = min(vals), max(vals)
         pad = (hi - lo) * 0.08 or hi * 0.01
         lo, hi = lo - pad, hi + pad
-        top, bot = 6, h - 16
-        y = lambda v: top + (hi - v) / (hi - lo) * (bot - top)  # noqa: E731
+        y = lambda v: top + (hi - v) / (hi - lo) * (pbot - top)  # noqa: E731
         n = len(self.data)
-        slot = (w - 8) / n
-        for i, (o, hh, ll, c) in enumerate(self.data):
+        slot = (px1 - 8) / n
+        self.geom = (4, slot, top, pbot, lo, hi, px1, bot)
+        # 가격 눈금 (가로 보조선은 아주 옅게)
+        step = self.nice_step(hi - lo)
+        v = math.ceil(lo / step) * step
+        grid = T.blend(T.TEXT, T.GROUND, 0.06)
+        while v <= hi:
+            yy = y(v)
+            self.create_line(0, yy, px1, yy, fill=grid)
+            self.create_text(px1 + 6, yy, text=T.fmtp(v), fill=T.MUTED, font=T.F["num_xs"], anchor="w")
+            v += step
+        self.create_line(px1, 0, px1, h, fill=T.DIVIDER)
+        self.create_line(0, bot, w, bot, fill=T.DIVIDER)
+        # 거래대금 막대
+        if has_vol:
+            vmax = max(c[5] for c in self.data) or 1
+            for i, c in enumerate(self.data):
+                cx = 4 + slot * (i + 0.5)
+                bh = c[5] / vmax * vol_h
+                col = T.blend(T.UP if c[3] >= c[0] else T.DOWN, T.GROUND, 0.35)
+                self.create_rectangle(cx - max(slot * 0.32, 0.5), bot - bh, cx + max(slot * 0.32, 0.5), bot, fill=col, outline="")
+        # 캔들
+        for i, c in enumerate(self.data):
+            o, hh, ll, cl = c[:4]
             cx = 4 + slot * (i + 0.5)
-            col = T.UP if c >= o else T.DOWN
+            col = T.UP if cl >= o else T.DOWN
             self.create_line(cx, y(hh), cx, y(ll), fill=col)
             bw = max(slot * 0.64, 1)
-            y0, y1 = sorted((y(o), y(c)))
+            y0, y1 = sorted((y(o), y(cl)))
             self.create_rectangle(cx - bw / 2, y0, cx + bw / 2, max(y1, y0 + 1), fill=col, outline=col)
+        # 시간 눈금
+        if len(self.data[0]) >= 5 and self.data[0][4]:
+            k = max(1, round(n / 5))
+            for i in range(k // 2, n, k):  # 양 끝은 잘리지 않게 안쪽부터
+                t = self.data[i][4]
+                txt = t[5:10] if self.unit.startswith("1일") else f"{t[5:10]} {t[11:13]}시"
+                self.create_text(4 + slot * (i + 0.5), bot + self.TIME_H / 2 + 1, text=txt, fill=T.MUTED, font=T.F["num_xs"])
+        # 기준선 (레벨·평단·현재가): 점선 + 오른쪽 눈금에 색 태그
         for label, price, color, solid in self.lines:
-            if not price:
+            if not price or not lo <= price <= hi:
                 continue
             ly = y(price)
-            self.create_line(0, ly, w, ly, fill=color, dash=() if solid else (2, 3))
-            tid = self.create_text(6, ly - 2, text=f"{label} {T.fmtp(price)}", fill=color, font=T.F["kr_xs"], anchor="sw")
+            self.create_line(0, ly, px1, ly, fill=color, dash=() if solid else (2, 3))
+            tid = self.create_text(6, ly - 2, text=label, fill=color, font=T.F["kr_xs"], anchor="sw")
             x0, y0, x1, y1 = self.bbox(tid)
             rid = self.create_rectangle(x0 - 2, y0, x1 + 2, y1, fill=T.GROUND, outline="")
             self.tag_raise(tid, rid)
+            self.tag(px1, ly, T.fmtp(price), color, fg=T.GROUND)
         self.create_text(w - 6, h - 3, text=self.unit, fill=T.MUTED, font=T.F["num_xs"], anchor="se")
+
+    def hover(self, e):
+        """십자선 + 가격 태그 + 그 봉 정보 (업비트처럼)."""
+        self.delete("xh")
+        if not self.data or not self.geom:
+            return
+        x0, slot, top, pbot, lo, hi, px1, bot = self.geom
+        if e.x > px1 or e.y > bot:
+            return
+        i = min(len(self.data) - 1, max(0, int((e.x - x0) / slot)))
+        c = self.data[i]
+        cx = x0 + slot * (i + 0.5)
+        col = T.blend(T.TEXT, T.GROUND, 0.5)
+        self.create_line(cx, 0, cx, bot, fill=col, dash=(2, 2), tags="xh")
+        self.create_line(0, e.y, px1, e.y, fill=col, dash=(2, 2), tags="xh")
+        if top <= e.y <= pbot:
+            price = hi - (e.y - top) / (pbot - top) * (hi - lo)
+            self.tag(px1, e.y, T.fmtp(price), T.TEXT, fg=T.GROUND, tags="xh")
+        if len(c) >= 5 and c[4]:
+            t = c[4].replace("T", " ")
+            self.tag(cx, bot + self.TIME_H / 2 + 1, t[5:16], T.TEXT, fg=T.GROUND, anchor="w", tags="xh")
+        o, hh, ll, cl = c[:4]
+        prev = self.data[i - 1][3] if i else o
+        chg = (cl / prev - 1) * 100 if prev else 0
+        colr = T.chg_color(chg)
+        parts = [("시", o), ("고", hh), ("저", ll), ("종", cl)]
+        x = 8
+        yy = 12
+        bg = self.create_rectangle(0, 0, 0, 0, fill=T.GROUND, outline="", tags="xh")
+        first = x
+        for name, v in parts:
+            tid = self.create_text(x, yy, text=name, fill=T.MUTED, font=T.F["kr_xs"], anchor="w", tags="xh")
+            x = self.bbox(tid)[2] + 3
+            tid = self.create_text(x, yy, text=T.fmtp(v), fill=colr, font=T.F["num_s"], anchor="w", tags="xh")
+            x = self.bbox(tid)[2] + 10
+        tid = self.create_text(x, yy, text=f"{chg:+.2f}%", fill=colr, font=T.F["num_s"], anchor="w", tags="xh")
+        x = self.bbox(tid)[2]
+        if len(c) >= 6 and c[5]:
+            tid = self.create_text(x + 10, yy, text=f"거래대금 {c[5] / 1e8:,.1f}억", fill=T.MUTED, font=T.F["kr_xs"], anchor="w", tags="xh")
+            x = self.bbox(tid)[2]
+        self.coords(bg, first - 4, yy - 9, x + 4, yy + 9)
 
 
 class SummaryBar(tk.Frame):

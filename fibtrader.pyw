@@ -749,8 +749,8 @@ class App:
             b1 = lv.get("buys", [])[bd] if bd < len(lv.get("buys", [])) else None
             cs = list(b["candles"])
             if p and cs:  # 마지막 봉은 실시간 가격으로
-                o, h, l, _ = cs[-1]
-                cs[-1] = (o, max(h, p), min(l, p), p)
+                o, h, l, _c, *rest = cs[-1]
+                cs[-1] = (o, max(h, p), min(l, p), p, *rest)
             self.c_chart.set(cs, [(f"{sd + 1}차 매도", s1, T.DOWN, False), ("현재가", p, T.LINE_NOW, True),
                                   (f"{bd + 1}차 매수", b1, T.UP, False)], "4h · 48봉")
         self.c_ruler.set(self.ruler_rows(coin))
@@ -1012,7 +1012,7 @@ class App:
         for wdg in (row, inner):
             wdg.bind("<Button-1>", lambda e, c=cur: self.toggle_inv_chart(c))
         tk.Frame(wrap, bg=T.DIVIDER_SOFT, height=1).pack(fill="x")
-        chart = W.Candles(wrap, height=200)
+        chart = W.Candles(wrap, height=260)
         r = {"wrap": wrap, "row": row, "inner": inner, "cells": cells, "chart": chart, "candles": None}
         self.inv_rows[cur] = r
         if cur in self.cfg["ui"].get("inv_charts_open", []):
