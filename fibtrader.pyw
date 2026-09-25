@@ -1168,7 +1168,9 @@ class App:
         tc, th = card(inner, "대상 코인", "30초마다 갱신 · 코인 칸에 적은 코인 + 자동매매로 산 수량이 남은 코인", pady=(18, 0))
         self.g_liq_btn = T.Btn(th, "선택 코인 청산", self.grid_liquidate, "danger")
         self.g_liq_btn.pack(side="right")
-        T.Btn(th, "조회", lambda: self.engine.request("grid_refresh")).pack(side="right", padx=8)
+        T.Btn(th, "조회만으로 변경", lambda: self.grid_set_listed(False)).pack(side="right", padx=(0, 16))
+        T.Btn(th, "자동매매로 변경", lambda: self.grid_set_listed(True), "primary").pack(side="right", padx=8)
+        T.Btn(th, "조회", lambda: self.engine.request("grid_refresh")).pack(side="right")
         cols = [{"key": "chk", "w": 26}, {"key": "st", "title": "상태", "w": 104},
                 {"key": "coin", "title": "코인", "w": 58}, {"key": "price", "title": "현재가", "w": 90, "anchor": "e"},
                 {"key": "avg", "title": "평단 · 매수", "w": 100, "anchor": "e"},
@@ -1262,7 +1264,7 @@ class App:
             st = r["status"]
             tag = ("조회만", T.MUTED) if not listed else (st, self.STATUS_TAG.get(st, T.UP))
             pct = (lambda v: f"{(v / p - 1) * 100:+.1f}%" if v and p else "")  # noqa: E731
-            rows.append({"id": r["coin"], "check": bool(r["qty"]), "dim": not listed, "cells": {
+            rows.append({"id": r["coin"], "check": True, "dim": not listed, "cells": {
                 "st": {"tag": tag}, "coin": {"text": r["coin"], "font": "num_b"},
                 "price": {"text": T.fmtp(p), "fg": T.chg_color(self.grid_price(r)[1])},
                 "avg": {"text": T.fmtp(r["avg"]) if r["avg"] else "-", "sub": f"{r['buys']}회 · {r['cost']:,.0f}원"},
@@ -1288,7 +1290,8 @@ class App:
         self.g_stats.set("cap", f"{cost / cap * 100:.1f}%" if cap else "-", sub=f"{cost:,.0f} / {cap:,}원")
 
     def update_liq_btn(self):
-        n = len(self.g_table.checked)
+        st = self.cfg["grid"]["state"]
+        n = sum(1 for c in self.g_table.checked if st.get(c, {}).get("qty"))
         self.g_liq_btn.config(text=f"선택 코인 청산 ({n})" if n else "선택 코인 청산")
 
     def own_text(self, r):
@@ -1377,10 +1380,44 @@ class App:
         self.g_on.set(g["enabled"])
         self.g_sim.set(g["simulate"])
 
-    def grid_liquidate(self):
-        sel = [c for c in self.g_table.checked]
+    def grid_set_listed(self, on):
+        """표에서 체크한 코인을 자동매매 ↔ 조회만으로 바꾼다 (코인 칸 목록을 고쳐 저장)."""
+        g = self.cfg["grid"]
+        sel = [c for c in self.g_table.checked if (c in g["coins"]) != on]
+        if not self.g_table.checked:
+            messagebox.showinfo("자동매매", "표에서 바꿀 코인의 체크박스(☐)를 누르세요.")
+            return
         if not sel:
-            messagebox.showinfo("자동매매", "표에서 청산할 코인의 체크박스(☐)를 누르세요.\n(자동매매 보유분이 있는 코인만 고를 수 있습니다)")
+            messagebox.showinfo("자동매매", f"선택한 코인은 이미 {'자동매매 중' if on else '조회만'}입니다.")
+            return
+        if on:
+            live = not (g["simulate"] or not self.engine.api)
+            held = [c for c in sel if g["state"].get(c, {}).get("qty")]
+            msg = (f"{', '.join(sel)}을(를) 자동매매로 바꿉니다.\n\n"
+                   + (f"{', '.join(held)}: 지금 평단·매수 횟수를 이어서 추가 매수·익절합니다.\n" if held else "")
+                   + ("⚠ 실전입니다. 승인 없이 업비트에 시장가 주문이 자동으로 나갑니다.\n" if live else "모의입니다. 가상으로만 사고팝니다.\n")
+                   + ("" if g["enabled"] else "※ 자동매매가 꺼져 있어 [켜기]를 체크하고 저장해야 움직입니다.\n")
+                   + "\n바꿀까요?")
+            if not messagebox.askyesno("자동매매로 변경", msg, icon="warning" if live else "question"):
+                return
+            g["coins"] = g["coins"] + sel
+        else:
+            if not messagebox.askyesno("조회만으로 변경", f"{', '.join(sel)}을(를) 조회만으로 바꿉니다.\n"
+                                       "보유분은 그대로 두고 추가 매수·익절만 멈춥니다. (산 적 없는 코인은 표에서 빠집니다)\n\n바꿀까요?"):
+                return
+            g["coins"] = [c for c in g["coins"] if c not in sel]
+        core.save_config(self.cfg)
+        self.set_grid_fields()
+        self.g_table.checked.clear()
+        self.update_liq_btn()
+        self.show_notice(f"{', '.join(sel)} → {'자동매매 중' if on else '조회만'} · 자동매매 코인: {', '.join(g['coins']) or '없음'}", 8)
+        self.engine.request("grid_refresh")
+
+    def grid_liquidate(self):
+        g = self.cfg["grid"]
+        sel = [c for c in self.g_table.checked if g["state"].get(c, {}).get("qty")]
+        if not sel:
+            messagebox.showinfo("자동매매", "표에서 청산할 코인의 체크박스(☐)를 누르세요.\n(자동매매 보유분이 있는 코인만 청산됩니다)")
             return
         if messagebox.askyesno("청산", f"{', '.join(sel)} 자동매매 보유분을 전량 시장가 매도하고 목록에서 뺄까요?\n"
                                      "(기존 보유분은 건드리지 않습니다)", icon="warning"):
