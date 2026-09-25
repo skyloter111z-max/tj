@@ -153,27 +153,44 @@ def todo_key(todo):
 
 
 class PriceFeed(threading.Thread):
-    """화면용 실시간 시세: 2초마다 현재가, 1분마다 보유 수량. 주문·알림 판단은 Engine이 한다."""
+    """화면용 실시간 시세: 2초마다 현재가, 1분마다 업비트 잔고(평단 포함), 5분마다 체결 내역. 주문·알림 판단은 Engine이 한다."""
 
     def __init__(self, engine, events, every=2.0):
         super().__init__(daemon=True)
         self.engine, self.events, self.every = engine, events, every
         self.stop_event = engine.stop_event
-        self.last_hold = 0
+        self.last_hold = self.last_hist = 0
+        self.krw_markets = None
+        self.held = []           # 원화마켓이 있는 보유 코인
+        self.want_history = threading.Event()
 
     def run(self):
         while not self.stop_event.is_set():
             try:
-                coins = fr.COINS + [c for c in self.engine.grid_coins() if c not in fr.COINS]
+                if self.krw_markets is None:
+                    self.krw_markets = {m["market"][4:] for m in fr.get("/market/all") if m["market"].startswith("KRW-")}
+                coins = list(dict.fromkeys(fr.COINS + self.engine.grid_coins() + self.held))
                 ts = fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in coins))
-                self.events.put(("live", {t["market"][4:]: (t["trade_price"], t["signed_change_rate"] * 100)
-                                          for t in ts}))
+                self.events.put(("live", {t["market"][4:]: (t["trade_price"], t["signed_change_rate"] * 100,
+                                                            t["signed_change_price"]) for t in ts}))
                 api = self.engine.api
                 if api and time.time() - self.last_hold > 60:
                     acc = api.call("GET", "/accounts")
                     hold = {a["currency"]: float(a["balance"]) + float(a["locked"]) for a in acc}
+                    self.held = [a["currency"] for a in acc if a["currency"] in self.krw_markets
+                                 and float(a["balance"]) + float(a["locked"]) > 0]
                     self.events.put(("hold", hold))
+                    self.events.put(("accounts", [
+                        {"currency": a["currency"], "qty": float(a["balance"]) + float(a["locked"]),
+                         "locked": float(a["locked"]), "avg": float(a.get("avg_buy_price") or 0)} for a in acc]))
                     self.last_hold = time.time()
+                if api and (time.time() - self.last_hist > 300 or self.want_history.is_set()):
+                    self.want_history.clear()
+                    self.last_hist = time.time()
+                    try:
+                        self.events.put(("history", api.closed_orders()))
+                    except Exception as e:
+                        self.events.put(("history_error", str(e)))
             except Exception:
                 pass  # 다음 주기에 다시
             self.stop_event.wait(self.every)

@@ -95,6 +95,10 @@ class Upbit:
     def open_orders(self, market):
         return self.call("GET", "/orders/open", {"market": market, "state": "wait", "limit": 100})
 
+    def closed_orders(self, limit=100):
+        """최근 체결 완료 주문 (전체 마켓, 최신순)."""
+        return self.call("GET", "/orders/closed", {"state": "done", "limit": limit, "order_by": "desc"})
+
     def cancel(self, order_uuid):
         return self.call("DELETE", "/order", {"uuid": order_uuid})
 

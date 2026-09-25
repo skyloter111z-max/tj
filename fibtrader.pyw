@@ -71,10 +71,11 @@ class App:
         self.live = {}      # coin -> (현재가, 24h 등락%)
         self.hold = {}      # currency -> 보유 수량
         self.strip = {}     # coin -> 상단 시세 라벨
+        self.accounts = []  # 업비트 잔고 (평단 포함)
 
         self.root = tk.Tk()
         self.root.title("FibTrader")
-        self.root.geometry("1120x800")
+        self.root.geometry("1300x830")
         self.root.minsize(1000, 700)
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
         style = ttk.Style()
@@ -93,6 +94,7 @@ class App:
         nb.pack(fill="both", expand=True, padx=6, pady=(0, 6))
         self.nb = nb
         self.build_board(nb)
+        self.build_invest(nb)
         self.build_grid(nb)
         self.build_orders(nb)
         self.build_logs(nb)
@@ -102,7 +104,8 @@ class App:
         if pystray:
             threading.Thread(target=self.run_tray, daemon=True).start()
         self.engine.start()
-        core.PriceFeed(self.engine, self.events).start()
+        self.feed = core.PriceFeed(self.engine, self.events)
+        self.feed.start()
         self.root.after(300, self.pump)
 
     # ---------------- 트레이 ----------------
@@ -167,12 +170,18 @@ class App:
         nb.add(f, text="  현황  ")
         self.cards = {}
         self.order_trees = {}
+        self.chg_labels = {}
         for i, coin in enumerate(fr.COINS):
             box = ttk.LabelFrame(f, text=f"  {coin}  ", padding=6)
             box.grid(row=1, column=i, sticky="nsew", padx=4)
             f.columnconfigure(i, weight=1)
-            price = tk.Label(box, text="-", font=("맑은 고딕", 20, "bold"), anchor="w")
-            price.pack(fill="x")
+            prow = tk.Frame(box)
+            prow.pack(fill="x")
+            price = tk.Label(prow, text="-", font=("맑은 고딕", 19, "bold"), anchor="w")
+            price.pack(side="left")
+            chg = tk.Label(prow, text="", font=("맑은 고딕", 13, "bold"), anchor="w")
+            chg.pack(side="left", padx=(8, 0), pady=(6, 0))
+            self.chg_labels[coin] = chg
             sub = ttk.Label(box, text="", foreground="#555")
             sub.pack(anchor="w")
             hold = ttk.Label(box, text="", foreground="#111", font=("맑은 고딕", 10, "bold"))
@@ -231,9 +240,13 @@ class App:
             b = self.board.get(coin, {})
             live = self.live.get(coin)
             ch = live[1] if live else b.get("change24")
-            price_l.config(text=f"{fmt(p)} 원", fg="#b91c1c" if (ch or 0) > 0 else "#1d4ed8" if (ch or 0) < 0 else "#111")
+            color = "#b91c1c" if (ch or 0) > 0 else "#1d4ed8" if (ch or 0) < 0 else "#111"
+            price_l.config(text=f"{fmt(p)} 원", fg=color)
+            if live:
+                arrow = "▲" if live[2] > 0 else "▼" if live[2] < 0 else ""
+                self.chg_labels[coin].config(fg=color, text=f"{arrow}{abs(live[2]):,.0f} ({live[1]:+.2f}%)")
             pg = self.cfg["progress"][coin]
-            sub.config(text=(f"{'전일 대비' if live else '24시간'} {ch:+.2f}% · " if ch is not None else "")
+            sub.config(text=("전일 대비 (오전 9시 기준) · " if live else "")
                        + f"매도 {pg['sell_done']}/3 · 매수 {pg['buy_done']}/3 체결")
             q = self.hold.get(coin)
             if q is not None and p:
@@ -257,7 +270,10 @@ class App:
         self.cash.config(text="\n".join(x for x in (tot, cash, f"레벨 기준 시각: {at}") if x))
 
     def render_strip(self, data):
-        for coin, (price, ch) in data.items():
+        show = set(fr.COINS) | set(self.engine.grid_coins())
+        for coin, (price, ch, _) in data.items():
+            if coin not in show:
+                continue
             if coin not in self.strip:
                 row = 0 if coin in fr.COINS else 1  # 윗줄 피보나치, 아랫줄 자동매매
                 if row == 1 and not any(c not in fr.COINS for c in self.strip):
@@ -272,7 +288,7 @@ class App:
                 lab.grid(row=row, column=col, sticky="w")
                 self.strip[coin] = lab
             lab = self.strip[coin]
-            old = self.live.get(coin, (price, ch))[0]
+            old = self.live.get(coin, (price, ch, 0))[0]
             arrow = "▲" if ch > 0 else "▼" if ch < 0 else "-"
             num = f"{price:,.0f}" if price >= 100 else f"{price:,.2f}"
             lab.config(text=f"{coin} {num} {arrow}{abs(ch):.2f}%",
@@ -285,7 +301,7 @@ class App:
             if coin in data:
                 self.prices[coin] = data[coin][0]
         if self.icon:
-            self.icon.title = "\n".join(f"{c} {p:,.0f}" for c, (p, _) in data.items() if c in fr.COINS)
+            self.icon.title = "\n".join(f"{c} {v[0]:,.0f} ({v[1]:+.2f}%)" for c, v in data.items() if c in fr.COINS)
 
     def render_orders(self, by_coin):
         for coin, ot in self.order_trees.items():
@@ -315,7 +331,7 @@ class App:
                                + self.fib_sim_note() + "\n\n진행할까요?", icon="warning"):
             self.drift_box.grid_remove()
             self.engine.request("apply_plan", True, None, "현행 기준으로 바꾸기")
-            self.nb.select(2)  # 주문 탭에서 결과 확인
+            self.nb.select(self.orders_tab)  # 주문 탭에서 결과 확인
 
     def toggle_auto_drift(self):
         on = self.auto_drift.get()
@@ -343,6 +359,81 @@ class App:
         if messagebox.askyesno("플랜대로 다시 걸기", f"{coin} 예약 주문을 지금 플랜과 비교해서, 다른 것은 취소하고 플랜대로 다시 겁니다."
                                + self.fib_sim_note() + "\n\n진행할까요?"):
             self.engine.request("apply_plan", False, [coin], f"{coin} 플랜대로 다시 걸기")
+
+    # ---------------- 투자내역 ----------------
+    def build_invest(self, nb):
+        f = ttk.Frame(nb, padding=8)
+        nb.add(f, text="  투자내역  ")
+        self.inv_sum = tk.Label(f, text="API 키가 연결되면 1분마다 업비트 잔고를 불러옵니다.", anchor="w", justify="left",
+                                font=("맑은 고딕", 11, "bold"))
+        self.inv_sum.pack(fill="x")
+        ttk.Label(f, text="※ 스테이킹 물량과 원화마켓이 없는 코인은 빠집니다.", foreground="#666").pack(anchor="w", pady=(0, 6))
+        ttk.Label(f, text="보유자산 (업비트 평균매수가 기준 · 현재가는 2초마다 갱신)").pack(anchor="w")
+        cols = (("coin", "코인", 70), ("qty", "보유수량", 130), ("avg", "매수평균가", 110), ("buy", "매수금액", 110),
+                ("price", "현재가", 110), ("value", "평가금액", 110), ("pnl", "평가손익", 110), ("rate", "수익률", 80))
+        self.inv_tree = ttk.Treeview(f, columns=[c for c, _, _ in cols], show="headings", height=9)
+        for c, t, w in cols:
+            self.inv_tree.heading(c, text=t)
+            self.inv_tree.column(c, width=w, anchor="e" if c != "coin" else "center")
+        self.inv_tree.tag_configure("up", foreground="#b91c1c")
+        self.inv_tree.tag_configure("down", foreground="#1d4ed8")
+        self.inv_tree.pack(fill="x")
+        row = ttk.Frame(f)
+        row.pack(fill="x", pady=(10, 0))
+        ttk.Label(row, text="거래내역 (업비트 최근 체결 100건 · 5분마다 갱신)").pack(side="left")
+        ttk.Button(row, text="새로고침", command=self.feed_history_now).pack(side="right")
+        self.hist_tree = self.table(f, (("ts", "체결시간", 150), ("coin", "코인", 70), ("side", "종류", 60),
+                                        ("qty", "거래수량", 130), ("px", "거래단가", 110), ("krw", "거래금액", 110),
+                                        ("fee", "수수료", 80), ("type", "주문", 70)), 10)
+        self.hist_tree.tag_configure("bid", foreground="#b91c1c")
+        self.hist_tree.tag_configure("ask", foreground="#1d4ed8")
+
+    def feed_history_now(self):
+        if hasattr(self, "feed"):
+            self.feed.want_history.set()
+
+    def render_invest(self):
+        self.inv_tree.delete(*self.inv_tree.get_children())
+        buy_tot = val_tot = 0.0
+        krw = 0.0
+        num = lambda v: f"{v:,.0f}" if v >= 100 else f"{v:,.4g}"  # noqa: E731
+        for a in sorted(self.accounts, key=lambda a: -a["qty"] * (self.live.get(a["currency"], (a["avg"], 0))[0])):
+            cur = a["currency"]
+            if cur == "KRW":
+                krw = a["qty"]
+                continue
+            live = self.live.get(cur)
+            if not live or a["qty"] <= 0:
+                continue
+            price = live[0]
+            buy, val = a["qty"] * a["avg"], a["qty"] * price
+            buy_tot, val_tot = buy_tot + buy, val_tot + val
+            pnl = val - buy
+            rate = pnl / buy * 100 if buy else 0
+            self.inv_tree.insert("", "end", tags=("up" if pnl > 0 else "down" if pnl < 0 else "",), values=(
+                cur, f"{a['qty']:g}", num(a["avg"]), f"{buy:,.0f}", num(price), f"{val:,.0f}", f"{pnl:+,.0f}", f"{rate:+.2f}%"))
+        pnl = val_tot - buy_tot
+        rate = pnl / buy_tot * 100 if buy_tot else 0
+        color = "#b91c1c" if pnl > 0 else "#1d4ed8" if pnl < 0 else "#111"
+        self.inv_sum.config(fg=color, text=(
+            f"보유 KRW {krw:,.0f}원   총매수 {buy_tot:,.0f}원   총평가 {val_tot:,.0f}원   "
+            f"평가손익 {pnl:+,.0f}원 ({rate:+.2f}%)   총 보유자산 {krw + val_tot:,.0f}원"))
+
+    def render_history(self, orders):
+        self.hist_tree.delete(*self.hist_tree.get_children())
+        for o in orders:
+            vol = float(o.get("executed_volume") or 0)
+            if vol <= 0:
+                continue
+            funds = o.get("executed_funds")
+            funds = float(funds) if funds is not None else sum(float(t["funds"]) for t in o.get("trades") or []) \
+                or (float(o["price"]) * vol if o.get("price") and o.get("ord_type") == "limit" else 0)
+            px = funds / vol if funds else float(o.get("price") or 0)
+            ts = (o.get("created_at") or "")[:19].replace("T", " ")
+            self.hist_tree.insert("", "end", tags=(o["side"],), values=(
+                ts, o["market"].split("-")[-1], "매수" if o["side"] == "bid" else "매도", f"{vol:g}",
+                f"{px:,.0f}" if px >= 100 else f"{px:,.4g}", f"{funds:,.0f}", f"{float(o.get('paid_fee') or 0):,.1f}",
+                {"limit": "지정가", "price": "시장가", "market": "시장가"}.get(o.get("ord_type"), o.get("ord_type", ""))))
 
     # ---------------- 자동매매 (물타기) ----------------
     def build_grid(self, nb):
@@ -713,9 +804,19 @@ class App:
             elif kind == "live":
                 self.render_strip(ev[1])
                 self.render_board()
+                if self.accounts:
+                    self.render_invest()
             elif kind == "hold":
                 self.hold = ev[1]
                 self.render_board()
+            elif kind == "accounts":
+                self.accounts = ev[1]
+                self.render_invest()
+            elif kind == "history":
+                self.render_history(ev[1])
+            elif kind == "history_error":
+                self.hist_tree.delete(*self.hist_tree.get_children())
+                self.hist_tree.insert("", "end", values=("거래내역 조회 실패", "", "", "", "", "", "", ev[1][:60]))
             elif kind == "open_orders":
                 self.render_orders(ev[1])
             elif kind == "drift":
