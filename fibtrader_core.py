@@ -21,8 +21,9 @@ CONFIG_PATH = os.path.join(HERE, "fibtrader_config.json")
 DB_PATH = os.path.join(HERE, "fibtrader.db")
 KST = datetime.timezone(datetime.timedelta(hours=9))
 
-DIP_POOL = ("ADA", "TRX", "LINK", "BCH", "SOL", "DOGE", "XLM", "AVAX", "HBAR", "NEAR",  # 추천 목록
-            "DOT", "SUI", "APT", "UNI", "ETC", "AAVE", "ATOM", "ARB", "POL", "ONDO")
+DIP_POOL = ("SOL", "XLM", "DOGE", "ADA", "LINK", "BCH", "TRX", "AVAX", "HBAR", "DOT")  # 추천 목록: 대형 알트 10개
+OLD_DIP_POOL = ["ADA", "TRX", "LINK", "BCH", "SOL", "DOGE", "XLM", "AVAX", "HBAR", "NEAR",
+                "DOT", "SUI", "APT", "UNI", "ETC", "AAVE", "ATOM", "ARB", "POL", "ONDO"]
 DEFAULTS = {
     "mode": "semi",                 # "alert"(알림만) / "semi"(반자동: 제안 → 승인 → 실행)
     "simulate": True,               # 모의 모드: 승인해도 실제 주문 안 함
@@ -56,7 +57,7 @@ DEFAULTS = {
             "pool": list(DIP_POOL),
             "min_pct": 5.0,         # 전일 대비 이만큼 이상 떨어졌을 때
             "max_pct": 15.0,        # 이보다 더 빠진 건 악재일 수 있어 제외
-            "min_vol_eok": 50,      # 24시간 거래대금(억 원) 이상
+            "min_vol_eok": 20,      # 24시간 거래대금(억 원) 이상 (대형이라도 조용한 날 DOT·TRX가 30~40억)
             "per_day": 2,           # 하루에 새로 추가할 최대 개수
             "max_coins": 15,        # 자동매매 목록 최대 코인 수 (이미 차 있으면 추가 안 함)
             "day": "", "added": 0,
@@ -98,7 +99,11 @@ def load_config():
     if saved is not None:
         cfg.update({k: v for k, v in saved.items() if k in DEFAULTS and k != "grid"})
         cfg["grid"].update(saved.get("grid", {}))
-        cfg["grid"]["dip"] = {**DEFAULTS["grid"]["dip"], **saved.get("grid", {}).get("dip", {})}
+        cfg["grid"]["dip"] = dip = {**DEFAULTS["grid"]["dip"], **saved.get("grid", {}).get("dip", {})}
+        if dip["pool"] == OLD_DIP_POOL:  # 예전 기본 20개를 안 고치고 썼으면 대형 10개로 바꾼다
+            dip["pool"] = list(DIP_POOL)
+            if dip["min_vol_eok"] == 50:
+                dip["min_vol_eok"] = 20
         for c in fr.COINS:
             cfg["progress"].setdefault(c, {"sell_done": 0, "buy_done": 0})
     apply_config(cfg)
