@@ -48,6 +48,7 @@ DEFAULTS = {
 }
 GRID_BLOCKED = set(fr.COINS)  # 피보나치 코인은 자동매매 금지
 FEE = 0.0005
+MIN_SELL_KRW = 5_500  # 업비트 최소 주문 5,000원 + 수수료·가격 변동 여유
 
 
 def now():
@@ -422,7 +423,8 @@ class Engine(threading.Thread):
                 self.alert("grid", f"{tag}{coin} 익절 +{pnl:,.0f}원",
                            f"{px:,.4g}원에 전량 매도 · {st['buys']}회 매수 사이클 · 누적 {st['profit_total']:,.0f}원")
                 st.update(qty=0.0, cost=0.0, buys=0, ref=None, halved=False, realized=0.0)
-            elif g["half_at_breakeven"] and st["buys"] >= 2 and not st["halved"] and price >= breakeven:
+            elif (g["half_at_breakeven"] and st["buys"] >= 2 and not st["halved"] and price >= breakeven
+                  and st["qty"] / 2 * price >= MIN_SELL_KRW):  # 반씩 나눠도 업비트 최소 주문 이상일 때만
                 half = st["qty"] / 2
                 qty, krw, px, _ = self.grid_trade(coin, "ask", price, half)
                 st["realized"] += krw - st["cost"] / 2
