@@ -227,6 +227,20 @@ ok(e.grid_state("ADA")["buys"] == 2 and e.grid_total_cap() == 25000, f"17a 재�
 cfg["grid"]["reinvest"] = False
 ok(e.grid_total_cap() == 20000, "17b 재투자 끄면 설정 한도 그대로")
 
+# 18 투자유의 지정 → 자동매매 보유분 자동 청산 / 주의 지정 → 매수만 중지, 보유 유지
+e, ex, cfg = mk(unit_krw=10000)
+step(e, ex, 340)
+orig_get = fr.get
+flags = {"ADA": {"warning": False, "caution": {"PRICE_FLUCTUATIONS": True}}}
+fr.get = lambda path: ([{"market": "KRW-ADA", "market_event": flags["ADA"]}] if path.startswith("/market/all") else orig_get(path))
+e.grid_check_warnings(force=True)
+st = e.grid_state("ADA")
+ok(st["qty"] > 0 and st.get("blocked"), "18a 주의(가격 급등락) 지정: 새 매수만 중지, 보유분 유지")
+flags["ADA"] = {"warning": True, "caution": {}}
+e.grid_check_warnings(force=True)
+ok(st["qty"] == 0 and "ADA" not in cfg["grid"]["coins"] and ex.bal["ADA"] < 1e-9, "18b 투자유의 지정: 자동매매 보유분 즉시 청산, 목록에서 제외")
+fr.get = orig_get
+
 # 12 설정 파일 손상 → 백업으로 복구
 d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
 c = core.load_config(); c["grid"]["state"] = {"ADA": {"qty": 1.23}}; core.save_config(c); core.save_config(c)

@@ -52,6 +52,7 @@ DEFAULTS = {
         "max_krw": 500_000,         # 코인별 최대 투입(보유 원가) 한도
         "total_max_krw": 1_500_000, # 자동매매 전체 원가 한도 (여러 코인이 같이 빠질 때)
         "reinvest": True,           # 수익 재투자: 실현 수익만큼 전체 한도를 늘린다 (내 돈은 설정한 한도까지만)
+        "auto_exit_warning": True,  # 투자유의(상장폐지 심사) 지정되면 자동매매 보유분을 바로 청산
         "max_trades_per_day": 200,  # 하루 실전 거래가 이보다 많으면 버그·폭주로 보고 자동매매를 끈다
         "state": {},
         "dip": {                    # 하락 코인 자동 추가: 추천 목록(대형 알트) 안에서만, 잡코인 제외
@@ -782,24 +783,39 @@ class Engine(threading.Thread):
                 return "하루 한도"
         return None
 
-    def grid_check_warnings(self):
-        """업비트 투자유의·경고 코인은 자동매매에서 막는다 (1시간마다)."""
-        if time.time() - getattr(self, "_warn_ts", 0) < 3600:
+    def grid_check_warnings(self, force=False):
+        """업비트 지정 확인 (10분마다).
+        · 투자유의(상장폐지 심사 대상): 새 매수 중지 + 설정이 켜져 있으면 자동매매 보유분을 바로 시장가 청산
+        · 주의(급등락·거래량·입금량 등 일시 경고): 새 매수만 중지하고 보유분은 그대로 (풀리면 재개)
+        · 원화마켓에서 사라짐: 매매 불가 → 알림만"""
+        if not force and time.time() - getattr(self, "_warn_ts", 0) < 600:
             return
         self._warn_ts = time.time()
+        g = self.cfg["grid"]
         info = {m["market"][4:]: m for m in fr.get("/market/all?isDetails=true") if m["market"].startswith("KRW-")}
-        for coin in self.grid_coins():
+        for coin in self.grid_tracked():
             m = info.get(coin)
             ev = (m or {}).get("market_event") or {}
-            warn = m is None or m.get("market_warning") == "CAUTION" or ev.get("warning") or \
-                any((ev.get("caution") or {}).values())
+            gone = m is None
+            designated = not gone and (m.get("market_warning") == "CAUTION" or bool(ev.get("warning")))
+            caution = [k for k, v in (ev.get("caution") or {}).items() if v]
             st = self.grid_state(coin)
-            if warn and not st.get("blocked"):
+            block = gone or designated or bool(caution)
+            if designated and st["qty"] > 0 and not st.get("pending") and g.get("auto_exit_warning", True):
+                self.alert("fail", f"{coin} 투자유의 지정 → 자동 청산", "상장폐지 심사 대상(투자유의)으로 지정되어 자동매매 보유분을 "
+                           "시장가로 전량 매도합니다. 기존 보유분은 건드리지 않습니다.")
+                if coin not in self.prices:
+                    t = fr.get(f"/ticker?markets=KRW-{coin}")
+                    self.prices[coin] = t[0]["trade_price"]
+                self.grid_liquidate(coin)  # 파는 것은 막지 않는다 (blocked여도 청산)
+            if block and not st.get("blocked"):
                 st["blocked"] = True
-                self.alert("fail", f"{coin} 자동매매 중지", "업비트 투자유의/경고 지정 또는 원화마켓에 없음. 보유분은 그대로 두었습니다.")
-            elif not warn and st.get("blocked"):
+                why = ("원화마켓에서 사라짐 (매매 불가)" if gone else "투자유의 지정 (상장폐지 심사 대상)" if designated
+                       else "주의 지정: " + ", ".join(caution))
+                self.alert("fail", f"{coin} 자동매매 새 매수 중지", f"{why}. " + ("" if designated else "보유분은 그대로 두었습니다."))
+            elif not block and st.get("blocked"):
                 st["blocked"] = False
-                self.alert("grid", f"{coin} 자동매매 재개", "투자유의 지정이 풀렸습니다.")
+                self.alert("grid", f"{coin} 자동매매 재개", "업비트 지정이 풀렸습니다.")
 
     def grid_dip(self, force=False):
         """자동매매 감시 (5분마다): 추천 목록 중 자동매매 목록에 없는 코인을 지켜보다가, 전일 대비 min~max% 떨어지고

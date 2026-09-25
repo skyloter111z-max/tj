@@ -1328,8 +1328,9 @@ class App:
         self.g_sim = tk.BooleanVar(value=g["simulate"])
         self.g_half = tk.BooleanVar(value=g["half_at_breakeven"])
         self.g_reinvest = tk.BooleanVar(value=g.get("reinvest", True))
+        self.g_autoexit = tk.BooleanVar(value=g.get("auto_exit_warning", True))
         for text, var in (("켜기", self.g_on), ("모의", self.g_sim), ("본전 절반 매도", self.g_half),
-                          ("수익 재투자 (실현 수익만큼 전체 한도 늘림)", self.g_reinvest)):
+                          ("수익 재투자", self.g_reinvest), ("투자유의 지정 시 자동 청산", self.g_autoexit)):
             ttk.Checkbutton(chk, text=text, variable=var, style="Panel.TCheckbutton").pack(side="left", padx=(0, 16))
         lab(chk, "BTC·ETH·XRP는 제외. 코인은 쉼표나 띄어쓰기로 나눠 적습니다. 코인 칸에 적고 [저장]한 코인만 사고팝니다.",
             "kr_xs", fg=T.MUTED).pack(side="left")
@@ -1622,7 +1623,7 @@ class App:
             self.g_on.set(False)
             msg += "\n긴급 정지 중이라 [재개]를 누르면 켜집니다."
         g.update(new, enabled=self.g_on.get(), simulate=self.g_sim.get(), half_at_breakeven=self.g_half.get(),
-                 reinvest=self.g_reinvest.get())
+                 reinvest=self.g_reinvest.get(), auto_exit_warning=self.g_autoexit.get())
         g["dip"].update(dip)
         core.save_config(self.cfg)
         self.set_grid_fields()
