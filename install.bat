@@ -18,10 +18,9 @@ for /f "usebackq delims=" %%f in ("files.txt") do (
 echo.
 echo 글꼴(Barlow) 받는 중...
 if not exist C:\fib\fonts mkdir C:\fib\fonts
-set G=https://raw.githubusercontent.com/google/fonts/main/ofl
-curl -s -f -o C:\fib\fonts\Barlow-Regular.ttf %G%/barlow/Barlow-Regular.ttf && echo 받음: Barlow-Regular.ttf || echo [참고] Barlow-Regular.ttf 글꼴을 못 받았습니다. 기본 글꼴로 표시됩니다.
-curl -s -f -o C:\fib\fonts\Barlow-Bold.ttf %G%/barlow/Barlow-Bold.ttf && echo 받음: Barlow-Bold.ttf || echo [참고] Barlow-Bold.ttf 글꼴을 못 받았습니다. 기본 글꼴로 표시됩니다.
-curl -s -f -o C:\fib\fonts\BarlowCondensed-SemiBold.ttf %G%/barlowcondensed/BarlowCondensed-SemiBold.ttf && echo 받음: BarlowCondensed-SemiBold.ttf || echo [참고] BarlowCondensed-SemiBold.ttf 글꼴을 못 받았습니다. 기본 글꼴로 표시됩니다.
+call :font barlow Barlow-Regular.ttf
+call :font barlow Barlow-Bold.ttf
+call :font barlowcondensed BarlowCondensed-SemiBold.ttf
 echo.
 echo 라이브러리 설치 중...
 python -m pip install -q pystray pillow
@@ -38,3 +37,13 @@ echo (FibTrader가 이미 켜져 있었다면 트레이 F 아이콘 - 종료 후
 pause
 rem install.bat 자신도 최신으로 교체 (한 줄에서 끝내야 실행 중인 파일을 바꿔도 안전)
 curl -s -f -o install.new %U%/install.bat && move /y install.new install.bat >nul & exit /b 0
+
+:font
+rem 글꼴 받기: 이미 있으면 건너뜀 → GitHub → jsDelivr(예비 주소) → PowerShell 순서로 시도
+if exist C:\fib\fonts\%2 (for %%z in (C:\fib\fonts\%2) do if %%~zz GTR 10000 (echo 있음: %2& exit /b 0))
+curl -sS -f -L -o C:\fib\fonts\%2 https://raw.githubusercontent.com/google/fonts/main/ofl/%1/%2 2>nul && (echo 받음: %2& exit /b 0)
+curl -sS -f -L -o C:\fib\fonts\%2 https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/%1/%2 2>nul && (echo 받음: %2 ^(예비 주소^)& exit /b 0)
+powershell -NoProfile -Command "try{Invoke-WebRequest -UseBasicParsing -Uri 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/%1/%2' -OutFile 'C:\fib\fonts\%2'; exit 0}catch{Write-Host $_.Exception.Message; exit 1}" && (echo 받음: %2 ^(PowerShell^)& exit /b 0)
+if exist C:\fib\fonts\%2 del C:\fib\fonts\%2
+echo [참고] %2 글꼴을 못 받았습니다. 기본 글꼴로 표시됩니다. (백신·회사 방화벽이 .ttf 다운로드를 막는 경우)
+exit /b 0
