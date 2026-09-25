@@ -730,45 +730,53 @@ class Engine(threading.Thread):
                 st["blocked"] = False
                 self.alert("grid", f"{coin} 자동매매 재개", "투자유의 지정이 풀렸습니다.")
 
-    def grid_dip(self):
-        """하락 코인 자동 추가 (5분마다). 추천 목록 안에서 전일 대비 min~max% 떨어지고 거래대금이 충분한 코인을
-        자동매매 목록에 넣는다 → 다음 확인 때 1회 금액으로 시작 매수. 투자유의·경고 코인은 넣지 않는다."""
+    def grid_dip(self, force=False):
+        """자동매매 감시 (5분마다): 추천 목록 중 자동매매 목록에 없는 코인을 지켜보다가, 전일 대비 min~max% 떨어지고
+        거래대금이 충분하면 자동매매 목록에 넣는다 → 다음 확인 때 1회 금액으로 시작 매수. 투자유의·경고 코인은 제외."""
         g = self.cfg["grid"]
         d = g["dip"]
-        if not d.get("enabled") or time.time() - getattr(self, "_dip_ts", 0) < 300:
+        if not d.get("enabled") or (not force and time.time() - getattr(self, "_dip_ts", 0) < 300):
             return []
         self._dip_ts = time.time()
         today = now().strftime("%Y-%m-%d")
         if d.get("day") != today:
             d["day"], d["added"] = today, 0
-        room = min(d["per_day"] - d["added"], d["max_coins"] - len(g["coins"]))
         pool = [c for c in d["pool"] if c not in g["coins"] and c not in GRID_BLOCKED
                 and not self.grid_state(c).get("qty") and not self.grid_state(c).get("pending")]
-        if room <= 0 or not pool:
-            return []
         info = {m["market"][4:]: m for m in fr.get("/market/all?isDetails=true") if m["market"].startswith("KRW-")}
         pool = [c for c in pool if c in info]
-        if not pool:
-            return []
-        picks = []
-        for t in fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in pool)):
+        watch, picks = [], []
+        for t in fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in pool)) if pool else []:
             coin, chg, vol = t["market"][4:], t["signed_change_rate"] * 100, t["acc_trade_price_24h"]
             m = info[coin]
             ev = m.get("market_event") or {}
             if m.get("market_warning") == "CAUTION" or ev.get("warning") or any((ev.get("caution") or {}).values()):
-                continue
-            if -d["max_pct"] <= chg <= -d["min_pct"] and vol >= d["min_vol_eok"] * 1e8:
+                note = "투자유의"
+            elif vol < d["min_vol_eok"] * 1e8:
+                note = "거래 적음"
+            elif chg < -d["max_pct"]:
+                note = "급락 제외"
+            elif chg <= -d["min_pct"]:
+                note = "조건 충족"
                 picks.append((chg, coin, vol))
+            else:
+                note = ""
+            watch.append((coin, chg, note))
+        self.emit("dip_watch", sorted(watch, key=lambda w: w[1]), time.strftime("%H:%M"))
+        room = min(d["per_day"] - d["added"], d["max_coins"] - len(g["coins"]))
         added = []
-        for chg, coin, vol in sorted(picks)[:room]:
+        for chg, coin, vol in sorted(picks)[:max(room, 0)]:
             g["coins"] = g["coins"] + [coin]
             st = self.grid_state(coin)
             st["auto"] = True
             d["added"] += 1
             added.append(coin)
-            self.alert("grid", f"{coin} 하락 코인 자동 추가 ({chg:+.1f}%)",
+            self.alert("grid", f"{coin} 감시 → 자동매매 시작 ({chg:+.1f}%)",
                        f"전일 대비 {chg:+.1f}% · 거래대금 {vol / 1e8:,.0f}억 → 자동매매 목록에 넣고 {g['unit_krw']:,}원 시작 매수합니다. "
                        f"(오늘 {d['added']}/{d['per_day']}개)")
+        if picks and room <= 0:
+            self.grid_cap_alert("dip", "감시 조건을 충족한 코인이 있지만 하루 추가 한도나 목록 최대 개수에 도달해 시작하지 않았습니다: "
+                                       + ", ".join(c for _, c, _ in sorted(picks)))
         if added:
             save_config(self.cfg)
             self.prices.update({t["market"][4:]: t["trade_price"]

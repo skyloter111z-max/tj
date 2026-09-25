@@ -1166,9 +1166,9 @@ class App:
         dh = tk.Frame(dbox, bg=T.PANEL)
         dh.pack(fill="x", padx=12, pady=(10, 6))
         self.g_dip = tk.BooleanVar(value=dp["enabled"])
-        ttk.Checkbutton(dh, text="하락 코인 자동 추가", variable=self.g_dip, style="Panel.TCheckbutton").pack(side="left")
-        lab(dh, "추천 목록 안에서 전일 대비 떨어진 코인을 자동매매 목록에 넣고 1회 금액으로 시작 매수합니다. "
-                "익절로 사이클이 끝나면 목록에서 빠집니다. 투자유의·경고 코인은 제외.", "kr_xs", fg=T.MUTED).pack(side="left", padx=10)
+        ttk.Checkbutton(dh, text="자동매매 감시", variable=self.g_dip, style="Panel.TCheckbutton").pack(side="left")
+        lab(dh, "추천 목록 중 전일 대비 아래 % 이상 떨어진 코인은 자동매매를 시작합니다(1회 금액으로 시작 매수). "
+                "익절로 사이클이 끝나면 다시 감시로 돌아갑니다. 투자유의·경고 코인은 제외.", "kr_xs", fg=T.MUTED).pack(side="left", padx=10)
         dr = tk.Frame(dbox, bg=T.PANEL)
         dr.pack(fill="x", padx=12, pady=(0, 6))
         self.g_dipf = {}
@@ -1197,9 +1197,10 @@ class App:
         tc, th = card(inner, "대상 코인", "30초마다 갱신 · 코인 칸에 적은 코인 + 자동매매로 산 수량이 남은 코인", pady=(18, 0))
         self.g_liq_btn = T.Btn(th, "선택 코인 청산", self.grid_liquidate, "danger")
         self.g_liq_btn.pack(side="right")
-        T.Btn(th, "조회만으로 변경", lambda: self.grid_set_listed(False)).pack(side="right", padx=(0, 16))
-        T.Btn(th, "자동매매로 변경", lambda: self.grid_set_listed(True), "primary").pack(side="right", padx=8)
-        T.Btn(th, "조회", lambda: self.engine.request("grid_refresh")).pack(side="right")
+        T.Btn(th, "구분 변경", self.grid_toggle_listed).pack(side="right", padx=(0, 16))
+        T.Btn(th, "조회", lambda: self.engine.request("grid_refresh")).pack(side="right", padx=8)
+        self.g_watch_btn = T.Btn(th, "", self.toggle_watch)
+        self.g_watch_btn.pack(side="right")
         cols = [{"key": "chk", "w": 26}, {"key": "st", "title": "상태", "w": 104},
                 {"key": "coin", "title": "코인", "w": 58}, {"key": "price", "title": "현재가", "w": 90, "anchor": "e"},
                 {"key": "avg", "title": "평단 · 매수", "w": 100, "anchor": "e"},
@@ -1214,7 +1215,11 @@ class App:
                                empty=["자동매매 대상 코인이 없습니다", "규칙 · 설정의 코인 칸에 적고 [저장]하세요"])
         self.g_table.pack(fill="x")
         self.g_note = lab(tc, "", "kr_xs", fg=T.MUTED, anchor="w")
-        self.g_note.pack(fill="x", padx=16, pady=(8, 12))
+        self.g_note.pack(fill="x", padx=16, pady=(8, 4))
+        self.g_watch = tk.Frame(tc, bg=T.PANEL)
+        self.g_watch.pack(fill="x", padx=16, pady=(0, 12))
+        self.dip_watch, self.dip_at = [], ""
+        self.render_watch()
 
         # 거래 기록
         lc, _ = card(inner, "거래 기록", "최근 100건", pady=(18, 0))
@@ -1229,8 +1234,8 @@ class App:
     def render_rules(self):
         g = self.cfg["grid"]
         dp = g["dip"]
-        dip = (f" · 하락 자동 추가 켬({dp['min_pct']:g}~{dp['max_pct']:g}%, 하루 {dp['per_day']}개)" if dp["enabled"]
-               else " · 하락 자동 추가 끔")
+        dip = (f" · 감시 중(−{dp['min_pct']:g}% 이상 하락 시 시작, 하루 {dp['per_day']}개)" if dp["enabled"]
+               else " · 감시 꺼짐")
         self.g_rule_sum.config(text=f"1회 {g['unit_krw']:,}원 · 하락 {g['drop_pct']:g}%마다 추가 · 익절 {g['profit_krw']:,}원 · "
                                     f"코인한도 {g['max_krw']:,}원 · 전체한도 {g['total_max_krw']:,}원 · "
                                     f"본전 절반 {'켬' if g['half_at_breakeven'] else '끔'}" + dip)
@@ -1297,7 +1302,7 @@ class App:
             tag = ("조회만", T.MUTED) if not listed else (st, self.STATUS_TAG.get(st, T.UP))
             pct = (lambda v: f"{(v / p - 1) * 100:+.1f}%" if v and p else "")  # noqa: E731
             rows.append({"id": r["coin"], "check": True, "dim": not listed, "cells": {
-                "st": {"tag": tag}, "coin": {"text": r["coin"], "font": "num_b", "sub": "자동 추가" if r.get("auto") else None},
+                "st": {"tag": tag}, "coin": {"text": r["coin"], "font": "num_b", "sub": "감시로 시작" if r.get("auto") else None},
                 "price": {"text": T.fmtp(p), "fg": T.chg_color(self.grid_price(r)[1])},
                 "avg": {"text": T.fmtp(r["avg"]) if r["avg"] else "-", "sub": f"{r['buys']}회 · {r['cost']:,.0f}원"},
                 "pnl": {"text": f"{pnl:+,.0f}" if r["qty"] else "-", "fg": T.chg_color(pnl)},
@@ -1391,7 +1396,7 @@ class App:
             return
         live_after = not self.g_sim.get() and self.engine.api
         if dip["enabled"] and not g["dip"]["enabled"] and live_after and self.g_on.get() and not messagebox.askyesno(
-                "하락 코인 자동 추가 · 실전", f"⚠ 실전입니다. 추천 목록 {len(dip['pool'])}개 중 전일 대비 {dip['min_pct']:g}~{dip['max_pct']:g}% "
+                "자동매매 감시 · 실전", f"⚠ 실전입니다. 추천 목록 {len(dip['pool'])}개 중 전일 대비 {dip['min_pct']:g}~{dip['max_pct']:g}% "
                 f"떨어진 코인을 자동으로 목록에 넣고 {new['unit_krw']:,}원씩 시장가로 삽니다 (하루 최대 {dip['per_day']}개).\n\n켤까요?",
                 icon="warning"):
             return
@@ -1412,6 +1417,7 @@ class App:
         g["dip"].update(dip)
         core.save_config(self.cfg)
         self.set_grid_fields()
+        self.render_watch()
         self.render_rules()
         msg += f"\n자동매매 코인: {', '.join(new['coins']) or '없음'}"
         messagebox.showinfo("자동매매", msg)
@@ -1427,42 +1433,80 @@ class App:
         self.g_on.set(g["enabled"])
         self.g_sim.set(g["simulate"])
 
-    def grid_set_listed(self, on):
-        """표에서 체크한 코인을 자동매매 ↔ 조회만으로 바꾼다 (코인 칸 목록을 고쳐 저장)."""
+    def grid_toggle_listed(self):
+        """[구분 변경]: 체크한 코인이 자동매매 중이면 조회만으로, 조회만이면 자동매매로."""
         g = self.cfg["grid"]
-        sel = [c for c in self.g_table.checked if (c in g["coins"]) != on]
-        if not self.g_table.checked:
+        sel = list(self.g_table.checked)
+        if not sel:
             messagebox.showinfo("자동매매", "표에서 바꿀 코인의 체크박스(☐)를 누르세요.")
             return
-        if not sel:
-            messagebox.showinfo("자동매매", f"선택한 코인은 이미 {'자동매매 중' if on else '조회만'}입니다.")
+        to_on = [c for c in sel if c not in g["coins"]]
+        to_off = [c for c in sel if c in g["coins"]]
+        live = not (g["simulate"] or not self.engine.api)
+        held = [c for c in to_on if g["state"].get(c, {}).get("qty")]
+        lines = []
+        if to_on:
+            lines.append(f"조회만 → 자동매매: {', '.join(to_on)}" + (f"\n  ({', '.join(held)}: 지금 평단·매수 횟수를 이어서 매매)" if held else ""))
+        if to_off:
+            lines.append(f"자동매매 → 조회만: {', '.join(to_off)}\n  (보유분은 그대로, 추가 매수·익절만 멈춤. 산 적 없는 코인은 표에서 빠짐)")
+        if to_on:
+            lines.append("⚠ 실전입니다. 자동매매 코인은 승인 없이 시장가 주문이 나갑니다." if live else "모의입니다. 가상으로만 사고팝니다.")
+            if not g["enabled"]:
+                lines.append("※ 자동매매가 꺼져 있어 [켜기]를 체크하고 저장해야 움직입니다.")
+        if not messagebox.askyesno("구분 변경", "\n\n".join(lines) + "\n\n바꿀까요?", icon="warning" if live and to_on else "question"):
             return
-        if on:
-            live = not (g["simulate"] or not self.engine.api)
-            held = [c for c in sel if g["state"].get(c, {}).get("qty")]
-            msg = (f"{', '.join(sel)}을(를) 자동매매로 바꿉니다.\n\n"
-                   + (f"{', '.join(held)}: 지금 평단·매수 횟수를 이어서 추가 매수·익절합니다.\n" if held else "")
-                   + ("⚠ 실전입니다. 승인 없이 업비트에 시장가 주문이 자동으로 나갑니다.\n" if live else "모의입니다. 가상으로만 사고팝니다.\n")
-                   + ("" if g["enabled"] else "※ 자동매매가 꺼져 있어 [켜기]를 체크하고 저장해야 움직입니다.\n")
-                   + "\n바꿀까요?")
-            if not messagebox.askyesno("자동매매로 변경", msg, icon="warning" if live else "question"):
-                return
-            g["coins"] = g["coins"] + sel
-            for c in sel:  # 직접 고른 코인은 익절 뒤에도 목록에 남긴다
-                g["state"].get(c, {}).pop("auto", None)
-        else:
-            if not messagebox.askyesno("조회만으로 변경", f"{', '.join(sel)}을(를) 조회만으로 바꿉니다.\n"
-                                       "보유분은 그대로 두고 추가 매수·익절만 멈춥니다. (산 적 없는 코인은 표에서 빠집니다)\n\n바꿀까요?"):
-                return
-            g["coins"] = [c for c in g["coins"] if c not in sel]
-            for c in sel:
-                g["state"].get(c, {}).pop("auto", None)
+        g["coins"] = [c for c in g["coins"] if c not in to_off] + to_on
+        for c in sel:  # 직접 바꾼 코인은 감시 표시를 지운다 (익절 뒤에도 목록 유지)
+            g["state"].get(c, {}).pop("auto", None)
         core.save_config(self.cfg)
         self.set_grid_fields()
         self.g_table.checked.clear()
         self.update_liq_btn()
-        self.show_notice(f"{', '.join(sel)} → {'자동매매 중' if on else '조회만'} · 자동매매 코인: {', '.join(g['coins']) or '없음'}", 8)
+        self.show_notice(" · ".join(filter(None, [f"자동매매로: {', '.join(to_on)}" if to_on else "",
+                                                  f"조회만으로: {', '.join(to_off)}" if to_off else ""])), 8)
         self.engine.request("grid_refresh")
+
+    def toggle_watch(self):
+        g = self.cfg["grid"]
+        d = g["dip"]
+        on = not d["enabled"]
+        live = not (g["simulate"] or not self.engine.api)
+        if on:
+            msg = (f"추천 목록 {len(d['pool'])}개 중 자동매매 목록에 없는 코인을 5분마다 확인해서,\n"
+                   f"전일 대비 {d['min_pct']:g}% 이상 떨어지면(−{d['max_pct']:g}%보다 더 빠진 급락은 제외) 자동매매를 시작합니다.\n"
+                   f"1회 {g['unit_krw']:,}원 시작 매수 · 하루 최대 {d['per_day']}개 · 목록 최대 {d['max_coins']}개\n\n"
+                   + ("⚠ 실전입니다. 시장가 주문이 자동으로 나갑니다.\n\n" if live else "모의입니다. 가상으로만 사고팝니다.\n\n")
+                   + ("" if g["enabled"] else "※ 자동매매가 꺼져 있어 [켜기]를 체크하고 저장해야 움직입니다.\n\n") + "감시를 켤까요?")
+            if not messagebox.askyesno("자동매매 감시", msg, icon="warning" if live else "question"):
+                return
+        d["enabled"] = on
+        core.save_config(self.cfg)
+        self.g_dip.set(on)
+        self.render_rules()
+        self.render_watch()
+        if on:
+            self.engine.request("grid_dip", True)
+
+    def render_watch(self):
+        d = self.cfg["grid"]["dip"]
+        on = d["enabled"]
+        self.g_watch_btn.config(text="자동매매 감시 중" if on else "자동매매 감시 꺼짐",
+                                bg=T.ACCENT if on else T.PANEL, fg=T.GROUND if on else T.TEXT,
+                                highlightbackground=T.ACCENT if on else T.DIVIDER)
+        self.g_watch_btn.normal_bg = T.ACCENT if on else T.PANEL
+        for w in self.g_watch.winfo_children():
+            w.destroy()
+        if not on:
+            lab(self.g_watch, "감시 꺼짐 · [자동매매 감시 꺼짐]을 누르면 추천 목록 중 떨어진 코인을 자동으로 시작합니다",
+                "kr_xs", fg=T.MUTED).pack(side="left")
+            return
+        lab(self.g_watch, f"감시 중 · 전일 대비 −{d['min_pct']:g}% 이상이면 시작 ({self.dip_at or '확인 대기'})",
+            "kr_xs", fg=T.ACCENT).pack(side="left", padx=(0, 10))
+        for coin, chg, note in self.dip_watch[:12]:
+            hit = note == "조건 충족"
+            col = T.UP if hit else T.chg_color(chg) if not note else T.MUTED
+            lab(self.g_watch, f"{coin} {chg:+.1f}%" + (f"({note})" if note and not hit else ""), "num_xs" if not note else "kr_xs",
+                fg=col).pack(side="left", padx=(0, 10))
 
     def grid_liquidate(self):
         g = self.cfg["grid"]
@@ -2202,6 +2246,9 @@ class App:
                 self.show_drift_report(ev[1], ev[2])
             elif kind == "drift":
                 self.render_drift(ev[1])
+            elif kind == "dip_watch":
+                self.dip_watch, self.dip_at = ev[1], ev[2]
+                self.render_watch()
             elif kind == "grid":
                 self.render_grid(ev[1])
                 changed_logs = True  # 자동매매 거래 기록
