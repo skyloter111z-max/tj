@@ -1159,6 +1159,35 @@ class App:
         lab(chk, "BTC·ETH·XRP는 제외. 코인은 쉼표나 띄어쓰기로 나눠 적습니다. 코인 칸에 적고 [저장]한 코인만 사고팝니다.",
             "kr_xs", fg=T.MUTED).pack(side="left")
         T.Btn(chk, "저장", self.save_grid, "primary").pack(side="right")
+        # 하락 코인 자동 추가 (추천 목록 안에서만)
+        dp = g["dip"]
+        dbox = tk.Frame(self.g_rule_body, bg=T.PANEL, highlightthickness=1, highlightbackground=T.DIVIDER)
+        dbox.pack(fill="x", padx=16, pady=(0, 14))
+        dh = tk.Frame(dbox, bg=T.PANEL)
+        dh.pack(fill="x", padx=12, pady=(10, 6))
+        self.g_dip = tk.BooleanVar(value=dp["enabled"])
+        ttk.Checkbutton(dh, text="하락 코인 자동 추가", variable=self.g_dip, style="Panel.TCheckbutton").pack(side="left")
+        lab(dh, "추천 목록 안에서 전일 대비 떨어진 코인을 자동매매 목록에 넣고 1회 금액으로 시작 매수합니다. "
+                "익절로 사이클이 끝나면 목록에서 빠집니다. 투자유의·경고 코인은 제외.", "kr_xs", fg=T.MUTED).pack(side="left", padx=10)
+        dr = tk.Frame(dbox, bg=T.PANEL)
+        dr.pack(fill="x", padx=12, pady=(0, 6))
+        self.g_dipf = {}
+        for key, label, unit, w in (("min_pct", "하락", "% 이상", 5), ("max_pct", "~", "% 이하", 5),
+                                    ("min_vol_eok", "거래대금", "억 이상", 6), ("per_day", "하루 최대", "개", 4),
+                                    ("max_coins", "목록 최대", "개", 4)):
+            lab(dr, label, "kr_xs", fg=T.MUTED).pack(side="left", padx=(0 if key == "min_pct" else 10, 4))
+            e = ttk.Entry(dr, style="Card.TEntry", justify="right", width=w, font=T.F["num"])
+            e.insert(0, f"{dp[key]:g}")
+            e.pack(side="left")
+            lab(dr, unit, "kr_xs", fg=T.MUTED).pack(side="left", padx=(4, 0))
+            self.g_dipf[key] = e
+        pr = tk.Frame(dbox, bg=T.PANEL)
+        pr.pack(fill="x", padx=12, pady=(0, 10))
+        lab(pr, "후보(추천 목록)", "kr_xs", fg=T.MUTED).pack(side="left", padx=(0, 6))
+        e = ttk.Entry(pr, style="Card.TEntry", font=T.F["num"])
+        e.insert(0, " ".join(dp["pool"]))
+        e.pack(side="left", fill="x", expand=True)
+        self.g_dipf["pool"] = e
         if self.cfg["ui"]["grid_rules_open"]:
             self.g_rule_body.pack(fill="x")
             self.g_rule_btn.config(text="접기 ▴")
@@ -1199,9 +1228,12 @@ class App:
 
     def render_rules(self):
         g = self.cfg["grid"]
+        dp = g["dip"]
+        dip = (f" · 하락 자동 추가 켬({dp['min_pct']:g}~{dp['max_pct']:g}%, 하루 {dp['per_day']}개)" if dp["enabled"]
+               else " · 하락 자동 추가 끔")
         self.g_rule_sum.config(text=f"1회 {g['unit_krw']:,}원 · 하락 {g['drop_pct']:g}%마다 추가 · 익절 {g['profit_krw']:,}원 · "
                                     f"코인한도 {g['max_krw']:,}원 · 전체한도 {g['total_max_krw']:,}원 · "
-                                    f"본전 절반 매도 {'켬' if g['half_at_breakeven'] else '끔'}")
+                                    f"본전 절반 {'켬' if g['half_at_breakeven'] else '끔'}" + dip)
         for w in self.g_chips.winfo_children():
             w.destroy()
         steps = ["시작 매수", f"마지막 매수가 대비 {g['drop_pct']:g}% 하락마다 1회 금액 추가 매수",
@@ -1265,7 +1297,7 @@ class App:
             tag = ("조회만", T.MUTED) if not listed else (st, self.STATUS_TAG.get(st, T.UP))
             pct = (lambda v: f"{(v / p - 1) * 100:+.1f}%" if v and p else "")  # noqa: E731
             rows.append({"id": r["coin"], "check": True, "dim": not listed, "cells": {
-                "st": {"tag": tag}, "coin": {"text": r["coin"], "font": "num_b"},
+                "st": {"tag": tag}, "coin": {"text": r["coin"], "font": "num_b", "sub": "자동 추가" if r.get("auto") else None},
                 "price": {"text": T.fmtp(p), "fg": T.chg_color(self.grid_price(r)[1])},
                 "avg": {"text": T.fmtp(r["avg"]) if r["avg"] else "-", "sub": f"{r['buys']}회 · {r['cost']:,.0f}원"},
                 "pnl": {"text": f"{pnl:+,.0f}" if r["qty"] else "-", "fg": T.chg_color(pnl)},
@@ -1327,6 +1359,14 @@ class App:
                    "unit_krw": int(num(fl["unit_krw"].get())), "drop_pct": num(fl["drop_pct"].get()),
                    "profit_krw": int(num(fl["profit_krw"].get())), "max_krw": int(num(fl["max_krw"].get())),
                    "total_max_krw": int(num(fl["total_max_krw"].get()))}
+            df = self.g_dipf
+            pool = list(dict.fromkeys(c.upper() for c in re.split(r"[\s,，/;·]+", df["pool"].get()) if c))
+            dip = {"enabled": self.g_dip.get(), "pool": [c for c in pool if c not in core.GRID_BLOCKED],
+                   "min_pct": abs(num(df["min_pct"].get())), "max_pct": abs(num(df["max_pct"].get())),
+                   "min_vol_eok": num(df["min_vol_eok"].get()), "per_day": int(num(df["per_day"].get())),
+                   "max_coins": int(num(df["max_coins"].get()))}
+            if dip["min_pct"] >= dip["max_pct"]:
+                raise ValueError("하락 범위: 앞 숫자가 뒤 숫자보다 작아야 합니다")
         except ValueError as e:
             messagebox.showerror("자동매매", f"숫자를 확인하세요: {e}")
             return
@@ -1334,7 +1374,7 @@ class App:
             listed = {m["market"][4:] for m in fr.get("/market/all") if m["market"].startswith("KRW-")}
         except Exception:
             listed = None
-        unknown = [c for c in new["coins"] if listed is not None and c not in listed]
+        unknown = [c for c in new["coins"] + dip["pool"] if listed is not None and c not in listed]
         if unknown:
             messagebox.showerror("자동매매", f"업비트 원화마켓에 없는 코인입니다: {', '.join(unknown)}\n"
                                             "기호를 확인하세요 (예: BCH, SOL, DOGE, ADA).")
@@ -1347,6 +1387,12 @@ class App:
                 "자동매매 실전", f"⚠ 실전으로 켜면 승인 없이 업비트에 시장가 주문이 자동으로 나갑니다.\n"
                 f"코인 {', '.join(new['coins'])} · 1회 {new['unit_krw']:,}원 · 코인별 한도 {new['max_krw']:,}원 · "
                 f"전체 한도 {new['total_max_krw']:,}원\n\n진행할까요?",
+                icon="warning"):
+            return
+        live_after = not self.g_sim.get() and self.engine.api
+        if dip["enabled"] and not g["dip"]["enabled"] and live_after and self.g_on.get() and not messagebox.askyesno(
+                "하락 코인 자동 추가 · 실전", f"⚠ 실전입니다. 추천 목록 {len(dip['pool'])}개 중 전일 대비 {dip['min_pct']:g}~{dip['max_pct']:g}% "
+                f"떨어진 코인을 자동으로 목록에 넣고 {new['unit_krw']:,}원씩 시장가로 삽니다 (하루 최대 {dip['per_day']}개).\n\n켤까요?",
                 icon="warning"):
             return
         holding = any(st.get("qty") for st in g["state"].values())
@@ -1363,6 +1409,7 @@ class App:
             self.g_on.set(False)
             msg += "\n긴급 정지 중이라 [재개]를 누르면 켜집니다."
         g.update(new, enabled=self.g_on.get(), simulate=self.g_sim.get(), half_at_breakeven=self.g_half.get())
+        g["dip"].update(dip)
         core.save_config(self.cfg)
         self.set_grid_fields()
         self.render_rules()
@@ -1401,11 +1448,15 @@ class App:
             if not messagebox.askyesno("자동매매로 변경", msg, icon="warning" if live else "question"):
                 return
             g["coins"] = g["coins"] + sel
+            for c in sel:  # 직접 고른 코인은 익절 뒤에도 목록에 남긴다
+                g["state"].get(c, {}).pop("auto", None)
         else:
             if not messagebox.askyesno("조회만으로 변경", f"{', '.join(sel)}을(를) 조회만으로 바꿉니다.\n"
                                        "보유분은 그대로 두고 추가 매수·익절만 멈춥니다. (산 적 없는 코인은 표에서 빠집니다)\n\n바꿀까요?"):
                 return
             g["coins"] = [c for c in g["coins"] if c not in sel]
+            for c in sel:
+                g["state"].get(c, {}).pop("auto", None)
         core.save_config(self.cfg)
         self.set_grid_fields()
         self.g_table.checked.clear()

@@ -160,6 +160,30 @@ e.resume()
 ok(cfg["mode"] == "semi" and cfg["grid"]["enabled"] and not cfg.get("stopped"), "11e 재개하면 정지 전 모드·자동매매로 복귀")
 fr.get = orig_get
 
+# 13 하락 코인 자동 추가: 추천 목록 안에서만, 범위·거래대금·유의 필터, 하루 개수 제한, 익절 후 목록에서 빠짐
+e, ex, cfg = mk()
+g = cfg["grid"]; g["coins"] = ["ADA"]; ex.price.update(ADA=340.0)
+g["dip"].update(enabled=True, pool=["XLM", "AVAX", "HBAR", "NEAR", "SUI", "DOT"], per_day=2, max_coins=15)
+tick = {"XLM": (-6.0, 300e8), "AVAX": (-8.0, 120e8), "HBAR": (-20.0, 500e8), "NEAR": (-7.0, 10e8), "SUI": (-9.0, 900e8),
+        "DOT": (-3.0, 100e8), "DRV": (-12.0, 200e8)}
+orig_get = fr.get
+def fake_get(path):
+    if path.startswith("/market/all"):
+        return [{"market": f"KRW-{c}", "market_event": {"warning": c == "SUI", "caution": {}}} for c in tick]
+    ms = path.split("markets=")[1].split(",")
+    return [{"market": m, "trade_price": 100.0, "signed_change_rate": tick[m[4:]][0] / 100,
+             "acc_trade_price_24h": tick[m[4:]][1]} for m in ms]
+fr.get = fake_get
+added = e.grid_dip()
+ok(added == ["AVAX", "XLM"], f"13a 조건 맞는 코인만, 많이 빠진 순서로 하루 2개 (추가: {added}; HBAR −20%·NEAR 거래대금 부족·SUI 유의·DOT −3%·목록 밖 DRV 제외)")
+e._dip_ts = 0
+ok(e.grid_dip() == [], "13b 하루 한도 다 차면 더 추가 안 함")
+st = e.grid_state("AVAX"); ex.price["AVAX"] = 100.0; ex.bal["AVAX"] = 0.0
+cfg["grid"]["simulate"] = True
+e.grid_step("AVAX", 100.0); st["last_trade_ts"] = 0; e.grid_step("AVAX", 110.0)
+ok("AVAX" not in g["coins"] and st["cycles"] == 1 and not st.get("auto"), "13c 자동 추가 코인은 익절로 사이클이 끝나면 목록에서 빠짐")
+fr.get = orig_get
+
 # 12 설정 파일 손상 → 백업으로 복구
 d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
 c = core.load_config(); c["grid"]["state"] = {"ADA": {"qty": 1.23}}; core.save_config(c); core.save_config(c)

@@ -21,6 +21,8 @@ CONFIG_PATH = os.path.join(HERE, "fibtrader_config.json")
 DB_PATH = os.path.join(HERE, "fibtrader.db")
 KST = datetime.timezone(datetime.timedelta(hours=9))
 
+DIP_POOL = ("ADA", "TRX", "LINK", "BCH", "SOL", "DOGE", "XLM", "AVAX", "HBAR", "NEAR",  # 추천 목록
+            "DOT", "SUI", "APT", "UNI", "ETC", "AAVE", "ATOM", "ARB", "POL", "ONDO")
 DEFAULTS = {
     "mode": "semi",                 # "alert"(알림만) / "semi"(반자동: 제안 → 승인 → 실행)
     "simulate": True,               # 모의 모드: 승인해도 실제 주문 안 함
@@ -49,6 +51,16 @@ DEFAULTS = {
         "total_max_krw": 1_500_000, # 자동매매 전체 원가 한도 (여러 코인이 같이 빠질 때)
         "max_trades_per_day": 200,  # 하루 실전 거래가 이보다 많으면 버그·폭주로 보고 자동매매를 끈다
         "state": {},
+        "dip": {                    # 하락 코인 자동 추가: 추천 목록(대형 알트) 안에서만, 잡코인 제외
+            "enabled": False,
+            "pool": list(DIP_POOL),
+            "min_pct": 5.0,         # 전일 대비 이만큼 이상 떨어졌을 때
+            "max_pct": 15.0,        # 이보다 더 빠진 건 악재일 수 있어 제외
+            "min_vol_eok": 50,      # 24시간 거래대금(억 원) 이상
+            "per_day": 2,           # 하루에 새로 추가할 최대 개수
+            "max_coins": 15,        # 자동매매 목록 최대 코인 수 (이미 차 있으면 추가 안 함)
+            "day": "", "added": 0,
+        },
     },
 }
 GRID_BLOCKED = set(fr.COINS)  # 피보나치 코인은 자동매매 금지
@@ -86,6 +98,7 @@ def load_config():
     if saved is not None:
         cfg.update({k: v for k, v in saved.items() if k in DEFAULTS and k != "grid"})
         cfg["grid"].update(saved.get("grid", {}))
+        cfg["grid"]["dip"] = {**DEFAULTS["grid"]["dip"], **saved.get("grid", {}).get("dip", {})}
         for c in fr.COINS:
             cfg["progress"].setdefault(c, {"sell_done": 0, "buy_done": 0})
     apply_config(cfg)
@@ -411,6 +424,10 @@ class Engine(threading.Thread):
                 self.grid_check_warnings()
             except Exception:
                 pass  # 조회 실패 시 다음 시간에 다시
+            try:
+                self.grid_dip()
+            except Exception as e:  # 조회 실패 시 5분 뒤 다시
+                print("dip", e)
             for coin in self.grid_coins():
                 if coin in self.prices:
                     try:
@@ -713,6 +730,51 @@ class Engine(threading.Thread):
                 st["blocked"] = False
                 self.alert("grid", f"{coin} 자동매매 재개", "투자유의 지정이 풀렸습니다.")
 
+    def grid_dip(self):
+        """하락 코인 자동 추가 (5분마다). 추천 목록 안에서 전일 대비 min~max% 떨어지고 거래대금이 충분한 코인을
+        자동매매 목록에 넣는다 → 다음 확인 때 1회 금액으로 시작 매수. 투자유의·경고 코인은 넣지 않는다."""
+        g = self.cfg["grid"]
+        d = g["dip"]
+        if not d.get("enabled") or time.time() - getattr(self, "_dip_ts", 0) < 300:
+            return []
+        self._dip_ts = time.time()
+        today = now().strftime("%Y-%m-%d")
+        if d.get("day") != today:
+            d["day"], d["added"] = today, 0
+        room = min(d["per_day"] - d["added"], d["max_coins"] - len(g["coins"]))
+        pool = [c for c in d["pool"] if c not in g["coins"] and c not in GRID_BLOCKED
+                and not self.grid_state(c).get("qty") and not self.grid_state(c).get("pending")]
+        if room <= 0 or not pool:
+            return []
+        info = {m["market"][4:]: m for m in fr.get("/market/all?isDetails=true") if m["market"].startswith("KRW-")}
+        pool = [c for c in pool if c in info]
+        if not pool:
+            return []
+        picks = []
+        for t in fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in pool)):
+            coin, chg, vol = t["market"][4:], t["signed_change_rate"] * 100, t["acc_trade_price_24h"]
+            m = info[coin]
+            ev = m.get("market_event") or {}
+            if m.get("market_warning") == "CAUTION" or ev.get("warning") or any((ev.get("caution") or {}).values()):
+                continue
+            if -d["max_pct"] <= chg <= -d["min_pct"] and vol >= d["min_vol_eok"] * 1e8:
+                picks.append((chg, coin, vol))
+        added = []
+        for chg, coin, vol in sorted(picks)[:room]:
+            g["coins"] = g["coins"] + [coin]
+            st = self.grid_state(coin)
+            st["auto"] = True
+            d["added"] += 1
+            added.append(coin)
+            self.alert("grid", f"{coin} 하락 코인 자동 추가 ({chg:+.1f}%)",
+                       f"전일 대비 {chg:+.1f}% · 거래대금 {vol / 1e8:,.0f}억 → 자동매매 목록에 넣고 {g['unit_krw']:,}원 시작 매수합니다. "
+                       f"(오늘 {d['added']}/{d['per_day']}개)")
+        if added:
+            save_config(self.cfg)
+            self.prices.update({t["market"][4:]: t["trade_price"]
+                                for t in fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in added))})
+        return added
+
     def grid_step(self, coin, price):
         g, st = self.cfg["grid"], self.grid_state(coin)
         if st.get("pending") and self.api and not g["simulate"]:
@@ -743,6 +805,10 @@ class Engine(threading.Thread):
                 self.alert("grid", f"{tag}{coin} 익절 {pnl:+,.0f}원",
                            f"{fmtp(px)}원에 전량 매도 · {st['buys']}회 매수 사이클 · 누적 {st['profit_total']:,.0f}원")
                 st.update(qty=0.0, cost=0.0, buys=0, ref=None, halved=False, realized=0.0)
+                if st.get("auto"):  # 하락으로 자동 추가된 코인은 익절로 사이클이 끝나면 목록에서 뺀다 (자리 비움)
+                    st["auto"] = False
+                    g["coins"] = [c for c in g["coins"] if c != coin]
+                    self.alert("grid", f"{tag}{coin} 자동 추가 코인 정리", "익절로 사이클이 끝나 자동매매 목록에서 뺐습니다.")
             elif (g["half_at_breakeven"] and st["buys"] >= 2 and not st["halved"] and price >= breakeven
                   and st["qty"] / 2 * price >= MIN_SELL_KRW):  # 반씩 나눠도 업비트 최소 주문 이상일 때만
                 before = st["qty"]
@@ -789,7 +855,7 @@ class Engine(threading.Thread):
             status = ("결과 확인 중" if st.get("pending") else "조회만 · 매매 안 함" if coin not in listed
                       else "투자유의 중지" if st.get("blocked")
                       else f"정지 {int((st['pause_until'] - t) // 60) + 1}분" if st.get("pause_until", 0) > t else "자동매매 중")
-            rows.append({"status": status, "listed": coin in listed, "coin": coin, "price": p, "buys": st["buys"], "cost": st["cost"], "qty": q, "avg": avg,
+            rows.append({"status": status, "listed": coin in listed, "auto": bool(st.get("auto")), "coin": coin, "price": p, "buys": st["buys"], "cost": st["cost"], "qty": q, "avg": avg,
                          "pnl": pnl, "next_buy": st["ref"] * (1 - g["drop_pct"] / 100) if st["ref"] else None,
                          "breakeven": avg / (1 - FEE) if avg and st["buys"] >= 2 and not st["halved"] else None,
                          "tp": tp, "cycles": st["cycles"], "profit_total": st["profit_total"]})
