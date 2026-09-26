@@ -26,6 +26,7 @@ ROW_CURRENT = "#283C4F"
 ROW_NEAR = "#203041"
 ROW_SELECTED = "#233446"
 BANNER_BG = "#1F2E3D"
+WARN = "#E0A84A"      # 물타는 중·한도 근접 (자동매매)
 LINE_NOW = "#B5D9FD"   # 차트 현재가·매수평균가 기준선
 HOVER_7 = "#253240"    # TEXT 7%를 PANEL 위에 섞은 색 (보조 버튼 hover)
 TRACK_10 = "#2F3A47"   # TEXT 10%를 PANEL 위에 섞은 색 (비중 막대 트랙)

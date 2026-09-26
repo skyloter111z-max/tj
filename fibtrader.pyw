@@ -124,6 +124,13 @@ def man(v):
     return f"{v:,.1f}만" if v < 100 else f"{v:,.0f}만"
 
 
+def manx(v):
+    """만 원 단위, 뒤 0 없이: 10,005 → 1만, 15,000 → 1.5만, 22,500 → 2.25만, 2,000,000 → 200만."""
+    m = v / 10_000
+    t = f"{m:,.2f}" if abs(m) < 10 else f"{m:,.1f}" if abs(m) < 100 else f"{m:,.0f}"
+    return (t.rstrip("0").rstrip(".") if "." in t else t) + "만"
+
+
 def plan_label(label):
     """플랜 라벨 '1차 매수 38.2% (20%)' → ('1차 매수', '38.2% · 20%')."""
     parts = label.split()
@@ -135,7 +142,7 @@ class App:
         self.cfg = core.load_config()
         ui = self.cfg.setdefault("ui", {})
         for k, v in {"charts_open": [], "inv_charts_open": [], "near_highlight_pct": 5, "last_tab": 0,
-                     "sel_coin": "BTC", "chart_1b": False, "grid_rules_open": False, "orders_filter": "변경만",
+                     "sel_coin": "BTC", "chart_1b": False, "grid_open": {}, "grid_filter": "all", "grid_sort": "cum", "orders_filter": "변경만",
                      "alerts_seen": 0, "alerts_read": 0}.items():
             ui.setdefault(k, v)
         self.db = core.DB()
@@ -1281,29 +1288,104 @@ class App:
     GRID_FIELDS = (("coins", "코인", "", 3), ("unit_krw", "1회", "원", 1), ("multiplier", "배수", "배", 1), ("drop_pct", "하락", "%", 1),
                    ("profit_krw", "익절", "원", 1), ("max_krw", "코인한도", "원", 1), ("total_max_krw", "전체한도", "원", 1))
 
+    GRID_PANELS = (("rules", "규칙 · 설정"), ("cash", "현금 보호"), ("watch", "자동매매 감시"), ("log", "거래 기록"))
+    GRID_FILTERS = (("all", "전체"), ("ok", "정상"), ("avg", "물타는 중"), ("limit", "한도 근접"), ("view", "조회만"))
+    GRID_SORTS = (("cum", "누적 수익"), ("pnl", "지금 손익"), ("n", "매수 횟수"), ("sym", "이름"))
+    GRID_SUB_BG = "#162029"  # 표 위 버튼 줄 (GROUND와 PANEL 사이)
+
     def build_grid(self, nb):
         f = tk.Frame(nb, bg=T.GROUND)
         nb.add(f, "자동매매")
-        g = self.cfg["grid"]
-        self.g_stats = W.StatCells(f, [("state", "상태"), ("cost", "투입 원가"), ("pnl", "평가손익 (수수료 뺀 금액)"),
-                                       ("real", "누적 실현 (수수료 뺀 금액)"),
+        g, ui = self.cfg["grid"], self.cfg["ui"]
+        opened = ui.setdefault("grid_open", {})
+        if ui.pop("grid_rules_open", False):
+            opened["rules"] = True
+        ui.setdefault("grid_filter", "all")
+        ui.setdefault("grid_sort", "cum")
+        self.g_stats = W.StatCells(f, [("state", "상태"), ("cum", "누적 수익 · 완료 사이클 (수수료 뺀)"),
+                                       ("pnl", "지금 손익 · 진행 중 사이클 (수수료 뺀)"), ("cost", "투입 원가"),
                                        ("cap", "전체 한도 사용")])
         self.g_stats.pack(fill="x")
         outer, body = W.scroll_page(f)
         outer.pack(fill="both", expand=True)
         inner = tk.Frame(body, bg=T.GROUND)
-        inner.pack(fill="x", padx=18, pady=18)
+        inner.pack(fill="x", padx=18, pady=16)
 
-        # 규칙 · 설정 (기본 접힘, 접혀도 핵심 값 한 줄)
-        rc, rh = card(inner, "규칙 · 설정")
-        self.g_rule_sum = lab(rh, "", "kr_xs", fg=T.MUTED)
-        self.g_rule_sum.pack(side="left", padx=12, pady=(3, 0))
-        self.g_rule_btn = T.Btn(rh, "펼치기 ▾", self.toggle_rules, "ghost")
-        self.g_rule_btn.pack(side="right")
-        self.g_rule_body = tk.Frame(rc, bg=T.PANEL)
-        self.g_chips = tk.Frame(self.g_rule_body, bg=T.PANEL)
-        self.g_chips.pack(fill="x", padx=16, pady=(4, 14))
-        fields = tk.Frame(self.g_rule_body, bg=T.PANEL)
+        # 대상 코인: 필터 · 정렬 · 버튼 · 표
+        tc, _ = card(inner)
+        th = tk.Frame(tc, bg=T.PANEL)
+        th.pack(fill="x", padx=16, pady=(12, 10))
+        lab(th, "대상 코인", "kr_panel").pack(side="left", padx=(0, 14))
+        self.g_filter_btns = {}
+        for key, name in self.GRID_FILTERS:
+            b = tk.Label(th, text=name, font=T.F["kr_s"], padx=10, pady=3, cursor="hand2", highlightthickness=1)
+            b.pack(side="left", padx=(0, 6))
+            b.bind("<Button-1>", lambda e, k=key: self.set_grid_filter(k))
+            self.g_filter_btns[key] = (b, name)
+        sort_names = dict(self.GRID_SORTS)
+        W.Segmented(th, [n for _, n in self.GRID_SORTS], sort_names.get(ui["grid_sort"], "누적 수익"),
+                    self.set_grid_sort).pack(side="right")
+        lab(th, "정렬", "kr_xs", fg=T.MUTED).pack(side="right", padx=(0, 8))
+        sub = self.GRID_SUB_BG
+        tk.Frame(tc, bg=T.DIVIDER, height=1).pack(fill="x")
+        bar = tk.Frame(tc, bg=sub)
+        bar.pack(fill="x")
+        self.g_sel_lab = lab(bar, "", "kr_xs", fg=T.MUTED, bg=sub)
+        self.g_sel_lab.pack(side="left", padx=16)
+        self.g_liq_btn = T.Btn(bar, "선택 코인 청산", self.grid_liquidate, "danger", bg=sub)
+        self.g_liq_btn.pack(side="right", padx=(0, 16), pady=7)
+        T.Btn(bar, "구분 변경", self.grid_toggle_listed, bg=sub).pack(side="right", padx=(0, 8))
+        T.Btn(bar, "조회", lambda: self.engine.request("grid_refresh"), bg=sub).pack(side="right", padx=(0, 8))
+        self.g_watch_btn = T.Btn(bar, "", self.toggle_watch, bg=sub)
+        self.g_watch_btn.pack(side="right", padx=(0, 8))
+        tk.Frame(tc, bg=T.DIVIDER, height=1).pack(fill="x")
+
+        cols = [{"key": "chk", "w": 26}, {"key": "coin", "title": "코인 · 상태", "w": 150},
+                {"key": "cum", "title": "누적 수익", "sub": "완료 사이클", "tfg": T.TEXT, "w": 108, "anchor": "e"},
+                {"key": "pnl", "title": "지금 손익", "sub": "진행 중 · 수수료 뺀", "w": 112, "anchor": "e"},
+                {"key": "gap", "w": 14},
+                {"key": "stage", "title": "매수 단계", "sub": f"원가 / 코인한도 {manx(g['max_krw'])}", "w": 170},
+                {"key": "buy", "title": "▼ 다음 추가매수", "sub": "가격 · 금액", "tfg": T.DOWN, "w": 136},
+                {"key": "pos", "title": "현재가 위치", "w": 150, "grow": 1, "anchor": "center"},
+                {"key": "sell", "title": "다음 매도 ▲", "sub": "절반(본전) · 전량(익절)", "tfg": T.UP, "w": 150, "anchor": "e"},
+                {"key": "own", "title": "기존 보유(별도)", "w": 150, "anchor": "e"}]
+        self.g_table = W.Table(tc, cols, rh=56, check=True, fit=True, min_rows=2, on_check=self.update_liq_btn,
+                               head_px=42, empty=["자동매매 대상 코인이 없습니다", "규칙 · 설정의 코인 칸에 적고 [저장]하세요"])
+        self.g_table.pack(fill="x")
+        self.g_note = lab(tc, "", "kr_xs", fg=T.MUTED, anchor="w")
+        self.g_note.pack(fill="x", padx=16, pady=(8, 2))
+        self.g_watch = tk.Frame(tc, bg=T.PANEL)
+        self.g_watch.pack(fill="x", padx=16, pady=(2, 12))
+        self.dip_watch, self.dip_at = [], ""
+
+        # 접는 패널: 규칙 · 설정 / 현금 보호 / 자동매매 감시 / 거래 기록 (접혀도 핵심 값 한 줄)
+        pc, _ = card(inner, pady=(14, 0))
+        self.g_panels = {}
+        for i, (key, title) in enumerate(self.GRID_PANELS):
+            wrap = tk.Frame(pc, bg=T.PANEL)
+            wrap.pack(fill="x")
+            if i < len(self.GRID_PANELS) - 1:
+                tk.Frame(wrap, bg=T.DIVIDER, height=1).pack(fill="x", side="bottom")
+            head = tk.Frame(wrap, bg=T.PANEL, cursor="hand2")
+            head.pack(fill="x")
+            arrow = lab(head, "▸", "kr_s", fg=T.MUTED)
+            arrow.pack(side="left", padx=(16, 8), pady=11)
+            name = lab(head, title, "kr_b", anchor="w", width=12)
+            name.pack(side="left")
+            summ = lab(head, "", "kr_xs", fg=T.MUTED, anchor="w")
+            summ.pack(side="left", fill="x", expand=True, padx=(8, 0))
+            act = lab(head, "펼치기", "kr_xs", fg=T.MUTED)
+            act.pack(side="right", padx=16)
+            for wdg in (head, arrow, name, summ, act):
+                wdg.bind("<Button-1>", lambda e, k=key: self.toggle_grid_panel(k))
+            pbody = tk.Frame(wrap, bg=T.PANEL)
+            self.g_panels[key] = {"arrow": arrow, "sum": summ, "act": act, "body": pbody}
+
+        # 규칙 · 설정
+        rb = self.g_panels["rules"]["body"]
+        self.g_chips = tk.Frame(rb, bg=T.PANEL)
+        self.g_chips.pack(fill="x", padx=16, pady=(0, 14))
+        fields = tk.Frame(rb, bg=T.PANEL)
         fields.pack(fill="x", padx=16)
         self.g_fields = {}
         vals = {"coins": ",".join(g["coins"]), "unit_krw": f"{g['unit_krw']:,}", "multiplier": f"{g.get('multiplier', 1.0):g}",
@@ -1322,7 +1404,7 @@ class App:
             if unit:
                 lab(row, unit, "kr_s", fg=T.MUTED).pack(side="left", padx=(6, 0))
             self.g_fields[key] = e
-        chk = tk.Frame(self.g_rule_body, bg=T.PANEL)
+        chk = tk.Frame(rb, bg=T.PANEL)
         chk.pack(fill="x", padx=16, pady=(12, 14))
         self.g_on = tk.BooleanVar(value=g["enabled"])
         self.g_sim = tk.BooleanVar(value=g["simulate"])
@@ -1332,19 +1414,16 @@ class App:
         for text, var in (("켜기", self.g_on), ("모의", self.g_sim), ("본전 절반 매도", self.g_half),
                           ("수익 재투자", self.g_reinvest), ("투자유의 지정 시 자동 청산", self.g_autoexit)):
             ttk.Checkbutton(chk, text=text, variable=var, style="Panel.TCheckbutton").pack(side="left", padx=(0, 16))
-        lab(chk, "BTC·ETH·XRP는 제외. 코인은 쉼표나 띄어쓰기로 나눠 적습니다. 코인 칸에 적고 [저장]한 코인만 사고팝니다.",
-            "kr_xs", fg=T.MUTED).pack(side="left")
         T.Btn(chk, "저장", self.save_grid, "primary").pack(side="right")
+        lab(rb, "BTC·ETH·XRP는 제외. 코인은 쉼표나 띄어쓰기로 나눠 적습니다. 코인 칸에 적고 [저장]한 코인만 사고팝니다.",
+            "kr_xs", fg=T.MUTED, anchor="w").pack(fill="x", padx=16, pady=(0, 14))
+
         # 현금 보호 (실전): 주문 가능 원화 기준 단계별로 매수를 줄인다
-        cbox = tk.Frame(self.g_rule_body, bg=T.PANEL, highlightthickness=1, highlightbackground=T.DIVIDER)
-        cbox.pack(fill="x", padx=16, pady=(0, 12))
-        ch = tk.Frame(cbox, bg=T.PANEL)
-        ch.pack(fill="x", padx=12, pady=(10, 6))
-        lab(ch, "현금 보호", "kr_b").pack(side="left")
-        lab(ch, "주문 가능 원화(피보나치 예약에 묶인 돈 제외) 기준. 코인 모으기는 업비트 앱에서 직접 조절하라고 알림을 보냅니다.",
-            "kr_xs", fg=T.MUTED).pack(side="left", padx=10)
-        cr = tk.Frame(cbox, bg=T.PANEL)
-        cr.pack(fill="x", padx=12, pady=(0, 10))
+        cb = self.g_panels["cash"]["body"]
+        lab(cb, "주문 가능 원화(피보나치 예약에 묶인 돈 제외) 기준. 코인 모으기는 업비트 앱에서 직접 조절하라고 알림을 보냅니다.",
+            "kr_xs", fg=T.MUTED, anchor="w").pack(fill="x", padx=16, pady=(0, 8))
+        cr = tk.Frame(cb, bg=T.PANEL)
+        cr.pack(fill="x", padx=16, pady=(0, 14))
         self.g_cash = {}
         for key, label, unit in (("cash_warn", "주의 (모으기 절반 알림)", "원 미만"),
                                  ("cash_floor_start", "위험 (새 시작 매수 중지)", "원 미만"),
@@ -1355,18 +1434,19 @@ class App:
             e.pack(side="left")
             lab(cr, unit, "kr_xs", fg=T.MUTED).pack(side="left", padx=(4, 0))
             self.g_cash[key] = e
-        # 하락 코인 자동 추가 (추천 목록 안에서만)
+        T.Btn(cr, "저장", self.save_grid, "primary").pack(side="right")
+
+        # 자동매매 감시 (추천 목록 안에서만)
         dp = g["dip"]
-        dbox = tk.Frame(self.g_rule_body, bg=T.PANEL, highlightthickness=1, highlightbackground=T.DIVIDER)
-        dbox.pack(fill="x", padx=16, pady=(0, 14))
-        dh = tk.Frame(dbox, bg=T.PANEL)
-        dh.pack(fill="x", padx=12, pady=(10, 6))
+        wb = self.g_panels["watch"]["body"]
+        dh = tk.Frame(wb, bg=T.PANEL)
+        dh.pack(fill="x", padx=16, pady=(0, 6))
         self.g_dip = tk.BooleanVar(value=dp["enabled"])
-        ttk.Checkbutton(dh, text="자동매매 감시", variable=self.g_dip, style="Panel.TCheckbutton").pack(side="left")
+        ttk.Checkbutton(dh, text="감시 켜기", variable=self.g_dip, style="Panel.TCheckbutton").pack(side="left")
         lab(dh, "추천 목록 중 전일 대비 아래 % 이상 떨어진 코인은 자동매매를 시작합니다(1회 금액으로 시작 매수). "
                 "익절로 사이클이 끝나면 다시 감시로 돌아갑니다. 투자유의·경고 코인은 제외.", "kr_xs", fg=T.MUTED).pack(side="left", padx=10)
-        dr = tk.Frame(dbox, bg=T.PANEL)
-        dr.pack(fill="x", padx=12, pady=(0, 6))
+        dr = tk.Frame(wb, bg=T.PANEL)
+        dr.pack(fill="x", padx=16, pady=(0, 6))
         self.g_dipf = {}
         for key, label, unit, w in (("min_pct", "하락", "% 이상", 5), ("max_pct", "~", "% 이하", 5),
                                     ("min_vol_eok", "거래대금", "억 이상", 6), ("per_day", "하루 최대", "개", 4),
@@ -1377,69 +1457,85 @@ class App:
             e.pack(side="left")
             lab(dr, unit, "kr_xs", fg=T.MUTED).pack(side="left", padx=(4, 0))
             self.g_dipf[key] = e
-        pr = tk.Frame(dbox, bg=T.PANEL)
-        pr.pack(fill="x", padx=12, pady=(0, 10))
+        T.Btn(dr, "저장", self.save_grid, "primary").pack(side="right")
+        pr = tk.Frame(wb, bg=T.PANEL)
+        pr.pack(fill="x", padx=16, pady=(0, 14))
         lab(pr, "후보(추천 목록)", "kr_xs", fg=T.MUTED).pack(side="left", padx=(0, 6))
         e = ttk.Entry(pr, style="Card.TEntry", font=T.F["num"])
         e.insert(0, " ".join(dp["pool"]))
         e.pack(side="left", fill="x", expand=True)
         self.g_dipf["pool"] = e
-        if self.cfg["ui"]["grid_rules_open"]:
-            self.g_rule_body.pack(fill="x")
-            self.g_rule_btn.config(text="접기 ▴")
-        self.render_rules()
-
-        # 대상 코인 (조회)
-        tc, th = card(inner, "대상 코인", "30초마다 갱신 · 코인 칸에 적은 코인 + 자동매매로 산 수량이 남은 코인", pady=(18, 0))
-        self.g_liq_btn = T.Btn(th, "선택 코인 청산", self.grid_liquidate, "danger")
-        self.g_liq_btn.pack(side="right")
-        T.Btn(th, "구분 변경", self.grid_toggle_listed).pack(side="right", padx=(0, 16))
-        T.Btn(th, "조회", lambda: self.engine.request("grid_refresh")).pack(side="right", padx=8)
-        self.g_watch_btn = T.Btn(th, "", self.toggle_watch)
-        self.g_watch_btn.pack(side="right")
-        cols = [{"key": "chk", "w": 26}, {"key": "st", "title": "상태", "w": 104},
-                {"key": "coin", "title": "코인", "w": 58}, {"key": "price", "title": "현재가", "w": 90, "anchor": "e"},
-                {"key": "avg", "title": "평단 · 매수", "w": 100, "anchor": "e"},
-                {"key": "pnl", "title": "손익(수수료 뺌)", "w": 96, "anchor": "e"},
-                {"key": "pos", "title": "다음 매수 ← 현재 → 익절", "w": 200, "anchor": "center"},
-                {"key": "next", "title": "다음 매수가 · 금액", "w": 120, "anchor": "e"},
-                {"key": "tp", "title": "익절가", "w": 90, "anchor": "e"},
-                {"key": "cyc", "title": "사이클", "w": 60, "anchor": "e"},
-                {"key": "tot", "title": "누적 수익", "w": 80, "anchor": "e"},
-                {"key": "own", "title": "기존 보유(별도)", "w": 120, "anchor": "e", "grow": 1}]
-        self.g_table = W.Table(tc, cols, rh=44, check=True, fit=True, min_rows=2, on_check=self.update_liq_btn,
-                               empty=["자동매매 대상 코인이 없습니다", "규칙 · 설정의 코인 칸에 적고 [저장]하세요"])
-        self.g_table.pack(fill="x")
-        self.g_note = lab(tc, "", "kr_xs", fg=T.MUTED, anchor="w")
-        self.g_note.pack(fill="x", padx=16, pady=(8, 4))
-        self.g_watch = tk.Frame(tc, bg=T.PANEL)
-        self.g_watch.pack(fill="x", padx=16, pady=(0, 12))
-        self.dip_watch, self.dip_at = [], ""
-        self.render_watch()
 
         # 거래 기록
-        lc, _ = card(inner, "거래 기록", "최근 100건", pady=(18, 0))
         cols = [{"key": "ts", "title": "시간", "w": 170}, {"key": "sim", "title": "모의", "w": 60},
                 {"key": "coin", "title": "코인", "w": 80}, {"key": "side", "title": "구분", "w": 70},
                 {"key": "price", "title": "가격", "w": 150, "anchor": "e"},
                 {"key": "qty", "title": "수량", "w": 160, "anchor": "e", "grow": 1},
                 {"key": "krw", "title": "금액", "w": 140, "anchor": "e"}]
-        self.grid_log = W.Table(lc, cols, rh=36, fit=True, min_rows=2, empty=["거래 기록이 없습니다"])
+        self.grid_log = W.Table(self.g_panels["log"]["body"], cols, rh=36, fit=True, min_rows=2,
+                                empty=["거래 기록이 없습니다"])
         self.grid_log.pack(fill="x", pady=(0, 8))
+
+        for key in self.g_panels:
+            self.show_grid_panel(key, bool(opened.get(key)))
+        self.render_rules()
+        self.render_watch()
+        self.render_grid_filters()
+
+    def show_grid_panel(self, key, on):
+        p = self.g_panels[key]
+        if on:
+            p["body"].pack(fill="x")
+        else:
+            p["body"].pack_forget()
+        p["arrow"].config(text="▾" if on else "▸")
+        p["act"].config(text="접기" if on else "펼치기")
+
+    def toggle_grid_panel(self, key):
+        opened = self.cfg["ui"].setdefault("grid_open", {})
+        opened[key] = not opened.get(key)
+        core.save_config(self.cfg)
+        self.show_grid_panel(key, opened[key])
+
+    def toggle_rules(self):
+        self.toggle_grid_panel("rules")
+
+    def set_grid_filter(self, key):
+        self.cfg["ui"]["grid_filter"] = key
+        core.save_config(self.cfg)
+        self.render_grid_tab()
+
+    def set_grid_sort(self, name):
+        self.cfg["ui"]["grid_sort"] = {n: k for k, n in self.GRID_SORTS}[name]
+        core.save_config(self.cfg)
+        self.render_grid_tab()
+
+    def render_grid_filters(self, counts=None):
+        cur = self.cfg["ui"].get("grid_filter", "all")
+        for key, (b, name) in self.g_filter_btns.items():
+            on = key == cur
+            b.config(text=f"{name}  {counts.get(key, 0)}" if counts is not None else name,
+                     bg=T.ROW_CURRENT if on else T.PANEL, fg=T.TEXT if on else T.MUTED,
+                     highlightbackground=T.MUTED if on else T.DIVIDER, highlightcolor=T.MUTED if on else T.DIVIDER)
 
     def render_rules(self):
         g = self.cfg["grid"]
         dp = g["dip"]
-        dip = (f" · 감시 중(−{dp['min_pct']:g}% 이상 하락 시 시작, 하루 {dp['per_day']}개)" if dp["enabled"]
-               else " · 감시 꺼짐")
         mult = g.get("multiplier", 1.0)
-        self.g_rule_sum.config(text=f"1회 {g['unit_krw']:,}원 · " + (f"추가 매수 {mult:g}배씩 · " if mult > 1 else "") +
-                                    f"하락 {g['drop_pct']:g}%마다 추가 · 익절 {g['profit_krw']:,}원 · "
-                                    f"코인한도 {g['max_krw']:,}원 · 전체한도 {g['total_max_krw']:,}원 · "
-                                    f"본전 절반 {'켬' if g['half_at_breakeven'] else '끔'}" + dip)
+        self.g_panels["rules"]["sum"].config(
+            text=f"1회 {g['unit_krw']:,}원 · {g['drop_pct']:g}% 하락마다 " + (f"{mult:g}배 추가매수" if mult > 1 else "같은 금액 추가매수")
+            + f" · 익절 {g['profit_krw']:,}원 · 코인한도 {manx(g['max_krw'])} · 전체한도 {manx(g['total_max_krw'])}"
+            + (" + 실현수익 재투자" if g.get("reinvest", True) else "") + f" · 본전 절반 {'켬' if g['half_at_breakeven'] else '끔'}"
+            + (" · 모의" if g["simulate"] else ""))
+        self.g_panels["cash"]["sum"].config(
+            text=f"주문 가능 원화가 주의 {manx(g.get('cash_warn', 0))} · 위험 {manx(g.get('cash_floor_start', 0))} · "
+                 f"비상 {manx(g.get('cash_floor_all', 0))} 아래로 줄면 단계별로 매수를 줄입니다")
+        self.g_panels["watch"]["sum"].config(
+            text=f"{'켜짐' if dp['enabled'] else '꺼짐'} · 전일 대비 {dp['min_pct']:g}~{dp['max_pct']:g}% 하락 · "
+                 f"거래대금 {dp['min_vol_eok']:g}억 이상 · 하루 최대 {dp['per_day']}개 · 목록 최대 {dp['max_coins']}개",
+            fg=T.ACCENT if dp["enabled"] else T.MUTED)
         for w in self.g_chips.winfo_children():
             w.destroy()
-        mult = g.get("multiplier", 1.0)
         amounts = " → ".join(f"{g['unit_krw'] * mult ** i:,.0f}" for i in range(5)) + " …" if mult > 1 else ""
         steps = ["시작 매수", (f"{g['drop_pct']:g}% 하락마다 직전 매수의 {mult:g}배 추가 매수 ({amounts})" if mult > 1
                            else f"마지막 매수가 대비 {g['drop_pct']:g}% 하락마다 1회 금액 추가 매수"),
@@ -1453,96 +1549,170 @@ class App:
             lab(chip, str(i), "num_b", fg=T.DOWN).pack(side="left", padx=(10, 6), pady=6)
             lab(chip, text, "kr_s").pack(side="left", padx=(0, 10))
 
-    def toggle_rules(self):
-        on = not self.cfg["ui"]["grid_rules_open"]
-        self.cfg["ui"]["grid_rules_open"] = on
-        core.save_config(self.cfg)
-        if on:
-            self.g_rule_body.pack(fill="x")
-        else:
-            self.g_rule_body.pack_forget()
-        self.g_rule_btn.config(text="접기 ▴" if on else "펼치기 ▾")
+    def grid_max_buys(self):
+        """코인 한도 안에서 살 수 있는 최대 매수 횟수 (마틴게일이면 금액이 커져서 금방 찬다)."""
+        g = self.cfg["grid"]
+        cum, n = 0.0, 0
+        while n < 200:
+            amt = g["unit_krw"] * g.get("multiplier", 1.0) ** n
+            if cum + amt > g["max_krw"]:
+                break
+            cum += amt
+            n += 1
+        return max(n, 1)
 
-    @staticmethod
-    def pos_bar(nb, tp, p):
-        """위치 막대: 왼쪽 끝 = 다음 매수가(UP), 오른쪽 끝 = 익절가(DOWN), 현재가에 2×14 표시."""
-        def draw(c, x0, x1, cy):
-            if not (nb and tp and p) or tp <= nb:
+    def grid_kind(self, r):
+        """필터 분류: view(조회만) / limit(한도 근접) / avg(물타는 중) / ok(정상)."""
+        g = self.cfg["grid"]
+        if not r.get("listed", True):
+            return "view"
+        if r["qty"] and (r["cost"] >= g["max_krw"] * 0.7 or (r.get("next_amt") and r["cost"] + r["next_amt"] > g["max_krw"])):
+            return "limit"
+        if r["qty"] and r["buys"] >= 2:
+            return "avg"
+        return "ok"
+
+    STATUS_BADGE = {"투자유의 중지": T.UP, "결과 확인 중": T.ACCENT, "시세 대기": T.MUTED}
+
+    def grid_row(self, r, p, pnl, done, n_max):
+        g = self.cfg["grid"]
+        kind = self.grid_kind(r)
+        dim = kind == "view"
+        dc = (lambda col: T.blend(col, T.PANEL, 0.6) if dim else col)  # noqa: E731
+        st = r["status"]
+        if self.ledger_mismatch(r):
+            badge = ("정리 필요", T.UP, "", None)
+        elif st in self.STATUS_BADGE or st.startswith("정지"):
+            badge = (st, self.STATUS_BADGE.get(st, T.MUTED), "", None)
+        elif kind == "view":
+            badge = ("조회만", T.DIVIDER, T.DIVIDER_SOFT, T.MUTED)
+        elif kind == "limit":
+            badge = ("한도 근접", T.WARN, T.WARN, T.GROUND)
+        elif kind == "avg":
+            badge = (f"물타는 중 {r['buys']}회", T.WARN, "", None)
+        elif r["qty"]:
+            badge = ("정상", T.DIVIDER, "", T.MUTED)
+        else:
+            badge = ("시작 대기", T.DIVIDER, "", T.MUTED)
+        auto = r.get("auto")
+
+        def coin_cell(c, x0, x1, cy):
+            c.create_text(x0, cy - 10, text=r["coin"], fill=dc(T.TEXT), font=T.F["num_cell_b"], anchor="w")
+            x = x0 + T.measure("num_cell_b", r["coin"]) + 8
+            c.create_text(x, cy - 9, text=T.fmtp(p), fill=dc(T.MUTED), font=T.F["num_s"], anchor="w")
+            tw = W.draw_tag(c, x0, cy + 11, badge[0], dc(badge[1]), fill=dc(badge[2]) if badge[2] else "",
+                            fg=dc(badge[3]) if badge[3] else None)
+            if auto:
+                c.create_text(x0 + tw + 6, cy + 11, text="감시로 시작", fill=dc(T.MUTED), font=T.F["kr_xxs"], anchor="w")
+
+        buys = r["buys"] if r["qty"] else 0
+        pips = min(n_max, 12)
+        filled = buys if n_max <= 12 else round(buys / n_max * 12)
+
+        def stage_cell(c, x0, x1, cy):
+            on = dc(T.WARN if buys >= 2 else T.MUTED)
+            for i in range(pips):
+                xx = x0 + i * 11
+                c.create_rectangle(xx, cy - 13, xx + 9, cy - 3, fill=on if i < filled else dc(T.TRACK_10), outline="")
+            t = f"{buys}회"
+            c.create_text(x0, cy + 10, text=t, fill=dc(T.WARN if buys >= 2 else T.TEXT), font=T.F["tag"], anchor="w")
+            c.create_text(x0 + T.measure("tag", t) + 6, cy + 10, text=f"원가 {manx(r['cost'])} / {manx(g['max_krw'])}"
+                          if r["cost"] else "원가 없음", fill=dc(T.MUTED), font=T.F["kr_xs"], anchor="w")
+
+        can_buy = bool(r["qty"] and r["next_buy"] and r.get("next_amt") and r["cost"] + r["next_amt"] <= g["max_krw"])
+        half = bool(r.get("breakeven") and p and p < r["breakeven"])
+        sell = r["breakeven"] if half else r["tp"]
+        lo = r["next_buy"] if can_buy else (p * 0.9 if p else None)
+
+        def pos_cell(c, x0, x1, cy):
+            if not (r["qty"] and p and sell and lo) or sell <= lo:
                 c.create_text((x0 + x1) / 2, cy, text="-", fill=T.MUTED, font=T.F["num_s"])
                 return
-            n = 24
-            seg = (x1 - x0) / n
-            for i in range(n):
-                col = T.blend(T.blend(T.DOWN, T.UP, i / (n - 1)), T.PANEL, 0.55)
-                c.create_rectangle(x0 + i * seg, cy - 2, x0 + (i + 1) * seg + 0.5, cy + 2, fill=col, outline="")
-            frac = max(0.0, min(1.0, (p - nb) / (tp - nb)))
+            c.create_rectangle(x0, cy - 1, x1, cy + 1, fill=dc(T.DIVIDER), outline="")
+            c.create_rectangle(x0, cy - 5, x0 + 2, cy + 5, fill=dc(T.DOWN), outline="")
+            c.create_rectangle(x1 - 2, cy - 5, x1, cy + 5, fill=dc(T.UP), outline="")
+            frac = max(0.0, min(1.0, (p - lo) / (sell - lo)))
             x = x0 + frac * (x1 - x0)
-            c.create_rectangle(x - 1, cy - 7, x + 1, cy + 7, fill=T.TEXT, outline="")
-        return draw
+            c.create_rectangle(x - 2, cy - 7, x + 2, cy + 7, fill=dc(T.TEXT), outline="")
+
+        pct = (lambda v: f"{(v / p - 1) * 100:+.1f}%" if v and p else "")  # noqa: E731
+        if not r["qty"]:
+            buy = {"text": "-", "fg": T.MUTED}
+            sell_c = {"text": "-", "fg": T.MUTED}
+        else:
+            buy = ({"text": f"{T.fmtp(r['next_buy'])}에 {manx(r['next_amt'])}", "fg": T.DOWN, "sub": f"현재가 {pct(r['next_buy'])}"}
+                   if can_buy else {"text": "추가매수 없음", "fg": T.MUTED,
+                                    "sub": f"다음 {manx(r['next_amt'])} → 한도 초과" if r.get("next_amt") else ""})
+            sell_c = {"text": f"{'절반' if half else '전량'} {T.fmtp(sell)}", "fg": T.UP,
+                      "sub": f"{'본전 도달' if half else '익절 +' + format(g['profit_krw'], ',')} · {pct(sell)}"}
+        cost = r["cost"]
+        return kind, {"id": r["coin"], "check": True, "dim": dim, "cells": {
+            "coin": {"draw": coin_cell},
+            "cum": {"text": f"{done:+,.0f}" if round(done) else "0", "fg": T.chg_color(done), "font": "num_cell_b",
+                    "sub": f"{r['cycles']} 사이클 완료" if r["cycles"] else "완료 없음"},
+            "pnl": ({"text": f"{pnl:+,.0f}", "fg": T.chg_color(pnl), "sub": f"{pnl / cost * 100:+.1f}%" if cost else "",
+                     "subfg": T.chg_color(pnl)} if r["qty"] else {"text": "-", "fg": T.MUTED}),
+            "stage": {"draw": stage_cell}, "buy": buy, "pos": {"draw": pos_cell}, "sell": sell_c,
+            "own": {"text": self.own_text(r), "fg": T.MUTED, "font": "num_s"}}}
 
     def render_grid(self, rows):
         self.grid_rows = rows
         self.render_grid_tab()
         self.render_board()
 
-    STATUS_TAG = {"자동매매 중": T.DOWN, "결과 확인 중": T.ACCENT, "투자유의 중지": T.UP, "시세 대기": T.MUTED}
-
     def render_grid_tab(self):
         if not self.shown(TAB_GRID):
             return
-        g = self.cfg["grid"]
+        g, ui = self.cfg["grid"], self.cfg["ui"]
         sim = g["simulate"] or not self.engine.api
-        rows, cost, pnl_t, tot, cycles, holding, gross_t, fees = [], 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0
+        n_max = self.grid_max_buys()
+        items, cost, pnl_t, tot, cycles, holding, gross_t, fees = [], 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0
+        counts = {"all": 0, "ok": 0, "avg": 0, "limit": 0, "view": 0}
         for r in self.grid_rows:
             p, _ = self.grid_price(r)
-            listed = r.get("listed", True)
             pnl = r["pnl"] + r["qty"] * ((p or 0) - (r["price"] or 0)) * (1 - core.FEE) if r["qty"] else 0
             done = r["profit_total"] + r.get("realized", 0.0)  # 끝난 사이클 + 진행 중 사이클의 절반 매도분 (투자일지와 같은 기준)
             cost, pnl_t, tot, cycles = cost + r["cost"], pnl_t + pnl, tot + done, cycles + r["cycles"]
             # 수수료 전 손익 = 수수료 뺀 손익 + 보유분 매수 때 낸 수수료 + 지금 팔면 낼 수수료
-            gross = pnl + (r["cost"] * core.FEE + r["qty"] * (p or 0) * core.FEE if r["qty"] else 0)
-            gross_t += gross
+            gross_t += pnl + (r["cost"] * core.FEE + r["qty"] * (p or 0) * core.FEE if r["qty"] else 0)
             fees += r.get("fee_total", 0.0)
             holding += 1 if r["qty"] else 0
-            st = r["status"]
-            tag = ("조회만", T.MUTED) if not listed else (st, self.STATUS_TAG.get(st, T.UP))
-            if self.ledger_mismatch(r):  # 업비트에서 직접 팔아 잔고가 장부보다 적음 → 매매하면 기존 보유분을 팔 수 있어 표시
-                tag = ("정리 필요", T.UP)
-            pct = (lambda v: f"{(v / p - 1) * 100:+.1f}%" if v and p else "")  # noqa: E731
-            rows.append({"id": r["coin"], "check": True, "dim": not listed, "cells": {
-                "st": {"tag": tag}, "coin": {"text": r["coin"], "font": "num_b", "sub": "감시로 시작" if r.get("auto") else None},
-                "price": {"text": T.fmtp(p), "fg": T.chg_color(self.grid_price(r)[1])},
-                "avg": {"text": T.fmtp(r["avg"]) if r["avg"] else "-", "sub": f"{r['buys']}회 · {r['cost']:,.0f}원"},
-                "pnl": {"text": f"{pnl:+,.0f}" if r["qty"] else "-", "fg": T.chg_color(pnl),
-                        "sub": f"수수료 전 {gross:+,.0f}" if r["qty"] else None},
-                "pos": {"draw": self.pos_bar(r["next_buy"], r["tp"], p)},
-                "next": {"text": T.fmtp(r["next_buy"]) if r["next_buy"] else "-", "fg": T.UP,
-                         "sub": f"{pct(r['next_buy'])} · {r['next_amt']:,.0f}원" if r["next_buy"] and r.get("next_amt") else pct(r["next_buy"])},
-                "tp": {"text": T.fmtp(r["tp"]) if r["tp"] else "-", "fg": T.DOWN, "sub": pct(r["tp"])},
-                "cyc": str(r["cycles"]), "tot": {"text": f"{done:+,.0f}", "fg": T.chg_color(done)},
-                "own": {"text": self.own_text(r), "fg": T.MUTED, "font": "num_s"}}})
-        self.g_table.set_rows(rows)
+            kind, row = self.grid_row(r, p, pnl, done, n_max)
+            counts[kind] += 1
+            counts["all"] += 1
+            items.append((kind, row, r, pnl, done))
+        flt = ui.get("grid_filter", "all")
+        shown = [x for x in items if flt == "all" or x[0] == flt]
+        key = {"cum": lambda x: -x[4], "pnl": lambda x: x[3], "n": lambda x: -(x[2]["buys"] if x[2]["qty"] else 0),
+               "sym": lambda x: x[2]["coin"]}.get(ui.get("grid_sort", "cum"))
+        shown.sort(key=key)
+        self.g_table.set_rows([x[1] for x in shown])
+        self.render_grid_filters(counts)
         self.update_liq_btn()
-        be = [f"{r['coin']} {T.fmtp(r['breakeven'])}" for r in self.grid_rows if r.get("breakeven")]
-        self.g_note.config(text="본전 절반가: " + " · ".join(be) if be else "본전 절반가는 2회 이상 매수한 뒤에 계산됩니다")
+        self.g_note.config(text=f"막대: 왼쪽 끝 = 다음 추가매수가, 오른쪽 끝 = 다음 매도가, 흰 칸 = 현재가 · "
+                                f"매수 단계: 칸 1개 = 매수 1회 (코인한도 안에서 최대 {n_max}회)"
+                                + (" · 칸 12개로 줄여 표시" if n_max > 12 else ""))
         self.g_stats.set("state", "켜짐" if g["enabled"] else "꺼짐", color=T.TEXT if g["enabled"] else T.UP,
-                         sub="모의" if sim else "실전")
-        buys = {r["buys"] for r in self.grid_rows if r["qty"]}
-        self.g_stats.set("cost", T.fmtk(cost), "원",
-                         sub=f"{holding}개 코인 · " + (f"각 {buys.pop()}회" if len(buys) == 1 else "매수 횟수 다름") if holding else "보유 없음")
+                         extra="모의" if sim else "실전", extra_color=T.MUTED if sim else T.UP,
+                         sub="자동매매가 꺼져 있어 사고팔지 않습니다" if not g["enabled"] else "")
+        self.g_stats.set("cum", T.fmtk(tot, sign=True), "원", color=T.chg_color(tot),
+                         extra=f"{cycles} 사이클 완료", extra_color=T.MUTED, sub=f"지금까지 낸 수수료 {fees:,.0f}원")
         self.g_stats.set("pnl", T.fmtk(pnl_t, sign=True), "원", color=T.chg_color(pnl_t),
-                         sub=(f"{pnl_t / cost * 100:+.2f}% · 수수료 전 {gross_t:+,.0f}원 (팔 때 수수료 포함 계산)" if cost else ""))
-        self.g_stats.set("real", T.fmtk(tot, sign=True), "원", color=T.chg_color(tot),
-                         sub=f"완료 사이클 {cycles} · 지금까지 낸 수수료 {fees:,.0f}원")
+                         extra=f"{pnl_t / cost * 100:+.2f}%" if cost else "",
+                         sub=f"수수료 전 {gross_t:+,.0f}원 (팔 때 수수료 포함 계산)" if cost else "보유 없음")
+        self.g_stats.set("cost", T.fmtk(cost), "원", sub=f"{holding}개 코인 보유 · 코인한도 {manx(g['max_krw'])}")
         cap = self.engine.grid_total_cap()
         extra = cap - g["total_max_krw"]
         self.g_stats.set("cap", f"{cost / cap * 100:.1f}%" if cap else "-",
-                         sub=f"{cost:,.0f} / {cap:,.0f}원" + (f" (한도 {g['total_max_krw']:,} + 수익 {extra:,.0f})" if extra > 0 else ""))
+                         sub=f"{manx(cost)} / {manx(cap)}" + (f" (한도 {manx(g['total_max_krw'])} + 수익 {extra:,.0f}원)" if extra > 0 else ""))
 
     def update_liq_btn(self):
         st = self.cfg["grid"]["state"]
         n = sum(1 for c in self.g_table.checked if st.get(c, {}).get("qty"))
         self.g_liq_btn.config(text=f"선택 코인 청산 ({n})" if n else "선택 코인 청산")
+        k = len(self.g_table.checked)
+        self.g_sel_lab.config(text=f"30초마다 갱신 · {k}개 선택됨" if k else
+                              "30초마다 갱신 · 코인 칸에 적은 코인 + 자동매매로 산 수량이 남은 코인")
 
     def own_text(self, r):
         """업비트 실제 잔고에서 자동매매 몫을 뺀 기존 보유분 (모의면 전체 잔고가 기존 보유)."""
@@ -1566,6 +1736,10 @@ class App:
                                             "price": T.fmtp(price), "qty": {"text": T.fmtq(qty), "fg": T.MUTED},
                                             "krw": f"{krw:,.0f}"}})
         self.grid_log.set_rows(rows)
+        today = core.now().strftime("%Y-%m-%d")
+        nb, ns = (self.db.query(f"SELECT COUNT(*) FROM grid_trades WHERE ts >= ? AND side = '{s}'", today)[0][0]
+                  for s in ("bid", "ask"))
+        self.g_panels["log"]["sum"].config(text=f"최근 100건 · 오늘 매수 {nb}건 · 매도 {ns}건")
 
     def save_grid(self):
         g, fl = self.cfg["grid"], self.g_fields

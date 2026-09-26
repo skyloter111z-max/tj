@@ -462,7 +462,7 @@ def draw_tag(c, x, y, text, color, anchor="w", dash=False, fill="", fg=None, fon
 class Table(tk.Canvas):
     """캔버스 표 (Treeview 대신: 칸별 색·태그·체크박스·두 줄 칸·그룹 행·막대를 그릴 수 있다).
 
-    cols: [{"key", "title", "w", "anchor"("w"/"e"/"center"), "grow"(남는 폭 비율)}]
+    cols: [{"key", "title", "w", "anchor"("w"/"e"/"center"), "grow"(남는 폭 비율), "sub"(머리글 둘째 줄), "tfg"(머리글 색)}]
     row: {"id", "cells": {key: 글자 | {"text","fg","font","sub","subfg","tag":(글자,색,점선),"draw":fn(c,x0,x1,y)}},
           "check": 체크 가능 여부, "dim": 흐리게(60%), "bg": 배경, "group": 그룹 제목(그룹 행), "right": 그룹 오른쪽 글자,
           "dash": 점선 테두리}
@@ -471,7 +471,9 @@ class Table(tk.Canvas):
     HEAD = 32
 
     def __init__(self, parent, cols, rh=38, bg=T.PANEL, check=False, fit=False, empty=None, on_click=None,
-                 on_check=None, selectable=False, min_rows=3, pad=16, head=True):
+                 on_check=None, selectable=False, min_rows=3, pad=16, head=True, head_px=None):
+        if head_px:
+            self.HEAD = head_px
         super().__init__(parent, bg=bg, highlightthickness=0, height=self.HEAD + rh * min_rows)
         self.cols, self.rh, self.bgc, self.check, self.fit = cols, rh, bg, check, fit
         self.empty, self.on_click, self.on_check, self.selectable = empty, on_click, on_check, selectable
@@ -568,7 +570,13 @@ class Table(tk.Canvas):
                     continue
                 a = c.get("anchor", "w")
                 x = x0 + 4 if a == "w" else x1 - 4 if a == "e" else (x0 + x1) / 2
-                _txt(self, x, hh / 2, c.get("title", ""), T.MUTED, "kr_xs", a)
+                if c.get("head_draw"):
+                    c["head_draw"](self, x0 + 4, x1 - 4, hh / 2)
+                elif c.get("sub"):
+                    _txt(self, x, hh / 2 - 8, c.get("title", ""), c.get("tfg", T.MUTED), "kr_xs", a)
+                    _txt(self, x, hh / 2 + 8, c["sub"], T.blend(T.MUTED, self.bgc, 0.75), "kr_xxs", a)
+                else:
+                    _txt(self, x, hh / 2, c.get("title", ""), c.get("tfg", T.MUTED), "kr_xs", a)
             self.create_line(0, hh - 1, w, hh - 1, fill=T.DIVIDER)
         if total > h - hh:  # 얇은 스크롤 막대
             frac = (h - hh) / total
