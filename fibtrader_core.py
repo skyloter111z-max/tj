@@ -1170,9 +1170,10 @@ class Engine(threading.Thread):
         self.alert("grid", f"{coin} 장부 정리", msg)
 
     def grid_adopt(self, coin):
-        """[기존 보유 합치기]: 업비트 계좌에 따로 있던 같은 코인을 '지금 시세로 산 것'으로 보고 자동매매 장부에 넣는다.
-        주문은 나가지 않는다. 지금 시세로 넣는 이유: 예전 '장부 정리' 때 그날 시세로 판 것으로 이미 일지에 남겼기 때문
-        (업비트 평단으로 넣으면 그때 손익이 두 번 잡힌다). 이후 익절·물타기는 합친 수량 전체로 한다."""
+        """[기존 보유 합치기]: 업비트 계좌에 따로 있던 같은 코인을 자동매매 장부에 넣고, 원가를 업비트 매수평균가에 맞춘다.
+        주문은 나가지 않는다. 합친 뒤 익절·물타기는 합친 수량 전체로 하고, 수익도 업비트 앱과 같게 계산한다.
+        예전에 그 코인을 '장부 정리'로 지웠다면 그때 '현재가로 팔았다고 추정한 손익'은 실제로 팔린 게 아니므로 취소한다
+        (안 그러면 업비트 평단으로 맞출 때 그 손익이 두 번 잡힌다). 이미 합친 코인에 다시 누르면 평단만 맞춘다."""
         g, st = self.cfg["grid"], self.grid_state(coin)
         if g["simulate"] or not self.api:
             self.emit("done", [f"{coin}: 기존 보유 합치기는 실전(API 연결)에서만 됩니다."])
@@ -1183,21 +1184,45 @@ class Engine(threading.Thread):
         px = self.prices.get(coin) or fr.get(f"/ticker?markets=KRW-{coin}")[0]["trade_price"]
         acc = {a["currency"]: a for a in self.api.call("GET", "/accounts")}
         bal = float(acc[coin]["balance"]) if coin in acc else 0.0  # 주문에 묶인 수량은 빼고
+        avg = float(acc[coin].get("avg_buy_price") or 0) if coin in acc else 0.0
         own = bal - st["qty"]
-        if own * px < 1_000:
-            self.emit("done", [f"{coin}: 합칠 기존 보유가 없습니다."])
+        msgs = []
+        if own * px >= 1_000:
+            cost = own * px
+            self.db.add("grid_trades", now().isoformat(), 0, coin, "bid", px, own, cost, "기존 보유 편입")
+            if st["qty"] <= 0:  # 진행 중 사이클이 없으면 이것으로 새 사이클 시작
+                st.update(buys=1, ref=px, halved=False, realized=0.0)
+            st.update(qty=st["qty"] + own, cost=st["cost"] + cost)
+            st.pop("rebased", None)
+            if coin not in g["coins"]:
+                g["coins"].append(coin)
+            msgs.append(f"{own:g}개를 자동매매 장부에 넣었습니다 (주문 없음).")
+        adopt = self.db.query("SELECT rowid, qty, krw FROM grid_trades WHERE coin = ? AND simulated = 0 AND note = '기존 보유 편입' "
+                              "ORDER BY rowid DESC LIMIT 1", coin)
+        if adopt and not st.get("rebased") and avg > 0 and st["qty"] > 0 and abs(bal - st["qty"]) <= st["qty"] * 0.001:
+            rid, aq, akrw = adopt[0]
+            new_cost = st["qty"] * avg * (1 + FEE)  # 업비트 매수평균가는 수수료 전 → 산 때 낸 수수료를 더해 앱 원가 기준과 맞춤
+            delta = new_cost - st["cost"]
+            self.db.run("UPDATE grid_trades SET krw = ?, price = ? WHERE rowid = ?", akrw + delta, (akrw + delta) / aq, rid)
+            # 편입 전 마지막 '장부 정리'(같은 수량)의 추정 손익 취소 → 일지 합계 = 실제
+            undo = 0.0
+            forget = self.db.query("SELECT rowid, qty FROM grid_trades WHERE coin = ? AND note = '장부 정리' AND rowid < ? "
+                                   "ORDER BY rowid DESC LIMIT 1", coin, rid)
+            if forget and abs(forget[0][1] - aq) <= aq * 0.05:
+                t = next((x for x in build_journal(self.db) if x["id"] == forget[0][0]), None)
+                if t and t.get("pnl") is not None and t.get("base") is not None:
+                    undo = t["pnl"]
+                    self.db.run("UPDATE grid_trades SET krw = ? WHERE rowid = ?", t["base"], forget[0][0])
+                    st["profit_total"] -= undo
+            st.update(cost=new_cost, rebased=True)
+            msgs.append(f"원가를 업비트 매수평균가 {fmtp(avg)}원 기준으로 맞췄습니다 (원가 {new_cost:,.0f}원, {delta:+,.0f}원)."
+                        + (f" 예전 장부 정리 때 추정한 손익 {undo:+,.0f}원은 실제로 판 게 아니라 취소했습니다." if undo else ""))
+        if not msgs:
+            self.emit("done", [f"{coin}: 합치거나 맞출 게 없습니다."])
             return
-        cost = own * px
-        self.db.add("grid_trades", now().isoformat(), 0, coin, "bid", px, own, cost, "기존 보유 편입")
-        if st["qty"] <= 0:  # 진행 중 사이클이 없으면 이것으로 새 사이클 시작
-            st.update(buys=1, ref=px, halved=False, realized=0.0)
-        st.update(qty=st["qty"] + own, cost=st["cost"] + cost)
-        if coin not in g["coins"]:
-            g["coins"].append(coin)
         save_config(self.cfg)
-        self.alert("grid", f"{coin} 기존 보유 합침",
-                   f"{own:g}개를 현재가 {fmtp(px)}원({cost:,.0f}원)으로 자동매매 장부에 넣었습니다 (주문 없음). "
-                   f"합친 원가 {st['cost']:,.0f}원 · 평단 {fmtp(st['cost'] / st['qty'])}원")
+        v = st["qty"] * px * (1 - FEE) - st["cost"] + st["realized"]
+        self.alert("grid", f"{coin} 기존 보유 합침", " ".join(msgs) + f" 지금 손익 {v:+,.0f}원 (업비트 앱과 같은 기준, 팔 때 수수료 뺌)")
         self.emit("grid", self.grid_view())
 
     def emergency_stop(self, cancel_all):

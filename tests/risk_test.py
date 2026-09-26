@@ -6,13 +6,14 @@ import fibtrader_core as core, fib_orders as fo, fib_recalc as fr
 class Ex:
     """가짜 업비트: 시장가 즉시 체결, identifier 중복 거부, 장애 주입."""
     def __init__(s):
-        s.price = {"ADA": 340.0}; s.bal = {"KRW": 1_000_000.0, "ADA": 0.0}; s.orders = {}; s.by_ident = {}
+        s.price = {"ADA": 340.0}; s.bal = {"KRW": 1_000_000.0, "ADA": 0.0}; s.orders = {}; s.by_ident = {}; s.avg = {}
         s.fail_next = None; s.n = 0; s.posts = 0; s.open = {}
     def _fill(s, market, side, amount):
         c = market[4:]; p = s.price[c]
         if side == "bid":
             if s.bal["KRW"] < amount: raise RuntimeError("POST /orders 실패 400: insufficient_funds_bid")
             fee = amount * 0.0005; vol = (amount - fee) / p
+            s.avg[c] = (s.avg.get(c, 0.0) * s.bal[c] + (amount - fee)) / (s.bal[c] + vol)  # 업비트 매수평균가 (수수료 제외)
             s.bal["KRW"] -= amount; s.bal[c] += vol; funds = amount - fee
         else:
             if s.bal[c] + 1e-12 < amount: raise RuntimeError("POST /orders 실패 400: insufficient_funds_ask")
@@ -40,7 +41,7 @@ class Ex:
             s.fail_next = None; raise fo.UnknownResult("체결 확인 실패")
         return fo.Upbit.order_result(s.get_order(order_uuid, identifier))
     def call(s, meth, path, params=None):
-        if path == "/accounts": return [{"currency": k, "balance": str(v), "locked": "0"} for k, v in s.bal.items()]
+        if path == "/accounts": return [{"currency": k, "balance": str(v), "locked": "0", "avg_buy_price": str(s.avg.get(k, 0))} for k, v in s.bal.items()]
         raise RuntimeError("unsupported")
     def open_orders(s, market): return [o for o in s.open.values() if o["market"] == market]
     def holdings(s): return {c: s.bal.get(c, 0.0) for c in fr.COINS}, s.bal["KRW"]
@@ -270,20 +271,28 @@ st = e.grid_state("ADA")
 ok(ex.posts == 3 and st.get("halved") and abs(st["qty"] - ex.bal["ADA"]) < 1e-9,
    f"20c 사후 반영 뒤 절반 매도를 다시 하지 않음 (posts={ex.posts}, halved={st.get('halved')}, 장부 {st['qty']:.3f} = 거래소 {ex.bal['ADA']:.3f})")
 
-# 22 기존 보유 합치기: 주문 없이 지금 시세로 장부에 넣고, 익절 때 합친 수량 전체를 팔며 일지 합계 = 엔진 실현
-e, ex, cfg = mk(unit_krw=10000, profit_krw=1000, multiplier=1.5, drop_pct=3.0)
-step(e, ex, 340)
-ex.bal["ADA"] += 15.0; posts = ex.posts  # 예전 5천 원어치가 계좌에 따로 남아 있음
+# 22 기존 보유 합치기 = 업비트와 같은 장부: 예전 5천 원 → 장부 정리 → 1만 원 재시작 → 합치기(업비트 평단) → 익절
+e, ex, cfg = mk(unit_krw=5000, profit_krw=500, multiplier=1.5, drop_pct=3.0)
+step(e, ex, 300)                                  # 예전 5천 원 매수
+e.prices["ADA"] = 320; e.grid_forget("ADA")       # 5천 원 미만이라 장부만 정리 (320원에 판 것으로 추정 → +손익 기록)
+cfg["grid"].update(unit_krw=10000, coins=["ADA"])
+step(e, ex, 340)                                  # 1만 원으로 새로 시작 → 계좌엔 예전 몫 + 새 몫
+posts = ex.posts
 e.prices["ADA"] = 340; e.grid_adopt("ADA")
 st = e.grid_state("ADA")
-ok(ex.posts == posts and abs(st["qty"] - ex.bal["ADA"]) < 1e-9 and st["buys"] == 1 and abs(st["cost"] - (10000 + 15 * 340)) < 1,
-   f"22a 합치기: 주문 없음, 장부 수량 = 계좌 수량, 매수 횟수 1 유지, 원가 {st['cost']:,.0f}원")
+up_cost = ex.bal["ADA"] * ex.avg["ADA"] * (1 + core.FEE)
 tr = core.build_journal(e.db, False)
-ok(tr[-1]["kind"] == "기존 보유 편입", "22b 투자일지에 '기존 보유 편입'으로 남음")
-step(e, ex, 380)
+forget_pnl = [t["pnl"] for t in tr if t["kind"] == "장부 정리 (추정)"]
+ok(ex.posts == posts and abs(st["qty"] - ex.bal["ADA"]) < 1e-9 and abs(st["cost"] - up_cost) < 0.01 and st["buys"] == 1,
+   f"22a 합치기: 주문 없음, 수량 = 계좌, 원가 = 업비트 평단 기준 {st['cost']:,.0f}원, 매수 횟수 1 유지")
+ok(forget_pnl and abs(forget_pnl[0]) < 0.01 and any(t["kind"] == "기존 보유 편입" for t in tr),
+   f"22b 예전 장부 정리 추정 손익 취소 ({forget_pnl}), 일지에 '기존 보유 편입'")
+step(e, ex, 345)                                  # 업비트 평단(약 327) 위 +5% → 수수료 뺀 수익 500원 넘으면 익절
 st = e.grid_state("ADA"); tr = core.build_journal(e.db, False)
-ok(st["cycles"] == 1 and ex.bal["ADA"] < 1e-9 and abs(sum(t["pnl"] or 0 for t in tr) - st["profit_total"]) < 0.5,
-   f"22c 익절 때 합친 수량 전부 매도 (계좌 {ex.bal['ADA']:g}개), 일지 합계 = 엔진 실현 {st['profit_total']:,.0f}원")
+real = ex.bal["KRW"] - 1_000_000
+ok(st["cycles"] >= 1 and ex.bal["ADA"] < 1e-9 and abs(sum(t["pnl"] or 0 for t in tr) - real) < 1 and abs(st["profit_total"] - real) < 1,
+   f"22c 익절로 전부 매도, 일지 합계 = 엔진 누적 = 실제 현금 증가 {real:,.0f}원 (두 번 잡힌 손익 없음)")
+e.grid_adopt("ADA"); ok(True, "22d 이미 맞춘 코인은 다시 눌러도 변화 없음")
 
 # 21 업비트 API 연결 감시: 5분 넘게 실패하면 한 번만 경고, 다시 되면 복구 알림
 e, ex, cfg = mk(); alerts(e)

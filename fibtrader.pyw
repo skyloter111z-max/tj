@@ -716,7 +716,7 @@ class App:
             items.append({"id": r["coin"], "h": 60, "dim": not listed, "lines": [
                 ([(r["coin"], T.TEXT, "sym_s")], [(T.fmtp(p), T.chg_color(ch), "num_s"),
                                                   (f"{T.arrow(ch)}{abs(ch):.2f}%", T.chg_color(ch), "num_xs")]),
-                ([(l2, T.MUTED, "kr_xs")], [(f"{pnl:+,.0f}", T.chg_color(pnl), "num_xs")] if r["qty"] else [])]})
+                ([(l2, T.MUTED, "kr_xs")], [(f"{self.upbit_pnl(r, p):+,.0f}", T.chg_color(self.upbit_pnl(r, p)), "num_xs")] if r["qty"] else [])]})
         used, cap = self.grid_budget()
         self.coin_list.set([("피보나치", None, fib), (f"자동매매 · {state} · {man(used)}/{man(cap)}", "전체 보기", items)],
                            self.sel_coin)
@@ -1303,7 +1303,7 @@ class App:
         ui.setdefault("grid_filter", "all")
         ui.setdefault("grid_sort", "cum")
         self.g_stats = W.StatCells(f, [("state", "상태"), ("cum", "누적 수익 · 완료 사이클 (수수료 뺀)"),
-                                       ("pnl", "지금 손익 · 진행 중 사이클 (수수료 뺀)"), ("cost", "투입 원가"),
+                                       ("pnl", "지금 손익 · 진행 중 사이클 (업비트 기준)"), ("cost", "투입 원가"),
                                        ("cap", "전체 한도 사용")])
         self.g_stats.pack(fill="x")
         outer, body = W.scroll_page(f)
@@ -1343,7 +1343,7 @@ class App:
 
         cols = [{"key": "chk", "w": 26}, {"key": "coin", "title": "코인 · 상태", "w": 150},
                 {"key": "cum", "title": "누적 수익", "sub": "완료 사이클", "tfg": T.TEXT, "w": 108, "anchor": "e"},
-                {"key": "pnl", "title": "지금 손익", "sub": "진행 중 · 수수료 뺀", "w": 112, "anchor": "e"},
+                {"key": "pnl", "title": "지금 손익", "sub": "업비트 기준", "w": 124, "anchor": "e"},
                 {"key": "gap", "w": 14},
                 {"key": "stage", "title": "매수 단계", "sub": f"원가 / 코인한도 {manx(g['max_krw'])}", "w": 170},
                 {"key": "buy", "title": "▼ 다음 추가매수", "sub": "가격 · 금액", "tfg": T.DOWN, "w": 136},
@@ -1575,8 +1575,14 @@ class App:
 
     STATUS_BADGE = {"투자유의 중지": T.UP, "결과 확인 중": T.ACCENT, "시세 대기": T.MUTED}
 
+    @staticmethod
+    def upbit_pnl(r, p):
+        """업비트 앱과 같은 평가손익: 평가금액 − 매수금액(수수료 제외). 장부 원가는 산 때 수수료를 포함하므로 빼서 맞춘다."""
+        return r["qty"] * (p or 0) - r["cost"] / (1 + core.FEE) if r["qty"] else 0.0
+
     def grid_row(self, r, p, pnl, done, n_max):
         g = self.cfg["grid"]
+        upnl = self.upbit_pnl(r, p)
         kind = self.grid_kind(r)
         dim = kind == "view"
         dc = (lambda col: T.blend(col, T.PANEL, 0.6) if dim else col)  # noqa: E731
@@ -1658,8 +1664,9 @@ class App:
             "coin": {"draw": coin_cell},
             "cum": {"text": f"{done:+,.0f}" if round(done) else "0", "fg": T.chg_color(done), "font": "num_cell_b",
                     "sub": f"{r['cycles']} 사이클 완료" if r["cycles"] else "완료 없음"},
-            "pnl": ({"text": f"{pnl:+,.0f}", "fg": T.chg_color(pnl), "sub": f"{pnl / cost * 100:+.1f}%" if cost else "",
-                     "subfg": T.chg_color(pnl)} if r["qty"] else {"text": "-", "fg": T.MUTED}),
+            "pnl": ({"text": f"{upnl:+,.0f}", "fg": T.chg_color(upnl),
+                     "sub": (f"{upnl / (cost / (1 + core.FEE)) * 100:+.1f}% · 실수령 {pnl:+,.0f}" if cost else ""),
+                     "subfg": T.MUTED} if r["qty"] else {"text": "-", "fg": T.MUTED}),
             "stage": {"draw": stage_cell}, "buy": buy, "pos": {"draw": pos_cell}, "sell": sell_c,
             "own": {"text": self.own_text(r), "fg": T.MUTED, "font": "num_s"}}}
 
@@ -1682,7 +1689,7 @@ class App:
             done = r["profit_total"] + r.get("realized", 0.0)  # 끝난 사이클 + 진행 중 사이클의 절반 매도분 (투자일지와 같은 기준)
             cost, pnl_t, tot, cycles = cost + r["cost"], pnl_t + pnl, tot + done, cycles + r["cycles"]
             # 수수료 전 손익 = 수수료 뺀 손익 + 보유분 매수 때 낸 수수료 + 지금 팔면 낼 수수료
-            gross_t += pnl + (r["cost"] * core.FEE + r["qty"] * (p or 0) * core.FEE if r["qty"] else 0)
+            gross_t += self.upbit_pnl(r, p)
             fees += r.get("fee_total", 0.0)
             holding += 1 if r["qty"] else 0
             kind, row = self.grid_row(r, p, pnl, done, n_max)
@@ -1705,9 +1712,10 @@ class App:
                          sub="자동매매가 꺼져 있어 사고팔지 않습니다" if not g["enabled"] else "")
         self.g_stats.set("cum", T.fmtk(tot, sign=True), "원", color=T.chg_color(tot),
                          extra=f"{cycles} 사이클 완료", extra_color=T.MUTED, sub=f"지금까지 낸 수수료 {fees:,.0f}원")
-        self.g_stats.set("pnl", T.fmtk(pnl_t, sign=True), "원", color=T.chg_color(pnl_t),
-                         extra=f"{pnl_t / cost * 100:+.2f}%" if cost else "",
-                         sub=f"수수료 전 {gross_t:+,.0f}원 (팔 때 수수료 포함 계산)" if cost else "보유 없음")
+        buy_amt = cost / (1 + core.FEE)
+        self.g_stats.set("pnl", T.fmtk(gross_t, sign=True), "원", color=T.chg_color(gross_t),
+                         extra=f"{gross_t / buy_amt * 100:+.2f}%" if cost else "",
+                         sub=f"실수령(수수료 뺀) {pnl_t:+,.0f}원 · 익절 판단 기준" if cost else "보유 없음")
         self.g_stats.set("cost", T.fmtk(cost), "원", sub=f"{holding}개 코인 보유 · 코인한도 {manx(g['max_krw'])}")
         cap = self.engine.grid_total_cap()
         extra = cap - g["total_max_krw"]
@@ -1858,7 +1866,8 @@ class App:
             return
         rows = {r["coin"]: r for r in self.grid_rows}
         pick = list(self.g_table.checked) or list(rows)
-        items = []
+        items, rebase = [], []
+        st_all = g["state"]
         for c in pick:
             r = rows.get(c)
             bal = self.hold.get(c)
@@ -1868,18 +1877,24 @@ class App:
             own = max(bal - r["qty"], 0.0)
             if own * p >= 1_000:
                 items.append((c, own, own * p))
-        if not items:
-            messagebox.showinfo("기존 보유 합치기", "합칠 기존 보유가 없습니다.")
+            elif r["qty"] and not st_all.get(c, {}).get("rebased") and self.db.query(
+                    "SELECT 1 FROM grid_trades WHERE coin = ? AND simulated = 0 AND note = '기존 보유 편입' LIMIT 1", c):
+                rebase.append(c)
+        if not items and not rebase:
+            messagebox.showinfo("기존 보유 합치기", "합치거나 업비트 평단으로 맞출 코인이 없습니다.")
             return
-        lines = "\n".join(f"• {c}: {T.fmtq(q)}개 ≈ {v:,.0f}원" for c, q, v in items)
+        lines = "\n".join(f"• {c}: {T.fmtq(q)}개 ≈ {v:,.0f}원 합치기" for c, q, v in items)
+        if rebase:
+            lines += ("\n" if lines else "") + "\n".join(f"• {c}: 이미 합친 코인 → 원가를 업비트 평단으로 맞추기" for c in rebase)
         if not messagebox.askyesno(
                 "기존 보유 합치기",
-                f"업비트 계좌에 따로 있던 아래 코인을 자동매매 장부에 넣습니다 (주문은 나가지 않음):\n\n{lines}\n\n"
-                "• 지금 시세로 산 것으로 계산합니다 (예전 '장부 정리' 때 이미 그날 시세로 일지에 남겼기 때문).\n"
-                "• 이후 익절·물타기는 합친 수량 전체로 합니다 (익절 1,000원 기준은 그대로라 필요한 상승폭이 조금 작아짐).\n"
-                "• 되돌리려면 [선택 코인 청산] 또는 장부 정리를 해야 합니다.\n\n합칠까요?", icon="warning"):
+                f"주문 없이 자동매매 장부를 업비트 계좌와 똑같이 맞춥니다:\n\n{lines}\n\n"
+                "• 원가는 업비트 매수평균가 기준 → 손익이 업비트 앱과 같아집니다.\n"
+                "• 예전 '장부 정리' 때 추정으로 남긴 손익은 실제로 판 게 아니라 취소합니다 (두 번 잡히지 않게).\n"
+                "• ⚠ 맞춘 뒤 수익이 익절 기준(수수료 뺀 500원)을 넘은 코인은 30초 안에 시장가로 전량 매도됩니다.\n\n진행할까요?",
+                icon="warning"):
             return
-        for c, _, _ in items:
+        for c in [x[0] for x in items] + rebase:
             self.engine.request("grid_adopt", c)
         self.g_table.checked.clear()
         self.update_liq_btn()
