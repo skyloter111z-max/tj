@@ -956,7 +956,7 @@ class App:
         tk.Frame(self.inv_table, bg=T.DIVIDER, height=1).pack(fill="x")
         self.inv_rows = {}
 
-        tp, th = card(inner, "거래내역", "업비트 최근 체결 100건 · 5분마다 갱신", pady=(18, 0))
+        tp, th = card(inner, "거래내역", "업비트 최근 4주 체결 전체 (시장가·지정가) · 5분마다 갱신", pady=(18, 0))
         T.Btn(th, "새로고침", self.feed_history_now).pack(side="right")
         self.hist_filter, self.hist_orders = "전체", []
         W.Segmented(th, ["전체", "매수", "매도"], "전체", self.set_hist_filter).pack(side="right", padx=10)

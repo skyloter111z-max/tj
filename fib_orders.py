@@ -43,10 +43,10 @@ def b64url(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-def jwt_token(access, secret, params=None):
+def jwt_token(access, secret, params=None, query=None):
     payload = {"access_key": access, "nonce": str(uuid.uuid4())}
-    if params:
-        q = urllib.parse.urlencode(params).encode()
+    if params or query:
+        q = (query or urllib.parse.urlencode(params)).encode()
         payload["query_hash"] = hashlib.sha512(q).hexdigest()
         payload["query_hash_alg"] = "SHA512"
     head = b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
@@ -63,12 +63,15 @@ class Upbit:
     def __init__(self, access, secret):
         self.access, self.secret = access, secret
 
-    def call(self, method, path, params=None):
+    def call(self, method, path, params=None, query=None):
+        """query: 직접 만든 쿼리 문자열 (states[]처럼 배열 인자가 있을 때). 서명과 URL에 같은 문자열을 쓴다."""
         url = f"{fr.API}{path}"
         data = None
-        headers = {"Authorization": f"Bearer {jwt_token(self.access, self.secret, params)}",
+        headers = {"Authorization": f"Bearer {jwt_token(self.access, self.secret, params, query)}",
                    "accept": "application/json"}
-        if params and method in ("GET", "DELETE"):
+        if query:
+            url += "?" + query
+        elif params and method in ("GET", "DELETE"):
             url += "?" + urllib.parse.urlencode(params)
         elif params:
             data = json.dumps(params).encode()
@@ -95,9 +98,32 @@ class Upbit:
     def open_orders(self, market):
         return self.call("GET", "/orders/open", {"market": market, "state": "wait", "limit": 100})
 
-    def closed_orders(self, limit=100):
-        """최근 체결 완료 주문 (전체 마켓, 최신순)."""
-        return self.call("GET", "/orders/closed", {"state": "done", "limit": limit, "order_by": "desc"})
+    def closed_orders(self, days=28, limit=1000):
+        """최근 체결 주문 (전체 마켓, 최신순, 체결 수량이 있는 것만).
+        업비트는 한 번에 7일까지만 주므로 7일씩 끊어서 불러온다.
+        시장가 매수는 체결 뒤 남은 돈이 돌아오면서 상태가 'cancel'로 끝나므로 done과 cancel을 같이 불러온다."""
+        now = int(time.time() * 1000)
+        week = 7 * 86400 * 1000
+        seen, out = set(), []
+        for k in range(max(1, -(-days // 7))):
+            end = now - k * week
+            q = urllib.parse.urlencode([("states[]", "done"), ("states[]", "cancel"), ("start_time", end - week),
+                                        ("end_time", end), ("limit", limit), ("order_by", "desc")], safe="[]")
+            try:
+                rows = self.call("GET", "/orders/closed", query=q)
+            except RuntimeError:
+                if k:
+                    break  # 앞 주는 받았으면 그것까지만 보여 준다
+                # 새 방식이 거절되면 예전 방식(최근 체결 완료 100건)으로
+                rows = self.call("GET", "/orders/closed", {"state": "done", "limit": 100, "order_by": "desc"})
+                out = [o for o in rows if float(o.get("executed_volume") or 0) > 0]
+                return out
+            for o in rows:
+                if o["uuid"] not in seen and float(o.get("executed_volume") or 0) > 0:
+                    seen.add(o["uuid"])
+                    out.append(o)
+        out.sort(key=lambda o: o.get("created_at") or "", reverse=True)
+        return out
 
     def cancel(self, order_uuid):
         return self.call("DELETE", "/order", {"uuid": order_uuid})
