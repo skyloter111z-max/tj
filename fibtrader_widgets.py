@@ -314,13 +314,21 @@ class Candles(tk.Canvas):
         slot = (px1 - 8) / n
         self.geom = (4, slot, top, pbot, lo, hi, px1, bot)
         # 가격 눈금 (가로 보조선은 아주 옅게)
+        # 기준선 이름표 자리: 서로 겹치지 않게 위에서부터 16px 간격으로 비켜 놓는다 (가격 눈금 숫자도 그 자리는 비움)
+        marks = sorted(((y(pr), lb, pr, col, so) for lb, pr, col, so in self.lines if pr and lo <= pr <= hi), key=lambda m: m[0])
+        placed, last = [], -1e9
+        for ly, lb, pr, col, so in marks:
+            ty = min(max(ly, last + 16, top + 8), pbot - 2)
+            placed.append((ly, ty, lb, pr, col, so))
+            last = ty
         step = self.nice_step(hi - lo)
         v = math.ceil(lo / step) * step
         grid = T.blend(T.TEXT, T.GROUND, 0.06)
         while v <= hi:
             yy = y(v)
             self.create_line(0, yy, px1, yy, fill=grid)
-            self.create_text(px1 + 6, yy, text=T.fmtp(v), fill=T.MUTED, font=T.F["num_xs"], anchor="w")
+            if all(abs(yy - m[1]) > 10 for m in placed):
+                self.create_text(px1 + 6, yy, text=T.fmtp(v), fill=T.MUTED, font=T.F["num_xs"], anchor="w")
             v += step
         self.create_line(px1, 0, px1, h, fill=T.DIVIDER)
         self.create_line(0, bot, w, bot, fill=T.DIVIDER)
@@ -348,17 +356,16 @@ class Candles(tk.Canvas):
                 t = self.data[i][4]
                 txt = t[5:10] if self.unit.startswith("1일") else f"{t[5:10]} {t[11:13]}시"
                 self.create_text(4 + slot * (i + 0.5), bot + self.TIME_H / 2 + 1, text=txt, fill=T.MUTED, font=T.F["num_xs"])
-        # 기준선 (레벨·평단·현재가): 점선 + 오른쪽 눈금에 색 태그
-        for label, price, color, solid in self.lines:
-            if not price or not lo <= price <= hi:
-                continue
-            ly = y(price)
+        # 기준선 (레벨·평단·현재가): 선 + 오른쪽 끝에 [이름 | 가격] 태그 (업비트처럼 가격 눈금 쪽에 이름을 붙임)
+        for ly, ty, label, price, color, solid in placed:
             self.create_line(0, ly, px1, ly, fill=color, dash=() if solid else (2, 3))
-            tid = self.create_text(6, ly - 2, text=label, fill=color, font=T.F["kr_xs"], anchor="sw")
+            if abs(ty - ly) > 1:  # 겹쳐서 비켜 놓은 태그는 선 끝과 이어 준다
+                self.create_line(px1 - 2, ly, px1, ty, fill=color)
+            self.tag(px1, ty, T.fmtp(price), color, fg=T.GROUND)
+            tid = self.create_text(px1 - 6, ty, text=label, fill=color, font=T.F["kr_xs"], anchor="e")
             x0, y0, x1, y1 = self.bbox(tid)
-            rid = self.create_rectangle(x0 - 2, y0, x1 + 2, y1, fill=T.GROUND, outline="")
+            rid = self.create_rectangle(x0 - 5, y0 - 1, x1 + 4, y1 + 1, fill=T.GROUND, outline=color)
             self.tag_raise(tid, rid)
-            self.tag(px1, ly, T.fmtp(price), color, fg=T.GROUND)
         self.create_text(w - 6, h - 3, text=self.unit, fill=T.MUTED, font=T.F["num_xs"], anchor="se")
 
     def hover(self, e):

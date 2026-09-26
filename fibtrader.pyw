@@ -510,7 +510,7 @@ class App:
         lab(ct, "4H 캔들 · 피보나치 레벨", "kr_xs", fg=T.MUTED, bg=g).pack(side="left")
         self.c_chart_btn = T.Btn(ct, "차트 ▾", self.toggle_center_chart, "ghost", bg=g)
         self.c_chart_btn.pack(side="right")
-        self.c_chart = W.Candles(c, height=220)
+        self.c_chart = W.Candles(c, height=380)
         self.c_ruler = W.Ruler(c)
         self.c_ruler.pack(fill="both", expand=True)
         if self.cfg["ui"]["chart_1b"]:
@@ -1019,7 +1019,7 @@ class App:
         for wdg in (row, inner):
             wdg.bind("<Button-1>", lambda e, c=cur: self.toggle_inv_chart(c))
         tk.Frame(wrap, bg=T.DIVIDER_SOFT, height=1).pack(fill="x")
-        chart = W.Candles(wrap, height=260)
+        chart = W.Candles(wrap, height=320)
         r = {"wrap": wrap, "row": row, "inner": inner, "cells": cells, "chart": chart, "candles": None}
         self.inv_rows[cur] = r
         if cur in self.cfg["ui"].get("inv_charts_open", []):
