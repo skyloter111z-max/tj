@@ -1346,7 +1346,7 @@ class App:
                 {"key": "gap", "w": 14},
                 {"key": "stage", "title": "매수 단계", "sub": f"원가 / 코인한도 {manx(g['max_krw'])}", "w": 170},
                 {"key": "buy", "title": "▼ 다음 추가매수", "sub": "가격 · 금액", "tfg": T.DOWN, "w": 136},
-                {"key": "pos", "title": "현재가 위치", "w": 150, "grow": 1, "anchor": "center"},
+                {"key": "pos", "title": "현재가 위치", "sub": "추가매수 0% ~ 100% 매도", "w": 150, "grow": 1, "anchor": "center"},
                 {"key": "sell", "title": "다음 매도 ▲", "sub": "절반(본전) · 전량(익절)", "tfg": T.UP, "w": 150, "anchor": "e"},
                 {"key": "own", "title": "기존 보유(별도)", "w": 150, "anchor": "e"}]
         self.g_table = W.Table(tc, cols, rh=56, check=True, fit=True, min_rows=2, on_check=self.update_liq_btn,
@@ -1634,6 +1634,13 @@ class App:
             frac = max(0.0, min(1.0, (p - lo) / (sell - lo)))
             x = x0 + frac * (x1 - x0)
             c.create_rectangle(x - 2, cy - 7, x + 2, cy + 7, fill=dc(T.TEXT), outline="")
+            # 위치 %: 다음 추가매수가 = 0%, 다음 매도가 = 100% (매도에 가까울수록 빨강, 매수에 가까울수록 파랑)
+            pc = round(frac * 100)
+            label = f"{pc}%"
+            half_w = T.measure("num_xs", label) / 2 + 2
+            lx = max(x0 + half_w, min(x1 - half_w, x))
+            c.create_text(lx, cy - 16, text=label, fill=dc(T.UP if pc >= 80 else T.DOWN if pc <= 20 else T.TEXT),
+                          font=T.F["num_xs"])
 
         pct = (lambda v: f"{(v / p - 1) * 100:+.1f}%" if v and p else "")  # noqa: E731
         if not r["qty"]:
@@ -1689,7 +1696,7 @@ class App:
         self.g_table.set_rows([x[1] for x in shown])
         self.render_grid_filters(counts)
         self.update_liq_btn()
-        self.g_note.config(text=f"막대: 왼쪽 끝 = 다음 추가매수가, 오른쪽 끝 = 다음 매도가, 흰 칸 = 현재가 · "
+        self.g_note.config(text=f"막대: 왼쪽 끝 = 다음 추가매수가(0%), 오른쪽 끝 = 다음 매도가(100%), 흰 칸 = 현재가 · "
                                 f"매수 단계: 칸 1개 = 매수 1회 (코인한도 안에서 최대 {n_max}회)"
                                 + (" · 칸 12개로 줄여 표시" if n_max > 12 else ""))
         self.g_stats.set("state", "켜짐" if g["enabled"] else "꺼짐", color=T.TEXT if g["enabled"] else T.UP,
