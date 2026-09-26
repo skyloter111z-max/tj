@@ -1,0 +1,51 @@
+@echo off
+chcp 65001 >nul
+echo === FibTrader 설치/업데이트 ===
+if not exist C:\fib mkdir C:\fib
+cd /d C:\fib
+set B=https://raw.githubusercontent.com/skyloter111z-max/tj
+set BR=claude/fib-plan-upbit-recalc-ynzvut
+rem 최신 커밋 번호로 받아서 모든 파일을 같은 버전으로 맞춘다 (브랜치 주소는 캐시 때문에 옛 파일이 섞일 수 있음)
+set SHA=
+for /f "usebackq delims=" %%s in (`powershell -NoProfile -Command "try{(Invoke-RestMethod -UseBasicParsing https://api.github.com/repos/skyloter111z-max/tj/commits/%BR%).sha}catch{}"`) do set SHA=%%s
+if defined SHA (set U=%B%/%SHA%) else (set U=%B%/%BR%)
+echo 버전: %SHA%
+curl -s -f -o files.txt %U%/files.txt || (echo [실패] 파일 목록 다운로드 & pause & exit /b 1)
+for /f "usebackq delims=" %%f in ("files.txt") do (
+  curl -s -f -o %%f %U%/%%f || (echo [실패] %%f 다운로드 & pause & exit /b 1)
+  echo 받음: %%f
+)
+echo.
+echo 글꼴(Barlow) 받는 중...
+if not exist C:\fib\fonts mkdir C:\fib\fonts
+call :font barlow Barlow-Regular.ttf
+call :font barlow Barlow-Bold.ttf
+call :font barlowcondensed BarlowCondensed-SemiBold.ttf
+echo.
+echo 라이브러리 설치 중...
+python -m pip install -q pystray pillow
+echo.
+echo 설치 확인 중...
+python -c "import fibtrader_core, fibtrader_theme, fibtrader_widgets, fib_orders, fib_check; print('확인 완료: 모든 파일 정상')" || (echo [실패] 파일이 빠졌거나 깨졌습니다. 이 화면을 캡처해 보내 주세요. & pause & exit /b 1)
+echo.
+echo 바탕화면 아이콘과 자동 실행 등록 중...
+powershell -NoProfile -Command "$py=(Get-Command pythonw).Source; foreach($f in 'Desktop','Startup'){ $d=[Environment]::GetFolderPath($f); $s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d 'FibTrader.lnk')); $s.TargetPath=$py; $s.Arguments='\"C:\fib\fibtrader.pyw\"'; $s.WorkingDirectory='C:\fib'; $s.Save() }"
+del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\start_watch.bat" 2>nul
+powershell -NoProfile -Command "$d=[Environment]::GetFolderPath('Desktop'); foreach($o in 'FibTrader 잘때 절전','FibTrader 아침 원래대로'){ Remove-Item -ErrorAction SilentlyContinue (Join-Path $d ($o+'.lnk')) }; foreach($p in @(@('FibTrader 수면용','sleep.bat'),@('FibTrader 게임용','game.bat'))){ $s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d ($p[0]+'.lnk'))); $s.TargetPath='C:\fib\'+$p[1]; $s.WorkingDirectory='C:\fib'; $s.Save() }"
+del C:\fib\night.bat C:\fib\morning.bat 2>nul
+echo.
+echo 완료! 바탕화면의 FibTrader 아이콘을 더블클릭하세요.
+echo (FibTrader가 이미 켜져 있었다면 트레이 F 아이콘 - 종료 후 다시 실행하세요)
+pause
+rem install.bat 자신도 최신으로 교체 (한 줄에서 끝내야 실행 중인 파일을 바꿔도 안전)
+curl -s -f -o install.new %U%/install.bat && move /y install.new install.bat >nul & exit /b 0
+
+:font
+rem 글꼴 받기: 이미 있으면 건너뜀 → GitHub → jsDelivr(예비 주소) → PowerShell 순서로 시도
+if exist C:\fib\fonts\%2 (for %%z in (C:\fib\fonts\%2) do if %%~zz GTR 10000 (echo 있음: %2& exit /b 0))
+curl -sS -f -L -o C:\fib\fonts\%2 https://raw.githubusercontent.com/google/fonts/main/ofl/%1/%2 2>nul && (echo 받음: %2& exit /b 0)
+curl -sS -f -L -o C:\fib\fonts\%2 https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/%1/%2 2>nul && (echo 받음: %2 ^(예비 주소^)& exit /b 0)
+powershell -NoProfile -Command "try{Invoke-WebRequest -UseBasicParsing -Uri 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/%1/%2' -OutFile 'C:\fib\fonts\%2'; exit 0}catch{Write-Host $_.Exception.Message; exit 1}" && (echo 받음: %2 ^(PowerShell^)& exit /b 0)
+if exist C:\fib\fonts\%2 del C:\fib\fonts\%2
+echo [참고] %2 글꼴을 못 받았습니다. 기본 글꼴로 표시됩니다. (백신·회사 방화벽이 .ttf 다운로드를 막는 경우)
+exit /b 0
