@@ -538,7 +538,7 @@ class Table(tk.Canvas):
 
     def draw(self):
         self.delete("all")
-        w, h = max(self.winfo_width(), 200), max(self.winfo_height(), 40)
+        w, h = max(self.winfo_width(), 200), max(self.winfo_height(), self.head_h() + 40)
         xs = self._xs = self.xs(w)
         self.btn_hits = []
         if self.fit:  # 펼친 행 높이가 폭에 따라 바뀌므로 그릴 때마다 맞춘다
@@ -578,7 +578,7 @@ class Table(tk.Canvas):
                 else:
                     _txt(self, x, hh / 2, c.get("title", ""), c.get("tfg", T.MUTED), "kr_xs", a)
             self.create_line(0, hh - 1, w, hh - 1, fill=T.DIVIDER)
-        if total > h - hh:  # 얇은 스크롤 막대
+        if total > 0 and total > h - hh:  # 얇은 스크롤 막대
             frac = (h - hh) / total
             top = hh + (h - hh) * self.offset / total
             self.create_rectangle(w - 5, top, w - 2, top + (h - hh) * frac, fill=T.DIVIDER, outline="")
