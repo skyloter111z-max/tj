@@ -263,6 +263,7 @@ class PriceFeed(threading.Thread):
         self.krw_markets = None
         self.held = []           # 원화마켓이 있는 보유 코인
         self.want_history = threading.Event()
+        self.api_fail_since, self.api_alerted = None, False
 
     def run(self):
         while not self.stop_event.is_set():
@@ -275,7 +276,13 @@ class PriceFeed(threading.Thread):
                                                             t["signed_change_price"]) for t in ts}))
                 api = self.engine.api
                 if api and time.time() - self.last_hold > 60:
-                    acc = api.call("GET", "/accounts")
+                    try:
+                        acc = api.call("GET", "/accounts")
+                    except Exception as e:
+                        self.last_hold = time.time()  # 실패해도 1분 뒤에 다시 (매 2초 재시도로 업비트를 두드리지 않게)
+                        self.api_health(False, str(e))
+                        raise
+                    self.api_health(True)
                     hold = {a["currency"]: float(a["balance"]) + float(a["locked"]) for a in acc}
                     self.held = [a["currency"] for a in acc if a["currency"] in self.krw_markets
                                  and float(a["balance"]) + float(a["locked"]) > 0]
@@ -294,6 +301,29 @@ class PriceFeed(threading.Thread):
             except Exception:
                 pass  # 다음 주기에 다시
             self.stop_event.wait(self.every)
+
+    API_FAIL_ALERT_SEC = 300  # 업비트 개인 API(잔고 조회)가 이만큼 계속 실패하면 경고
+
+    def api_health(self, ok, err=""):
+        """업비트 개인 API 연결 감시. 5분 넘게 계속 실패하면 한 번 경고, 다시 되면 복구 알림.
+        허용 IP가 바뀌면(공유기 재부팅 등) 모든 주문이 거절돼 익절 매도도 못 하므로 빨리 알아야 한다."""
+        t = time.time()
+        if ok:
+            if self.api_alerted:
+                mins = int((t - self.api_fail_since) // 60)
+                self.engine.alert("grid", "업비트 API 연결 복구", f"약 {mins}분 동안 끊겼다가 다시 연결됐습니다. 자동매매가 이어서 동작합니다.")
+            self.api_fail_since, self.api_alerted = None, False
+            return
+        if self.api_fail_since is None:
+            self.api_fail_since = t
+        if not self.api_alerted and t - self.api_fail_since >= self.API_FAIL_ALERT_SEC:
+            self.api_alerted = True
+            hint = ("허용 IP가 바뀌었을 수 있습니다. 업비트 > 마이페이지 > Open API 관리에서 지금 IP를 허용 IP로 다시 등록하세요."
+                    if any(k in err for k in ("401", "no_authorization_ip", "invalid_access_key", "jwt"))
+                    else "인터넷 연결이나 업비트 점검 여부를 확인하세요.")
+            self.engine.alert("fail", "업비트 API 연결 끊김",
+                              f"{int((t - self.api_fail_since) // 60)}분째 잔고 조회가 실패합니다. 이 동안 자동매매 주문(익절 포함)이 "
+                              f"나가지 않습니다.\n{hint}\n오류: {err[:200]}")
 
 
 class Engine(threading.Thread):
@@ -753,7 +783,8 @@ class Engine(threading.Thread):
             else:
                 frac = min(vol / st["qty"], 1) if st["qty"] else 1
                 st["realized"] += (funds - fee) - st["cost"] * frac
-                st.update(qty=max(st["qty"] - vol, 0.0), cost=st["cost"] * (1 - frac), ref=px)
+                # 남은 게 있으면 절반 매도였던 것 → halved 표시 (안 하면 본전 위에서 절반을 한 번 더 판다)
+                st.update(qty=max(st["qty"] - vol, 0.0), cost=st["cost"] * (1 - frac), ref=px, halved=True)
                 if st["qty"] * px < 5_000:  # 사실상 다 팔림 → 사이클 종료
                     st["profit_total"] += st["realized"]
                     st["cycles"] += 1

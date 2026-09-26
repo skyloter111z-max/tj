@@ -259,6 +259,29 @@ ok(e.grid_state("ADA")["buys"] == 2, "19d 위험 단계(10만 아래)여도 비�
 e._krw_cache = None; e.cash_stage_check()
 ok(cfg["grid"]["cash_stage"] == 2, f"19e 현금 단계 알림 (위험 단계={cfg['grid'].get('cash_stage')})")
 
+# 20 절반 매도 결과가 불명확 → 사후 반영할 때 '절반 판 상태'로 표시 (본전 위에서 절반을 또 팔면 안 됨)
+e, ex, cfg = mk(multiplier=1.0, drop_pct=5.0, unit_krw=10000, profit_krw=500, half_at_breakeven=True)
+step(e, ex, 340); step(e, ex, 320)
+ok(e.grid_state("ADA")["buys"] == 2 and ex.posts == 2, "20a 2회 매수")
+ex.fail_next = "lost_after"; step(e, ex, 335)
+ok(e.grid_state("ADA").get("pending") and ex.posts == 3, "20b 본전 위 절반 매도 → 결과 불명확 (pending)")
+step(e, ex, 335); step(e, ex, 335); step(e, ex, 335)
+st = e.grid_state("ADA")
+ok(ex.posts == 3 and st.get("halved") and abs(st["qty"] - ex.bal["ADA"]) < 1e-9,
+   f"20c 사후 반영 뒤 절반 매도를 다시 하지 않음 (posts={ex.posts}, halved={st.get('halved')}, 장부 {st['qty']:.3f} = 거래소 {ex.bal['ADA']:.3f})")
+
+# 21 업비트 API 연결 감시: 5분 넘게 실패하면 한 번만 경고, 다시 되면 복구 알림
+e, ex, cfg = mk(); alerts(e)
+feed = core.PriceFeed(e, e.events)
+feed.api_health(False, "GET /accounts 실패 401: no_authorization_ip")
+ok(not alerts(e), "21a 실패 직후에는 경고 안 함")
+feed.api_fail_since -= 301; feed.api_health(False, "GET /accounts 실패 401: no_authorization_ip")
+a = alerts(e)
+ok(any("연결 끊김" in x for x in a), f"21b 5분 넘게 실패 → 경고 ({a})")
+feed.api_health(False, "401"); ok(not alerts(e), "21c 경고는 한 번만")
+feed.api_health(True); a = alerts(e)
+ok(any("복구" in x for x in a) and feed.api_fail_since is None, "21d 다시 연결되면 복구 알림")
+
 # 12 설정 파일 손상 → 백업으로 복구
 d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
 c = core.load_config(); c["grid"]["state"] = {"ADA": {"qty": 1.23}}; core.save_config(c); core.save_config(c)
