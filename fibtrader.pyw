@@ -951,7 +951,7 @@ class App:
         inner.pack(fill="x", padx=18, pady=18)
 
         hp, hh = card(inner, "보유 코인")
-        lab(hh, "업비트 매수평균가 기준 · 현재가 2초마다 갱신 · 스테이킹·원화마켓 없는 코인 제외 · 행을 누르면 차트",
+        lab(hh, "업비트 매수평균가 기준 · 현재가 실시간 · 잔고 10초마다(체결 직후 바로) · 스테이킹·원화마켓 없는 코인 제외 · 행을 누르면 차트",
             "kr_xs", fg=T.MUTED).pack(side="right")
         self.inv_table = tk.Frame(hp, bg=T.PANEL)
         self.inv_table.pack(fill="x", padx=16, pady=(0, 14))
@@ -1718,8 +1718,8 @@ class App:
         n = sum(1 for c in self.g_table.checked if st.get(c, {}).get("qty"))
         self.g_liq_btn.config(text=f"선택 코인 청산 ({n})" if n else "선택 코인 청산")
         k = len(self.g_table.checked)
-        self.g_sel_lab.config(text=f"30초마다 갱신 · {k}개 선택됨" if k else
-                              "30초마다 갱신 · 코인 칸에 적은 코인 + 자동매매로 산 수량이 남은 코인")
+        self.g_sel_lab.config(text=f"시세 실시간 · 매매 판단 30초마다 · {k}개 선택됨" if k else
+                              "시세 실시간 · 매매 판단 30초마다 · 코인 칸에 적은 코인 + 자동매매로 산 수량이 남은 코인")
 
     def own_text(self, r):
         """업비트 실제 잔고에서 자동매매 몫을 뺀 기존 보유분 (모의면 전체 잔고가 기존 보유)."""
@@ -2606,7 +2606,8 @@ class App:
         ts = text.split(" ")[0]
         self.last_status_ts = time.time()
         api = "API 연결됨" if self.engine.api else "API 키 없음"
-        self.status.config(text=f"{api} · {ts} 확인" if not err else text[:80], fg=T.UP if err else T.MUTED)
+        src = getattr(getattr(self, "feed", None), "source", "")
+        self.status.config(text=f"{api} · 시세 {src} · {ts} 확인" if not err else text[:80], fg=T.UP if err else T.MUTED)
         self.status_dot.config(fg=T.UP if err or not self.engine.api else T.DOWN)
         self.refresh_chrome()
 
@@ -2640,6 +2641,7 @@ class App:
         while not self.ui_calls.empty():
             self.ui_calls.get_nowait()()
         changed_logs = False
+        live_batch = {}
         while not self.events.empty():
             ev = self.events.get_nowait()
             kind = ev[0]
@@ -2663,14 +2665,8 @@ class App:
                 changed_logs = True
                 if akind == "stop":
                     self.root.after(300, self.after_mode_change)
-            elif kind == "live":
-                if self.closing:
-                    return
-                self.render_strip(ev[1])
-                self.render_board()
-                if self.accounts:
-                    self.render_invest()
-                self.render_grid_tab()
+            elif kind == "live":  # 실시간 시세는 여러 번 와도 모아서 한 번만 그린다
+                live_batch.update(ev[1])
             elif kind == "hold":
                 self.hold = ev[1]
                 self.render_board()
@@ -2707,12 +2703,18 @@ class App:
             elif kind == "done":
                 self.on_done(ev[1])
                 changed_logs = True
+        if live_batch and not self.closing:
+            self.render_strip(live_batch)
+            self.render_board()
+            if self.accounts:
+                self.render_invest()
+            self.render_grid_tab()
         if changed_logs:
             self.render_logs()
             self.render_grid_log()
             self.render_journal()
         self.check_stale_status()
-        self.root.after(500, self.pump)
+        self.root.after(200, self.pump)  # 실시간 시세를 늦지 않게 (그리기는 0.01초 수준이라 부담 없음)
 
     def run(self):
         self.render_logs()

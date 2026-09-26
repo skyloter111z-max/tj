@@ -15,6 +15,7 @@ import time
 import fib_check as fc
 import fib_orders as fo
 import fib_recalc as fr
+import fib_ws as fws
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "fibtrader_config.json")
@@ -253,33 +254,63 @@ def todo_key(todo):
 
 
 class PriceFeed(threading.Thread):
-    """화면용 실시간 시세: 2초마다 현재가, 1분마다 업비트 잔고(평단 포함), 5분마다 체결 내역. 주문·알림 판단은 Engine이 한다."""
+    """화면용 시세: 업비트 웹소켓 실시간(끊기면 2초마다 REST로 대신), 10초마다 + 체결 직후 잔고(평단 포함),
+    5분마다 + 체결 직후 체결 내역. 주문·알림 판단은 Engine이 한다 (자동매매 판단 주기는 그대로)."""
+
+    TICK = 0.25        # 화면으로 보내는 최소 간격 (초당 최대 4번)
+    REST_EVERY = 2.0   # 웹소켓이 안 될 때 REST 시세 간격
+    ACC_EVERY = 10     # 잔고 조회 간격
 
     def __init__(self, engine, events, every=2.0):
         super().__init__(daemon=True)
         self.engine, self.events, self.every = engine, events, every
         self.stop_event = engine.stop_event
-        self.last_hold = self.last_hist = 0
+        self.last_hold = self.last_hist = self.last_rest = 0
         self.krw_markets = None
         self.held = []           # 원화마켓이 있는 보유 코인
         self.want_history = threading.Event()
         self.api_fail_since, self.api_alerted = None, False
+        self.ws = None
+        self.source = "REST"     # 지금 시세를 어디서 받는지 (화면 표시용)
+
+    def ws_for(self, coins):
+        """코인 목록이 바뀌면 웹소켓을 새 목록으로 다시 연다."""
+        if self.ws and self.ws.coins == sorted(set(coins)) and self.ws.is_alive():
+            return self.ws
+        if self.ws:
+            self.ws.stop()
+        self.ws = fws.TickerStream(coins)
+        self.ws.start()
+        return self.ws
 
     def run(self):
         while not self.stop_event.is_set():
             try:
                 if self.krw_markets is None:
                     self.krw_markets = {m["market"][4:] for m in fr.get("/market/all") if m["market"].startswith("KRW-")}
-                coins = list(dict.fromkeys(fr.COINS + self.engine.grid_tracked() + self.held))
-                ts = fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in coins))
-                self.events.put(("live", {t["market"][4:]: (t["trade_price"], t["signed_change_rate"] * 100,
-                                                            t["signed_change_price"]) for t in ts}))
+                coins = [c for c in dict.fromkeys(fr.COINS + self.engine.grid_tracked() + self.held) if c in self.krw_markets]
+                ws = self.ws_for(coins)
+                if ws.healthy():
+                    snap = ws.take()
+                    if snap:
+                        self.events.put(("live", snap))
+                    self.source = "실시간"
+                elif time.time() - self.last_rest >= self.REST_EVERY:  # 웹소켓 연결 전·끊김 → REST로 대신
+                    self.last_rest = time.time()
+                    self.source = "REST"
+                    ts = fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in coins))
+                    self.events.put(("live", {t["market"][4:]: (t["trade_price"], t["signed_change_rate"] * 100,
+                                                                t["signed_change_price"]) for t in ts}))
                 api = self.engine.api
-                if api and time.time() - self.last_hold > 60:
+                poke = self.engine.poke.is_set()  # 자동매매·피보나치 체결 직후 → 잔고·체결 내역 바로 갱신
+                if poke:
+                    self.engine.poke.clear()
+                    self.want_history.set()
+                if api and (poke or time.time() - self.last_hold > self.ACC_EVERY):
+                    self.last_hold = time.time()  # 실패해도 간격을 지켜 다시 (업비트를 두드리지 않게)
                     try:
                         acc = api.call("GET", "/accounts")
                     except Exception as e:
-                        self.last_hold = time.time()  # 실패해도 1분 뒤에 다시 (매 2초 재시도로 업비트를 두드리지 않게)
                         self.api_health(False, str(e))
                         raise
                     self.api_health(True)
@@ -290,7 +321,6 @@ class PriceFeed(threading.Thread):
                     self.events.put(("accounts", [
                         {"currency": a["currency"], "qty": float(a["balance"]) + float(a["locked"]),
                          "locked": float(a["locked"]), "avg": float(a.get("avg_buy_price") or 0)} for a in acc]))
-                    self.last_hold = time.time()
                 if api and (time.time() - self.last_hist > 300 or self.want_history.is_set()):
                     self.want_history.clear()
                     self.last_hist = time.time()
@@ -300,7 +330,9 @@ class PriceFeed(threading.Thread):
                         self.events.put(("history_error", str(e)))
             except Exception:
                 pass  # 다음 주기에 다시
-            self.stop_event.wait(self.every)
+            self.stop_event.wait(self.TICK)
+        if self.ws:
+            self.ws.stop()
 
     API_FAIL_ALERT_SEC = 300  # 업비트 개인 API(잔고 조회)가 이만큼 계속 실패하면 경고
 
@@ -332,6 +364,7 @@ class Engine(threading.Thread):
         self.cfg, self.db, self.events = cfg, db, events
         self.api = make_api()
         self.stop_event = threading.Event()
+        self.poke = threading.Event()  # 체결 직후 화면 잔고를 바로 갱신하라는 신호 (PriceFeed가 받음)
         self.commands = queue.Queue()
         self.levels = {}          # coin -> [(이름, 가격)]
         self.prices = {}
@@ -349,10 +382,14 @@ class Engine(threading.Thread):
         self.commands.put((cmd, args))
 
     def emit(self, *ev):
+        if ev[0] == "done":  # 승인 주문 실행 결과 → 잔고 바로 갱신
+            self.poke.set()
         self.events.put(ev)
 
     def alert(self, kind, title, msg):
         self.db.alert(kind, title, msg)
+        if kind in ("grid", "fill"):  # 자동매매 매매·피보나치 체결 → 잔고·체결 내역 바로 갱신
+            self.poke.set()
         self.emit("alert", title, msg, kind)
 
     # ---------- 레벨 (설정에 고정 저장, 체결·재계산 때만 바뀜) ----------
