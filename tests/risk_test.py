@@ -270,6 +270,21 @@ st = e.grid_state("ADA")
 ok(ex.posts == 3 and st.get("halved") and abs(st["qty"] - ex.bal["ADA"]) < 1e-9,
    f"20c 사후 반영 뒤 절반 매도를 다시 하지 않음 (posts={ex.posts}, halved={st.get('halved')}, 장부 {st['qty']:.3f} = 거래소 {ex.bal['ADA']:.3f})")
 
+# 22 기존 보유 합치기: 주문 없이 지금 시세로 장부에 넣고, 익절 때 합친 수량 전체를 팔며 일지 합계 = 엔진 실현
+e, ex, cfg = mk(unit_krw=10000, profit_krw=1000, multiplier=1.5, drop_pct=3.0)
+step(e, ex, 340)
+ex.bal["ADA"] += 15.0; posts = ex.posts  # 예전 5천 원어치가 계좌에 따로 남아 있음
+e.prices["ADA"] = 340; e.grid_adopt("ADA")
+st = e.grid_state("ADA")
+ok(ex.posts == posts and abs(st["qty"] - ex.bal["ADA"]) < 1e-9 and st["buys"] == 1 and abs(st["cost"] - (10000 + 15 * 340)) < 1,
+   f"22a 합치기: 주문 없음, 장부 수량 = 계좌 수량, 매수 횟수 1 유지, 원가 {st['cost']:,.0f}원")
+tr = core.build_journal(e.db, False)
+ok(tr[-1]["kind"] == "기존 보유 편입", "22b 투자일지에 '기존 보유 편입'으로 남음")
+step(e, ex, 380)
+st = e.grid_state("ADA"); tr = core.build_journal(e.db, False)
+ok(st["cycles"] == 1 and ex.bal["ADA"] < 1e-9 and abs(sum(t["pnl"] or 0 for t in tr) - st["profit_total"]) < 0.5,
+   f"22c 익절 때 합친 수량 전부 매도 (계좌 {ex.bal['ADA']:g}개), 일지 합계 = 엔진 실현 {st['profit_total']:,.0f}원")
+
 # 21 업비트 API 연결 감시: 5분 넘게 실패하면 한 번만 경고, 다시 되면 복구 알림
 e, ex, cfg = mk(); alerts(e)
 feed = core.PriceFeed(e, e.events)

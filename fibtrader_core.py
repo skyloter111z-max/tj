@@ -202,10 +202,12 @@ def build_journal(db, sim=None):
         t = {"id": rid, "ts": ts[:19].replace("T", " "), "date": ts[:10], "month": ts[:7], "sim": s_, "coin": coin,
              "side": side, "price": price, "qty": qty, "krw": krw, "pnl": None, "base": None}
         if side == "bid":
+            adopt = note == "기존 보유 편입"  # 주문 없이 장부에만 넣은 것 (매수 횟수로 세지 않음)
             b["qty"] += qty
             b["cost"] += krw
-            b["buys"] += 1
-            t.update(fee=max(krw - qty * price, 0.0), kind="시작 매수" if b["buys"] == 1 else f"물타기 {b['buys']}회",
+            b["buys"] += 0 if adopt and b["buys"] else 1
+            t.update(fee=max(krw - qty * price, 0.0),
+                     kind="기존 보유 편입" if adopt else "시작 매수" if b["buys"] == 1 else f"물타기 {b['buys']}회",
                      avg=b["cost"] / b["qty"] if b["qty"] else None, hold_cost=b["cost"])
         else:
             t["fee"] = max(qty * price - krw, 0.0)
@@ -1166,6 +1168,37 @@ class Engine(threading.Thread):
         g["coins"] = [c for c in g["coins"] if c != coin]
         save_config(self.cfg)
         self.alert("grid", f"{coin} 장부 정리", msg)
+
+    def grid_adopt(self, coin):
+        """[기존 보유 합치기]: 업비트 계좌에 따로 있던 같은 코인을 '지금 시세로 산 것'으로 보고 자동매매 장부에 넣는다.
+        주문은 나가지 않는다. 지금 시세로 넣는 이유: 예전 '장부 정리' 때 그날 시세로 판 것으로 이미 일지에 남겼기 때문
+        (업비트 평단으로 넣으면 그때 손익이 두 번 잡힌다). 이후 익절·물타기는 합친 수량 전체로 한다."""
+        g, st = self.cfg["grid"], self.grid_state(coin)
+        if g["simulate"] or not self.api:
+            self.emit("done", [f"{coin}: 기존 보유 합치기는 실전(API 연결)에서만 됩니다."])
+            return
+        if st.get("pending"):
+            self.emit("done", [f"{coin}: 결과 확인 중인 주문이 있어 잠시 뒤 다시 시도하세요."])
+            return
+        px = self.prices.get(coin) or fr.get(f"/ticker?markets=KRW-{coin}")[0]["trade_price"]
+        acc = {a["currency"]: a for a in self.api.call("GET", "/accounts")}
+        bal = float(acc[coin]["balance"]) if coin in acc else 0.0  # 주문에 묶인 수량은 빼고
+        own = bal - st["qty"]
+        if own * px < 1_000:
+            self.emit("done", [f"{coin}: 합칠 기존 보유가 없습니다."])
+            return
+        cost = own * px
+        self.db.add("grid_trades", now().isoformat(), 0, coin, "bid", px, own, cost, "기존 보유 편입")
+        if st["qty"] <= 0:  # 진행 중 사이클이 없으면 이것으로 새 사이클 시작
+            st.update(buys=1, ref=px, halved=False, realized=0.0)
+        st.update(qty=st["qty"] + own, cost=st["cost"] + cost)
+        if coin not in g["coins"]:
+            g["coins"].append(coin)
+        save_config(self.cfg)
+        self.alert("grid", f"{coin} 기존 보유 합침",
+                   f"{own:g}개를 현재가 {fmtp(px)}원({cost:,.0f}원)으로 자동매매 장부에 넣었습니다 (주문 없음). "
+                   f"합친 원가 {st['cost']:,.0f}원 · 평단 {fmtp(st['cost'] / st['qty'])}원")
+        self.emit("grid", self.grid_view())
 
     def emergency_stop(self, cancel_all):
         if not self.cfg.get("stopped"):  # 재개할 때 되돌릴 값

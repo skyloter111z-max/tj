@@ -1335,6 +1335,7 @@ class App:
         self.g_liq_btn = T.Btn(bar, "선택 코인 청산", self.grid_liquidate, "danger", bg=sub)
         self.g_liq_btn.pack(side="right", padx=(0, 16), pady=7)
         T.Btn(bar, "구분 변경", self.grid_toggle_listed, bg=sub).pack(side="right", padx=(0, 8))
+        T.Btn(bar, "기존 보유 합치기", self.grid_adopt, bg=sub).pack(side="right", padx=(0, 8))
         T.Btn(bar, "조회", lambda: self.engine.request("grid_refresh"), bg=sub).pack(side="right", padx=(0, 8))
         self.g_watch_btn = T.Btn(bar, "", self.toggle_watch, bg=sub)
         self.g_watch_btn.pack(side="right", padx=(0, 8))
@@ -1848,6 +1849,40 @@ class App:
             e.insert(0, vals[k])
         self.g_on.set(g["enabled"])
         self.g_sim.set(g["simulate"])
+
+    def grid_adopt(self):
+        """[기존 보유 합치기]: 체크한 코인(없으면 기존 보유가 있는 모든 코인)의 기존 보유를 자동매매 장부로 합친다."""
+        g = self.cfg["grid"]
+        if g["simulate"] or not self.engine.api:
+            messagebox.showinfo("기존 보유 합치기", "실전(API 연결)에서만 됩니다.")
+            return
+        rows = {r["coin"]: r for r in self.grid_rows}
+        pick = list(self.g_table.checked) or list(rows)
+        items = []
+        for c in pick:
+            r = rows.get(c)
+            bal = self.hold.get(c)
+            p = self.grid_price(r)[0] if r else None
+            if r is None or bal is None or not p:
+                continue
+            own = max(bal - r["qty"], 0.0)
+            if own * p >= 1_000:
+                items.append((c, own, own * p))
+        if not items:
+            messagebox.showinfo("기존 보유 합치기", "합칠 기존 보유가 없습니다.")
+            return
+        lines = "\n".join(f"• {c}: {T.fmtq(q)}개 ≈ {v:,.0f}원" for c, q, v in items)
+        if not messagebox.askyesno(
+                "기존 보유 합치기",
+                f"업비트 계좌에 따로 있던 아래 코인을 자동매매 장부에 넣습니다 (주문은 나가지 않음):\n\n{lines}\n\n"
+                "• 지금 시세로 산 것으로 계산합니다 (예전 '장부 정리' 때 이미 그날 시세로 일지에 남겼기 때문).\n"
+                "• 이후 익절·물타기는 합친 수량 전체로 합니다 (익절 1,000원 기준은 그대로라 필요한 상승폭이 조금 작아짐).\n"
+                "• 되돌리려면 [선택 코인 청산] 또는 장부 정리를 해야 합니다.\n\n합칠까요?", icon="warning"):
+            return
+        for c, _, _ in items:
+            self.engine.request("grid_adopt", c)
+        self.g_table.checked.clear()
+        self.update_liq_btn()
 
     def grid_toggle_listed(self):
         """[구분 변경]: 체크한 코인이 자동매매 중이면 조회만으로, 조회만이면 자동매매로."""
