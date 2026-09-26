@@ -1342,7 +1342,8 @@ class App:
         tk.Frame(tc, bg=T.DIVIDER, height=1).pack(fill="x")
 
         cols = [{"key": "chk", "w": 26}, {"key": "coin", "title": "코인 · 상태", "w": 150},
-                {"key": "cum", "title": "누적 수익", "sub": "완료 사이클", "tfg": T.TEXT, "w": 108, "anchor": "e"},
+                {"key": "cyc", "title": "완료", "sub": "사이클", "w": 52, "anchor": "e"},
+                {"key": "cum", "title": "누적 수익", "sub": "수수료 뺀", "tfg": T.TEXT, "w": 96, "anchor": "e"},
                 {"key": "pnl", "title": "지금 손익", "sub": "업비트 기준", "w": 124, "anchor": "e"},
                 {"key": "gap", "w": 14},
                 {"key": "stage", "title": "매수 단계", "sub": f"원가 / 코인한도 {manx(g['max_krw'])}", "w": 170},
@@ -1662,8 +1663,9 @@ class App:
         cost = r["cost"]
         return kind, {"id": r["coin"], "check": True, "dim": dim, "cells": {
             "coin": {"draw": coin_cell},
-            "cum": {"text": f"{done:+,.0f}" if round(done) else "0", "fg": T.chg_color(done), "font": "num_cell_b",
-                    "sub": f"{r['cycles']} 사이클 완료" if r["cycles"] else "완료 없음"},
+            "cyc": {"text": f"{r['cycles']}회" if r["cycles"] else "–", "fg": T.TEXT if r["cycles"] else T.MUTED,
+                    "font": "num_cell_b" if r["cycles"] else "num"},
+            "cum": {"text": f"{done:+,.0f}" if round(done) else "0", "fg": T.chg_color(done), "font": "num_cell_b"},
             "pnl": ({"text": f"{upnl:+,.0f}", "fg": T.chg_color(upnl),
                      "sub": (f"{upnl / (cost / (1 + core.FEE)) * 100:+.1f}% · 실수령 {pnl:+,.0f}" if cost else ""),
                      "subfg": T.MUTED} if r["qty"] else {"text": "-", "fg": T.MUTED}),
