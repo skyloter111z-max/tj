@@ -59,6 +59,11 @@ class UnknownResult(RuntimeError):
     """주문 요청이 업비트에 닿았는지 모르는 상태 (타임아웃·연결 끊김). identifier로 조회해서 확정해야 한다."""
 
 
+def price_str(price):
+    """주문 가격 문자열. 정수면 '1234', 호가 단위가 소수면 '0.123' (지수 표기 없이)."""
+    return f"{price:.8f}".rstrip("0").rstrip(".")
+
+
 class Upbit:
     def __init__(self, access, secret):
         self.access, self.secret = access, secret
@@ -169,9 +174,13 @@ class Upbit:
                 return res
         raise UnknownResult(f"주문 {order_uuid or identifier} 체결 확인 실패")
 
+    def open_all(self):
+        """모든 마켓의 미체결 주문 (최대 100건)."""
+        return self.call("GET", "/orders/open", {"state": "wait", "limit": 100})
+
     def place(self, market, side, volume, price, identifier=None):
         body = {"market": market, "side": side, "ord_type": "limit",
-                "volume": f"{int(volume * 1e8) / 1e8:.8f}", "price": f"{price:.0f}"}
+                "volume": f"{int(volume * 1e8) / 1e8:.8f}", "price": price_str(price)}
         if identifier:
             body["identifier"] = identifier
         return self.call("POST", "/orders", body)

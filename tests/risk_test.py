@@ -53,7 +53,7 @@ class Ex:
 def mk(**grid):
     d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
     cfg = core.load_config(); cfg["grid"].update(dict(simulate=False, coins=["ADA"], unit_krw=5000, profit_krw=250, max_krw=150000,
-                                                      cash_warn=0, cash_floor_start=0, cash_floor_all=0), **grid)  # 현금 보호는 19번에서만
+                                                      cash_warn=0, cash_floor_start=0, cash_floor_all=0, limit_tp=False), **grid)  # 현금 보호는 19번에서만, 지정가 익절은 L번에서만
     e = core.Engine(cfg, core.DB(os.path.join(d, "t.db")), queue.Queue()); ex = Ex(); e.api = ex
     return e, ex, cfg
 def step(e, ex, p, skip_rate=True):
@@ -312,3 +312,205 @@ c = core.load_config(); c["grid"]["state"] = {"ADA": {"qty": 1.23}}; core.save_c
 open(core.CONFIG_PATH, "w").write('{"broken": ')
 c2 = core.load_config()
 ok(c2["grid"]["state"].get("ADA", {}).get("qty") == 1.23, "12 설정 파일이 깨져도 백업(.bak)에서 장부 복구")
+
+# ---------- L: 지정가 익절 (실전) ----------
+class LEx(Ex):
+    """지정가 매도까지 흉내 내는 가짜 업비트: 주문 수량은 잠김(locked), 가격이 닿으면 지정가로 체결(일부 체결 가능),
+    호가 단위·최소 주문 금액 검사, 취소하면 남은 수량 풀림."""
+    def __init__(s, tick=1.0):
+        super().__init__(); s.tick = tick; s.locked = {}; s.partial = None; s.fill_on_cancel = False; s.fail_place = None
+    def _fill(s, market, side, amount):
+        c = market[4:]
+        if side == "ask" and s.bal[c] + 1e-12 < amount: raise RuntimeError("POST /orders 실패 400: insufficient_funds_ask")
+        return super()._fill(market, side, amount)
+    def call(s, meth, path, params=None):
+        if path == "/accounts":
+            return [{"currency": k, "balance": str(v), "locked": str(s.locked.get(k, 0.0)), "avg_buy_price": str(s.avg.get(k, 0))}
+                    for k, v in s.bal.items()]
+        raise RuntimeError("unsupported")
+    def open_all(s): return [dict(o) for o in s.open.values()]
+    def get_order(s, uuid=None, identifier=None):
+        o = s.by_ident.get(identifier) if identifier else s.orders.get(uuid)
+        return json.loads(json.dumps(o)) if o else None
+    def place(s, m, side, v, p, identifier=None):
+        c = m[4:]; v = float(f"{int(v * 1e8) / 1e8:.8f}"); p = float(fo.price_str(p))
+        s.posts += 1
+        mode, s.fail_place = s.fail_place, None
+        if mode == "lost_before": raise fo.UnknownResult("timeout (주문 안 들어감)")
+        if identifier in s.by_ident: raise RuntimeError("POST /orders 실패 400: duplicate identifier")
+        if abs(p / s.tick - round(p / s.tick)) > 1e-9: raise RuntimeError("POST /orders 실패 400: invalid_price_ask")
+        if v * p < 5000: raise RuntimeError("POST /orders 실패 400: under_min_total_ask")
+        if s.bal[c] + 1e-12 < v: raise RuntimeError("POST /orders 실패 400: insufficient_funds_ask")
+        s.bal[c] -= v; s.locked[c] = s.locked.get(c, 0.0) + v
+        s.n += 1; u = f"L{s.n}"
+        o = {"uuid": u, "identifier": identifier, "market": m, "side": side, "ord_type": "limit", "state": "wait", "price": str(p),
+             "volume": str(v), "remaining_volume": str(v), "executed_volume": "0", "paid_fee": "0", "trades": []}
+        s.orders[u] = o; s.by_ident[identifier] = o; s.open[u] = o
+        if s.price[c] >= p: s._exec(o, v, s.price[c])  # 현재가보다 낮게 걸면 바로 체결
+        if mode == "lost_after": raise fo.UnknownResult("timeout (주문은 들어감)")
+        return {"uuid": u}
+    def _exec(s, o, v, px):
+        c = o["market"][4:]; rem = float(o["remaining_volume"]); v = min(v, rem)
+        funds = v * px; fee = funds * 0.0005
+        o["trades"].append({"funds": str(funds)})
+        o["executed_volume"] = str(float(o["executed_volume"]) + v); o["remaining_volume"] = str(rem - v)
+        o["paid_fee"] = str(float(o["paid_fee"]) + fee)
+        s.locked[c] -= v; s.bal["KRW"] += funds - fee
+        if rem - v <= 1e-12: o["state"] = "done"; s.open.pop(o["uuid"], None)
+    def move(s, coin, p):
+        """가격이 p까지 오름/내림 → 닿은 매도 주문 체결 (partial이 있으면 그 비율만)."""
+        s.price[coin] = p
+        for o in list(s.open.values()):
+            if o["market"] == f"KRW-{coin}" and o["side"] == "ask" and p >= float(o["price"]):
+                s._exec(o, float(o["remaining_volume"]) * (s.partial or 1.0), float(o["price"]))
+    def cancel(s, u):
+        o = s.open.get(u)
+        if o is None: raise RuntimeError("DELETE /order 실패 404: order_not_found")
+        if s.fill_on_cancel:  # 취소 직전에 체결돼 버림
+            s.fill_on_cancel = False; s._exec(o, float(o["remaining_volume"]), float(o["price"]))
+            raise RuntimeError("DELETE /order 실패 400: 이미 체결된 주문")
+        c = o["market"][4:]; rem = float(o["remaining_volume"])
+        s.locked[c] -= rem; s.bal[c] += rem; o["state"] = "cancel"; s.open.pop(u)
+        return o
+
+orig_get = fr.get
+def lmk(tick=1.0, **grid):
+    e, _, cfg = mk(**{**dict(limit_tp=True, unit_krw=10000, profit_krw=500, multiplier=1.5, drop_pct=3.0, half_at_breakeven=True), **grid})
+    ex = LEx(tick); e.api = ex
+    fr.get = lambda path: [{"tick_size": str(ex.tick)}] if "instruments" in path else orig_get(path)
+    return e, ex, cfg
+def lstep(e, ex, p):
+    ex.move("ADA", p); step(e, ex, p)
+def ada(ex): return ex.bal["ADA"] + ex.locked.get("ADA", 0.0)
+def cash_gain(ex): return ex.bal["KRW"] - 1_000_000
+def jsum(e): return sum(t["pnl"] or 0 for t in core.build_journal(e.db, False))
+def opens(ex): return sorted((o["price"], o["volume"]) for o in ex.open.values())
+
+# L1 시작 매수 → 익절가에 지정가 1건 (호가 단위로 올림, 수량 = 장부 수량)
+e, ex, cfg = lmk()
+lstep(e, ex, 340)
+st = e.grid_state("ADA"); o = list(ex.open.values())
+exact = (500 + st["cost"]) / (st["qty"] * (1 - core.FEE))
+ok(len(o) == 1 and float(o[0]["price"]) == __import__("math").ceil(exact) and abs(float(o[0]["volume"]) - st["qty"]) < 1e-8
+   and abs(ada(ex) - st["qty"]) < 1e-7 and ex.bal["ADA"] < 1e-7,
+   f"L1 시작 매수 후 지정가 매도 1건 @{o[0]['price'] if o else '-'} (정확한 익절가 {exact:.2f} 올림), 수량 = 장부 = 계좌(전부 잠김)")
+posts = ex.posts; lstep(e, ex, 345); lstep(e, ex, 341)
+ok(ex.posts == posts and len(ex.open) == 1, "L1b 가격만 움직이면 주문 그대로 (취소·재주문 없음)")
+
+# L2 가격이 익절가에 닿으면 업비트가 지정가로 팔고 → 사이클 종료, 장부 = 일지 = 실제 현금
+tp = float(list(ex.open.values())[0]["price"])
+lstep(e, ex, tp)
+st = e.grid_state("ADA")
+ok(st["cycles"] == 1 and st["qty"] == 0 and ada(ex) < 1e-7 and not st.get("tp") and not ex.open
+   and 500 <= st["profit_total"] < 500 + 40 and abs(st["profit_total"] - cash_gain(ex)) < 0.01 and abs(jsum(e) - cash_gain(ex)) < 0.01,
+   f"L2 익절가 {tp:g}에 체결 → 수익 {st['profit_total']:,.1f}원 (≥500) = 실제 현금 {cash_gain(ex):,.1f} = 일지 {jsum(e):,.1f}")
+lstep(e, ex, tp)
+ok(e.grid_state("ADA")["buys"] == 1 and len(ex.open) == 1, "L2b 다음 확인에서 다시 시작 매수 + 새 지정가")
+
+# L3 추가 매수: 기존 주문 취소 → 매수 → 새 수량·새 가격으로 절반(본전) + 나머지(익절) 2건
+e, ex, cfg = lmk()
+lstep(e, ex, 340); first = list(ex.open)[0]
+lstep(e, ex, 329)
+st = e.grid_state("ADA"); o = sorted(ex.open.values(), key=lambda x: float(x["price"]))
+be = st["cost"] / st["qty"] / (1 - core.FEE)
+ok(ex.orders[first]["state"] == "cancel" and first not in ex.open, "L3a 추가 매수 때 기존 지정가 취소")
+ok(st["buys"] == 2 and len(o) == 2 and abs(sum(float(x["volume"]) for x in o) - st["qty"]) < 3e-8 and abs(ada(ex) - st["qty"]) < 1e-7
+   and float(o[0]["price"]) == __import__("math").ceil(be) and float(o[1]["price"]) > float(o[0]["price"]),
+   f"L3b 2회 매수 뒤 새 주문 2건: 절반 @{o[0]['price']} (본전 {be:.2f} 올림) + 나머지 @{o[1]['price']}, 수량 합 = 장부 = 계좌")
+# L4 절반 체결 → halved, 나머지 익절가 체결 → 사이클 종료, 수익 ≥ 500, 장부 = 일지 = 현금
+lstep(e, ex, float(o[0]["price"]))
+st = e.grid_state("ADA")
+ok(st["halved"] and st["qty"] > 0 and len(ex.open) == 1 and abs(ada(ex) - st["qty"]) < 1e-7, "L4a 본전에서 절반 체결 → 절반 판 상태, 나머지 주문 유지")
+rest = float(list(ex.open.values())[0]["price"])
+lstep(e, ex, rest)
+st = e.grid_state("ADA")
+ok(st["cycles"] == 1 and ada(ex) < 1e-7 and 500 <= st["profit_total"] < 560 and abs(st["profit_total"] - cash_gain(ex)) < 0.01
+   and abs(jsum(e) - cash_gain(ex)) < 0.01,
+   f"L4b 나머지 {rest:g}에 체결 → 사이클 수익 {st['profit_total']:,.1f}원 = 현금 {cash_gain(ex):,.1f} = 일지 {jsum(e):,.1f}")
+
+# L5 일부 체결 뒤 추가 매수 → 체결분은 장부에 반영, 남은 수량만큼 새로 걸기 → 끝까지 가도 장부 = 일지 = 현금
+e, ex, cfg = lmk()
+lstep(e, ex, 340); tp = float(list(ex.open.values())[0]["price"])
+ex.partial = 0.4; lstep(e, ex, tp); ex.partial = None
+st = e.grid_state("ADA")
+ok(0 < st["qty"] and abs(ada(ex) - st["qty"]) < 1e-7 and st["cycles"] == 0 and st["realized"] > 0 and len(ex.open) == 1,
+   f"L5a 40% 일부 체결 → 장부 반영(실현 {st['realized']:,.1f}원), 사이클은 진행 중")
+lstep(e, ex, 329)
+st = e.grid_state("ADA")
+ok(st["buys"] == 2 and abs(sum(float(x["volume"]) for x in ex.open.values()) - st["qty"]) < 3e-8 and abs(ada(ex) - st["qty"]) < 1e-7,
+   "L5b 추가 매수 → 남은 수량 + 새로 산 수량으로 다시 걸기")
+for p in sorted(float(x["price"]) for x in ex.open.values()):
+    lstep(e, ex, p)
+st = e.grid_state("ADA")
+ok(st["cycles"] == 1 and ada(ex) < 1e-7 and abs(st["profit_total"] - cash_gain(ex)) < 0.01 and abs(jsum(e) - cash_gain(ex)) < 0.01
+   and st["profit_total"] >= 500, f"L5c 사이클 종료: 수익 {st['profit_total']:,.1f} = 현금 {cash_gain(ex):,.1f} = 일지 {jsum(e):,.1f}")
+
+# L6 취소하려는 순간 체결돼 버림 → 익절로 처리하고 추가 매수 안 함
+e, ex, cfg = lmk()
+lstep(e, ex, 340); posts = ex.posts
+ex.fill_on_cancel = True; lstep(e, ex, 329)
+st = e.grid_state("ADA")
+ok(st["cycles"] == 1 and st["qty"] == 0 and ex.posts == posts and ada(ex) < 1e-7 and abs(st["profit_total"] - cash_gain(ex)) < 0.01,
+   f"L6 취소 직전 체결 → 사이클 종료로 반영, 물타기 주문 안 나감 (수익 {st['profit_total']:,.1f} = 현금 {cash_gain(ex):,.1f})")
+
+# L7 지정가 주문이 결과 불명확 → 다음 확인 때 고유 번호로 찾음, 중복 주문 없음
+e, ex, cfg = lmk()
+ex.fail_place = "lost_after"; lstep(e, ex, 340)
+posts = ex.posts; lstep(e, ex, 341); lstep(e, ex, 342)
+st = e.grid_state("ADA")
+ok(ex.posts == posts and len(ex.open) == 1 and st["tp"][0]["uuid"], "L7a 주문은 들어갔는데 응답 못 받음 → 찾아서 이어감 (재주문 없음)")
+e, ex, cfg = lmk()
+ex.fail_place = "lost_before"; lstep(e, ex, 340)
+lstep(e, ex, 341); ok(len(ex.open) == 0 and len(e.grid_state("ADA")["tp"]) == 1, "L7b 안 들어간 주문: 1분 안에는 재주문 안 함")
+e.grid_state("ADA")["tp"][0]["ts"] -= 61; lstep(e, ex, 341); lstep(e, ex, 341)
+ok(len(ex.open) == 1 and ada(ex) - e.grid_state("ADA")["qty"] < 1e-9, "L7c 1분 뒤 없는 것 확인 → 새로 1건")
+
+# L8 청산: 지정가 먼저 취소 → 시장가 전량 매도 / 긴급 정지: 자동매매 지정가도 취소
+e, ex, cfg = lmk()
+lstep(e, ex, 340); lstep(e, ex, 329)
+e.grid_liquidate("ADA")
+st = e.grid_state("ADA")
+ok(not ex.open and ada(ex) < 1e-7 and st["qty"] == 0 and abs(st["profit_total"] - cash_gain(ex)) < 0.01 and "ADA" not in cfg["grid"]["coins"],
+   f"L8a 청산: 걸린 주문 취소 후 전량 매도, 손익 {st['profit_total']:,.0f} = 현금 {cash_gain(ex):,.0f}")
+e, ex, cfg = lmk()
+lstep(e, ex, 340)
+e.emergency_stop(True)
+ok(not ex.open and not e.grid_state("ADA").get("tp") and not cfg["grid"]["enabled"], "L8b 긴급 정지(주문 취소) → 자동매매 지정가도 취소")
+
+# L9 업비트 앱에서 사용자가 주문을 취소 → 알림 후 장부 수량으로 다시 걸기
+e, ex, cfg = lmk()
+lstep(e, ex, 340); alerts(e)
+ex.cancel(list(ex.open)[0]); lstep(e, ex, 341)
+a = alerts(e)
+ok(len(ex.open) == 1 and any("취소됨" in x for x in a), "L9 앱에서 취소된 주문 감지 → 다시 걸기")
+
+# L10 기존 보유 합치기: 걸린 주문 취소 → 합친 수량으로 다시 걸기
+e, ex, cfg = lmk()
+ex.bal["ADA"] = 20.0; ex.avg["ADA"] = 330.0   # 따로 산 기존 보유
+lstep(e, ex, 340)
+e.prices["ADA"] = 340; e.grid_adopt("ADA"); lstep(e, ex, 341)
+st = e.grid_state("ADA")
+ok(abs(st["qty"] - ada(ex)) < 1e-7 and abs(sum(float(x["volume"]) for x in ex.open.values()) - st["qty"]) < 3e-8 and ex.bal["ADA"] < 1e-7,
+   f"L10 합치기 → 합친 수량 {st['qty']:.3f} 전부 지정가로 다시 걸림")
+
+# L11 소수 호가 (0.1원 단위): 가격 문자열·올림
+ok(fo.price_str(136.7) == "136.7" and fo.price_str(1234.0) == "1234" and core.tick_up(100.01, 0.1) == 100.1 and core.tick_up(340.0, 1) == 340,
+   "L11a 가격 문자열 136.7 / 1234, 올림 100.01→100.1")
+e, ex, cfg = lmk(tick=0.1)
+lstep(e, ex, 136.2)
+o = list(ex.open.values())
+ok(len(o) == 1 and abs(float(o[0]["price"]) * 10 - round(float(o[0]["price"]) * 10)) < 1e-9, f"L11b 0.1원 단위 코인도 지정가 걸림 @{o[0]['price'] if o else '-'}")
+lstep(e, ex, float(o[0]["price"]))
+ok(e.grid_state("ADA")["cycles"] == 1 and abs(e.grid_state("ADA")["profit_total"] - cash_gain(ex)) < 0.01 and e.grid_state("ADA")["profit_total"] >= 500,
+   f"L11c 0.1원 단위 익절 {e.grid_state('ADA')['profit_total']:,.1f}원")
+
+# L12 지정가 익절을 끄면 걸린 주문을 취소하고 시장가 방식으로
+e, ex, cfg = lmk()
+lstep(e, ex, 340)
+cfg["grid"]["limit_tp"] = False
+e.grid_tp_cancel("ADA")  # check_prices가 지정가 끈 걸 보면 하는 일
+lstep(e, ex, 360)
+st = e.grid_state("ADA")
+ok(not ex.open and st["cycles"] == 1 and abs(st["profit_total"] - cash_gain(ex)) < 0.01, "L12 지정가 끄면 시장가 방식으로 익절")
+fr.get = orig_get
+

@@ -1542,7 +1542,9 @@ class App:
         steps = ["시작 매수", (f"{g['drop_pct']:g}% 하락마다 직전 매수의 {mult:g}배 추가 매수 ({amounts})" if mult > 1
                            else f"마지막 매수가 대비 {g['drop_pct']:g}% 하락마다 1회 금액 추가 매수"),
                  "2회 이상 샀으면 본전에 절반 매도" if g["half_at_breakeven"] else "본전 절반 매도 안 함",
-                 f"사이클 수익이 익절 {g['profit_krw']:,}원 이상이면 전량 매도", "다시 시작"]
+                 (f"익절가(+{g['profit_krw']:,}원)에 지정가 매도 · 물타면 취소 후 다시 걸기"
+                  if g.get("limit_tp", True) and not g["simulate"] else f"사이클 수익이 익절 {g['profit_krw']:,}원 이상이면 전량 매도"),
+                 "다시 시작"]
         for i, text in enumerate(steps, start=1):
             if i > 1:
                 lab(self.g_chips, "→", "kr", fg=T.MUTED).pack(side="left", padx=8)
@@ -1628,8 +1630,9 @@ class App:
                           if r["cost"] else "원가 없음", fill=dc(T.MUTED), font=T.F["kr_xs"], anchor="w")
 
         can_buy = bool(r["qty"] and r["next_buy"] and r.get("next_amt") and r["cost"] + r["next_amt"] <= g["max_krw"])
-        half = bool(r.get("breakeven") and p and p < r["breakeven"])
-        sell = r["breakeven"] if half else r["tp"]
+        orders = r.get("orders") or []  # 업비트에 걸어 둔 지정가 매도 (낮은 가격부터)
+        half = orders[0][0] == "half" if orders else bool(r.get("breakeven") and p and p < r["breakeven"])
+        sell = orders[0][1] if orders else r["breakeven"] if half else r["tp"]
         lo = r["next_buy"] if can_buy else (p * 0.9 if p else None)
 
         def pos_cell(c, x0, x1, cy):
@@ -1659,7 +1662,8 @@ class App:
                    if can_buy else {"text": "추가매수 없음", "fg": T.MUTED,
                                     "sub": f"다음 {manx(r['next_amt'])} → 한도 초과" if r.get("next_amt") else ""})
             sell_c = {"text": f"{'절반' if half else '전량'} {T.fmtp(sell)}", "fg": T.UP,
-                      "sub": f"{'본전 도달' if half else '익절 +' + format(g['profit_krw'], ',')} · {pct(sell)}"}
+                      "sub": (f"지정가 걸림{' ' + str(len(orders)) + '건' if len(orders) > 1 else ''} · {pct(sell)}" if orders else
+                              f"{'본전 도달' if half else '익절 +' + format(g['profit_krw'], ',')} · {pct(sell)}")}
         cost = r["cost"]
         return kind, {"id": r["coin"], "check": True, "dim": dim, "cells": {
             "coin": {"draw": coin_cell},
@@ -1813,7 +1817,7 @@ class App:
                 return
         going_live = self.g_on.get() and not self.g_sim.get() and (g["simulate"] or not g["enabled"])
         if going_live and not messagebox.askyesno(
-                "자동매매 실전", f"⚠ 실전으로 켜면 승인 없이 업비트에 시장가 주문이 자동으로 나갑니다.\n"
+                "자동매매 실전", f"⚠ 실전으로 켜면 승인 없이 업비트에 주문이 자동으로 나갑니다 (매수 시장가, 익절 지정가).\n"
                 f"코인 {', '.join(new['coins'])} · 1회 {new['unit_krw']:,}원 · 코인별 한도 {new['max_krw']:,}원 · "
                 f"전체 한도 {new['total_max_krw']:,}원\n\n진행할까요?",
                 icon="warning"):
@@ -1893,7 +1897,8 @@ class App:
                 f"주문 없이 자동매매 장부를 업비트 계좌와 똑같이 맞춥니다:\n\n{lines}\n\n"
                 "• 원가는 업비트 매수평균가 기준 → 손익이 업비트 앱과 같아집니다.\n"
                 "• 예전 '장부 정리' 때 추정으로 남긴 손익은 실제로 판 게 아니라 취소합니다 (두 번 잡히지 않게).\n"
-                "• ⚠ 맞춘 뒤 수익이 익절 기준(수수료 뺀 500원)을 넘은 코인은 30초 안에 시장가로 전량 매도됩니다.\n\n진행할까요?",
+                "• 합치는 동안 걸어 둔 지정가 익절 주문은 취소했다가, 합친 수량·새 평단으로 30초 안에 다시 겁니다.\n"
+                "• ⚠ 맞춘 뒤 이미 익절가를 넘은 코인은 다시 거는 즉시 체결(전량 매도)됩니다.\n\n진행할까요?",
                 icon="warning"):
             return
         for c in [x[0] for x in items] + rebase:
