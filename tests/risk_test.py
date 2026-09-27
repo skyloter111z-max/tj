@@ -641,3 +641,20 @@ e.grid_liquidate("ADA")
 st = e.grid_state("ADA")
 ok(not ex.open and ada(ex) < 1e-7 and abs(st["profit_total"] - cash_gain(ex)) < 0.01, f"M11 청산: 주문 모두 취소 후 전량 매도, 손익 {st['profit_total']:,.0f} = 현금 {cash_gain(ex):,.0f}")
 fr.get = orig_get
+
+# N1 본전 매도 = 1회 금액(1만)어치: 2회 매수(1만+1.5만) 뒤 본전 주문은 약 1만 원어치, 나머지는 익절가
+e, ex, cfg = lmk(limit_add=True)
+lstep(e, ex, 340); lstep(e, ex, 329)
+a = sorted((o for o in ex.open.values() if o["side"] == "ask"), key=lambda o: float(o["price"]))
+st = e.grid_state("ADA")
+ok(len(a) == 2 and abs(float(a[0]["volume"]) * float(a[0]["price"]) - 10000) < 40 and abs(sum(float(o["volume"]) for o in a) - st["qty"]) < 3e-8,
+   f"N1 본전 매도 {float(a[0]['volume']) * float(a[0]['price']):,.0f}원어치 @{a[0]['price']} (1만), 나머지 {float(a[1]['volume']) * float(a[1]['price']):,.0f}원어치 @{a[1]['price']}")
+lstep(e, ex, float(a[0]["price"]))
+v = e.grid_view()[0]
+ok(v["halved"] and st["halved"], "N1b 본전 매도 체결 → 화면에 '본전 매도함' 표시용 상태")
+cfg["grid"]["be_sell"] = "half"
+e2, ex2, _ = lmk(limit_add=True, be_sell="half")
+lstep(e2, ex2, 340); lstep(e2, ex2, 329)
+a2 = sorted((o for o in ex2.open.values() if o["side"] == "ask"), key=lambda o: float(o["price"]))
+ok(abs(float(a2[0]["volume"]) - float(a2[1]["volume"])) < 1e-7, "N1c 설정을 '절반'으로 하면 예전처럼 반씩")
+fr.get = orig_get

@@ -50,7 +50,8 @@ DEFAULTS = {
         "multiplier": 1.0,          # 추가 매수 금액 배수: 1 = 매번 같은 금액, 2 = 마틴게일 (1만 → 2만 → 4만 …)
         "drop_pct": 5.0,            # 마지막 매수가(또는 절반 매도가) 대비 이만큼 떨어지면 추가 매수
         "profit_krw": 500,          # 사이클 수익(수수료 뺀 뒤)이 이 금액 이상이면 전량 매도
-        "half_at_breakeven": True,  # 2회 이상 산 뒤 본전(수수료 포함)에 오면 절반 매도
+        "half_at_breakeven": True,  # 2회 이상 산 뒤 본전(수수료 포함)에 오면 일부 매도
+        "be_sell": "unit",          # 본전에서 파는 양: "unit" = 1회 금액(시작 매수 금액)어치, "half" = 보유의 절반
         "limit_tp": True,           # 실전: 매수 직후 익절가(본전 절반 포함)에 지정가 매도를 걸어 둔다. 추가 매수 때 취소 후 다시 건다
         "max_krw": 500_000,         # 코인별 최대 투입(보유 원가) 한도
         "total_max_krw": 1_500_000, # 자동매매 전체 원가 한도 (여러 코인이 같이 빠질 때)
@@ -229,7 +230,7 @@ def build_journal(db, sim=None):
                 if full:
                     b.update(qty=0.0, cost=0.0, buys=0)
                 t.update(pnl=krw - base, base=base, kind="장부 정리 (추정)" if note == "장부 정리" else
-                         "전량 매도" if full else "부분 체결" if part else "절반 매도", full=full, hold_cost=b["cost"])
+                         "전량 매도" if full else "부분 체결" if part else "본전 매도", full=full, hold_cost=b["cost"])
             else:
                 t.update(kind="매도 (장부 없음)", full=False, hold_cost=0.0)
         out.append(t)
@@ -1033,13 +1034,13 @@ class Engine(threading.Thread):
                 pnl = st["realized"] + krw - st["cost"] * min(qty / before, 1)  # 잔고 부족으로 덜 팔았으면 그만큼 원가만
                 self.grid_close_cycle(coin, pnl, px, "전량 매도")
             elif not orders and (g["half_at_breakeven"] and st["buys"] >= 2 and not st["halved"] and price >= breakeven
-                  and st["qty"] / 2 * price >= MIN_SELL_KRW):  # 반씩 나눠도 업비트 최소 주문 이상일 때만
+                  and self.grid_be_qty(st, price) > 0):  # 팔 양과 남는 양 모두 업비트 최소 주문 이상일 때만
                 before = st["qty"]
-                qty, krw, px, _ = self.grid_trade(coin, "ask", price, before / 2)
+                qty, krw, px, _ = self.grid_trade(coin, "ask", price, self.grid_be_qty(st, price))
                 frac = min(qty / before, 1)  # 실제로 판 비율만큼만 원가를 덜어낸다
                 st["realized"] += krw - st["cost"] * frac
                 st.update(qty=before - qty, cost=st["cost"] * (1 - frac), halved=True, ref=px)
-                self.alert("grid", f"{tag}{coin} 본전 절반 매도", f"{fmtp(px)}원에 {qty:g}개 매도 ({krw:,.0f}원)")
+                self.alert("grid", f"{tag}{coin} 본전 매도", f"{fmtp(px)}원에 {qty:g}개 매도 ({krw:,.0f}원)")
             elif not use_bid and price <= st["ref"] * (1 - drop):
                 unit = self.grid_next_amount(st)  # 마틴게일이면 직전 매수의 배수
                 if st["cost"] + unit > g["max_krw"]:
@@ -1098,12 +1099,12 @@ class Engine(threading.Thread):
         tick = self.grid_tick(coin)
         profit = g["profit_krw"]
         if g["half_at_breakeven"] and st["buys"] >= 2 and not st["halved"]:
-            half = int(q / 2 * 1e8) / 1e8
-            rest = q - half
             be = tick_up(st["cost"] / q / (1 - FEE), tick)  # 본전 (산 수수료 + 팔 수수료 포함)
+            half = self.grid_be_qty(st, be)  # 본전에서 팔 양 (1회 금액어치 또는 절반)
+            rest = q - half
             realized = st["realized"] + half * be * (1 - FEE) - st["cost"] * half / q
             tp = tick_up((profit + st["cost"] * rest / q - realized) / (rest * (1 - FEE)), tick)
-            if half * be >= MIN_SELL_KRW and rest * tp >= MIN_SELL_KRW:
+            if half > 0 and rest * tp >= MIN_SELL_KRW:
                 return [("half", be, half), ("full", tp, rest)]
         tp = tick_up((profit + st["cost"] - st["realized"]) / (q * (1 - FEE)), tick)
         return [("full", tp, q)] if q * tp >= 5_000 else []
@@ -1194,7 +1195,7 @@ class Engine(threading.Thread):
                 changed = True
                 if rec["kind"] == "half" and o["state"] == "done":
                     st.update(halved=True, ref=rec["ef"] / rec["ev"])
-                    self.alert("grid", f"{coin} 본전 절반 매도 (지정가)",
+                    self.alert("grid", f"{coin} 본전 매도 (지정가)",
                                f"{fmtp(rec['ef'] / rec['ev'])}원에 {rec['ev']:g}개 매도 ({rec['ef'] - rec['efee']:,.0f}원) · 나머지는 익절가에 걸려 있음")
                 elif o["state"] == "cancel" and not rec.get("mine"):
                     self.alert("grid", f"{coin} 지정가 매도 취소됨",
@@ -1535,6 +1536,15 @@ class Engine(threading.Thread):
         mult = max(1.0, float(g.get("multiplier", 1.0)))
         return round(g["unit_krw"] * mult ** max(st.get("buys", 0), 0) / 10) * 10 if st.get("buys") else g["unit_krw"]
 
+    def grid_be_qty(self, st, price):
+        """본전에서 팔 수량. 1회 금액어치(기본) 또는 절반. 판 뒤 남는 것도 업비트 최소 주문 이상이어야 하며, 안 되면 0."""
+        g, q = self.cfg["grid"], st["qty"]
+        sell = q / 2 if g.get("be_sell", "unit") == "half" else min(g["unit_krw"] / price, q)
+        sell = int(sell * 1e8) / 1e8
+        if sell * price < MIN_SELL_KRW or (q - sell) * price < MIN_SELL_KRW:
+            return 0.0
+        return sell
+
     def grid_cap_alert(self, key, msg):
         """한도 도달 알림은 같은 한도에 대해 1시간에 한 번만."""
         if time.time() - self.grid_capped.get(key, 0) > 3600:
@@ -1563,7 +1573,7 @@ class Engine(threading.Thread):
             rows.append({"status": status, "listed": coin in listed, "auto": bool(st.get("auto")), "coin": coin, "price": p, "buys": st["buys"], "cost": st["cost"], "qty": q, "avg": avg,
                          "pnl": pnl, "next_buy": st["ref"] * (1 - g["drop_pct"] / 100) if st["ref"] else None,
                          "breakeven": avg / (1 - FEE) if avg and st["buys"] >= 2 and not st["halved"] else None,
-                         "tp": tp, "cycles": st["cycles"], "profit_total": st["profit_total"],
+                         "tp": tp, "cycles": st["cycles"], "profit_total": st["profit_total"], "halved": bool(st.get("halved")) and q > 0,
                          "fee_total": st.get("fee_total", 0.0), "realized": st["realized"],
                          "next_amt": self.grid_next_amount(st) if st["ref"] else None,
                          "orders": [(o["kind"], o["price"], o["vol"] - o["ev"]) for o in sorted(st.get("tp") or [], key=lambda o: o["price"])],

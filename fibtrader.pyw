@@ -1346,10 +1346,10 @@ class App:
                 {"key": "cum", "title": "누적 수익", "sub": "수수료 뺀", "tfg": T.TEXT, "w": 96, "anchor": "e"},
                 {"key": "pnl", "title": "지금 손익", "sub": "업비트 기준", "w": 124, "anchor": "e"},
                 {"key": "gap", "w": 14},
-                {"key": "stage", "title": "매수 단계", "sub": f"원가 / 코인한도 {manx(g['max_krw'])}", "w": 170},
+                {"key": "stage", "title": "원가 · 매수 단계", "sub": f"원가 / 코인한도 {manx(g['max_krw'])}", "w": 170},
                 {"key": "buy", "title": "▼ 다음 추가매수", "sub": "가격 · 금액", "tfg": T.DOWN, "w": 136},
                 {"key": "pos", "title": "현재가 위치", "sub": "추가매수 0% ~ 100% 매도", "w": 150, "grow": 1, "anchor": "center"},
-                {"key": "sell", "title": "다음 매도 ▲", "sub": "절반(본전) · 전량(익절)", "tfg": T.UP, "w": 150, "anchor": "e"},
+                {"key": "sell", "title": "다음 매도 ▲", "sub": "본전 매도 · 전량(익절)", "tfg": T.UP, "w": 150, "anchor": "e"},
                 {"key": "own", "title": "기존 보유(별도)", "w": 150, "anchor": "e"}]
         self.g_table = W.Table(tc, cols, rh=56, check=True, fit=True, min_rows=2, on_check=self.update_liq_btn,
                                head_px=42, empty=["자동매매 대상 코인이 없습니다", "규칙 · 설정의 코인 칸에 적고 [저장]하세요"])
@@ -1413,7 +1413,7 @@ class App:
         self.g_half = tk.BooleanVar(value=g["half_at_breakeven"])
         self.g_reinvest = tk.BooleanVar(value=g.get("reinvest", True))
         self.g_autoexit = tk.BooleanVar(value=g.get("auto_exit_warning", True))
-        for text, var in (("켜기", self.g_on), ("모의", self.g_sim), ("본전 절반 매도", self.g_half),
+        for text, var in (("켜기", self.g_on), ("모의", self.g_sim), ("본전에서 1회 금액 매도", self.g_half),
                           ("수익 재투자", self.g_reinvest), ("투자유의 지정 시 자동 청산", self.g_autoexit)):
             ttk.Checkbutton(chk, text=text, variable=var, style="Panel.TCheckbutton").pack(side="left", padx=(0, 16))
         T.Btn(chk, "저장", self.save_grid, "primary").pack(side="right")
@@ -1527,7 +1527,7 @@ class App:
         self.g_panels["rules"]["sum"].config(
             text=f"1회 {g['unit_krw']:,}원 · {g['drop_pct']:g}% 하락마다 " + (f"{mult:g}배 추가매수" if mult > 1 else "같은 금액 추가매수")
             + f" · 익절 {g['profit_krw']:,}원 · 코인한도 {manx(g['max_krw'])} · 전체한도 {manx(g['total_max_krw'])}"
-            + (" + 실현수익 재투자" if g.get("reinvest", True) else "") + f" · 본전 절반 {'켬' if g['half_at_breakeven'] else '끔'}"
+            + (" + 실현수익 재투자" if g.get("reinvest", True) else "") + f" · 본전 매도 {'켬' if g['half_at_breakeven'] else '끔'}"
             + (" · 모의" if g["simulate"] else ""))
         self.g_panels["cash"]["sum"].config(
             text=f"주문 가능 원화가 주의 {manx(g.get('cash_warn', 0))} · 위험 {manx(g.get('cash_floor_start', 0))} · "
@@ -1543,7 +1543,8 @@ class App:
         steps = ["시작 매수", (f"{g['drop_pct']:g}% 아래에 직전 매수의 {mult:g}배 지정가 매수 걸어 둠" if mult > 1 and bid_on
                            else f"{g['drop_pct']:g}% 하락마다 직전 매수의 {mult:g}배 추가 매수 ({amounts})" if mult > 1
                            else f"마지막 매수가 대비 {g['drop_pct']:g}% 하락마다 1회 금액 추가 매수"),
-                 "2회 이상 샀으면 본전에 절반 매도" if g["half_at_breakeven"] else "본전 절반 매도 안 함",
+                 (("2회 이상 샀으면 본전에 절반 매도" if g.get("be_sell") == "half" else f"2회 이상 샀으면 본전에 {g['unit_krw']:,}원어치 매도")
+                  if g["half_at_breakeven"] else "본전 매도 안 함"),
                  (f"익절가(+{g['profit_krw']:,}원)에 지정가 매도 · 물타면 취소 후 다시 걸기"
                   if g.get("limit_tp", True) and not g["simulate"] else f"사이클 수익이 익절 {g['profit_krw']:,}원 이상이면 전량 매도"),
                  "다시 시작"]
@@ -1600,6 +1601,8 @@ class App:
             badge = ("조회만", T.DIVIDER, T.DIVIDER_SOFT, T.MUTED)
         elif kind == "limit":
             badge = ("한도 근접", T.WARN, T.WARN, T.GROUND)
+        elif kind == "avg" and r.get("halved"):  # 물탄 뒤 본전에서 일부 팔았음 → 나머지는 익절 대기
+            badge = (f"{r['buys']}회 · 본전 매도함", T.UP, "", None)
         elif kind == "avg":
             badge = (f"물타는 중 {r['buys']}회", T.WARN, "", None)
         elif r["qty"]:
@@ -1622,14 +1625,20 @@ class App:
         filled = buys if n_max <= 12 else round(buys / n_max * 12)
 
         def stage_cell(c, x0, x1, cy):
+            # 윗줄: 원가(크게) / 코인 한도, 아랫줄: 매수 단계 칸 + 횟수
+            if r["cost"]:
+                t = manx(r["cost"])
+                c.create_text(x0, cy - 9, text=t, fill=dc(T.TEXT), font=T.F["num_cell_b"], anchor="w")
+                c.create_text(x0 + T.measure("num_cell_b", t) + 4, cy - 8, text=f"/ {manx(g['max_krw'])}", fill=dc(T.MUTED),
+                              font=T.F["num_s"], anchor="w")
+            else:
+                c.create_text(x0, cy - 9, text="원가 없음", fill=dc(T.MUTED), font=T.F["kr_xs"], anchor="w")
             on = dc(T.WARN if buys >= 2 else T.MUTED)
             for i in range(pips):
-                xx = x0 + i * 11
-                c.create_rectangle(xx, cy - 13, xx + 9, cy - 3, fill=on if i < filled else dc(T.TRACK_10), outline="")
-            t = f"{buys}회"
-            c.create_text(x0, cy + 10, text=t, fill=dc(T.WARN if buys >= 2 else T.TEXT), font=T.F["tag"], anchor="w")
-            c.create_text(x0 + T.measure("tag", t) + 6, cy + 10, text=f"원가 {manx(r['cost'])} / {manx(g['max_krw'])}"
-                          if r["cost"] else "원가 없음", fill=dc(T.MUTED), font=T.F["kr_xs"], anchor="w")
+                xx = x0 + i * 9
+                c.create_rectangle(xx, cy + 7, xx + 7, cy + 14, fill=on if i < filled else dc(T.TRACK_10), outline="")
+            c.create_text(x0 + pips * 9 + 4, cy + 11, text=f"{buys}회", fill=dc(T.WARN if buys >= 2 else T.TEXT),
+                          font=T.F["tag"], anchor="w")
 
         can_buy = bool(r["qty"] and r["next_buy"] and r.get("next_amt") and r["cost"] + r["next_amt"] <= g["max_krw"])
         orders = r.get("orders") or []  # 업비트에 걸어 둔 지정가 매도 (낮은 가격부터)
@@ -1665,7 +1674,7 @@ class App:
                    {"text": f"{T.fmtp(r['next_buy'])}에 {manx(r['next_amt'])}", "fg": T.DOWN, "sub": f"현재가 {pct(r['next_buy'])}"}
                    if can_buy else {"text": "추가매수 없음", "fg": T.MUTED,
                                     "sub": f"다음 {manx(r['next_amt'])} → 한도 초과" if r.get("next_amt") else ""})
-            sell_c = {"text": f"{'절반' if half else '전량'} {T.fmtp(sell)}", "fg": T.UP,
+            sell_c = {"text": f"{'본전' if half else '전량'} {T.fmtp(sell)}", "fg": T.UP,
                       "sub": (f"지정가 걸림{' ' + str(len(orders)) + '건' if len(orders) > 1 else ''} · {pct(sell)}" if orders else
                               f"{'본전 도달' if half else '익절 +' + format(g['profit_krw'], ',')} · {pct(sell)}")}
         cost = r["cost"]
