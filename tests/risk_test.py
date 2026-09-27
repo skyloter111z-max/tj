@@ -53,7 +53,7 @@ class Ex:
 def mk(**grid):
     d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
     cfg = core.load_config(); cfg["grid"].update(dict(simulate=False, coins=["ADA"], unit_krw=5000, profit_krw=250, max_krw=150000,
-                                                      cash_warn=0, cash_floor_start=0, cash_floor_all=0, limit_tp=False), **grid)  # 현금 보호는 19번에서만, 지정가 익절은 L번에서만
+                                                      cash_warn=0, cash_floor_start=0, cash_floor_all=0, limit_tp=False, btc_filter=False), **grid)  # 현금 보호는 19번에서만, 지정가 익절은 L번에서만
     e = core.Engine(cfg, core.DB(os.path.join(d, "t.db")), queue.Queue()); ex = Ex(); e.api = ex
     return e, ex, cfg
 def step(e, ex, p, skip_rate=True):
@@ -708,3 +708,100 @@ st = e.grid_state("ADA")
 step(e, ex, 358); c1 = st["cycles"], st["qty"]
 step(e, ex, 352)
 ok(c1[0] == 1 and c1[1] == 0 and st["qty"] > 0, "R3 시장가 방식: 358원(−0.6%)엔 안 사고 352원(−2.2%)에 다시 삼")
+
+# ---------- T: 검토 후 수정 ----------
+# T1 호가 단위는 자동매매 코인 전부를 한 번에 조회 (코인마다 따로 물으면 업비트 초당 조회 한도 429에 걸림), 실패하면 예전 값
+e, ex, cfg = lmk(limit_add=True)
+cfg["grid"]["coins"] = ["ADA", "XLM", "DOGE", "ETC"]
+calls = []
+def g1(path):
+    calls.append(path)
+    if "instruments" in path:
+        return [{"market": m, "tick_size": "1" if m != "KRW-ETC" else "10"} for m in path.split("markets=")[1].split(",")]
+    return orig_get(path)
+fr.get = g1
+ticks = [e.grid_tick(c) for c in ("ADA", "XLM", "DOGE", "ETC")]
+ok(len([c for c in calls if "instruments" in c]) == 1 and ticks == [1.0, 1.0, 1.0, 10.0], f"T1a 코인 4개 호가 단위를 조회 1번으로 ({ticks})")
+def g429(path):
+    raise RuntimeError("HTTP Error 429: Too Many Requests")
+fr.get = g429
+e.ticks["ADA"] = (0, 1.0)
+ok(e.grid_tick("ADA") == 1.0, "T1b 조회 실패(429)해도 예전 호가 단위로 계속")
+fr.get = orig_get
+
+# T2 조회 한도 초과(429)는 코인을 10분 정지시키지 않고 알림도 없이 다음 확인 때 다시
+e, ex, cfg = lmk(limit_add=True)
+fr.get = lambda path: ([{"market": m, "trade_price": 340.0} for m in path.split("markets=")[1].split(",")] if "ticker" in path
+                       else [{"tick_size": "1"}] if "instruments" in path else orig_get(path))
+e.levels = {}; alerts(e)
+def boom(coin, price): raise RuntimeError("HTTP Error 429: Too Many Requests")
+e.grid_step = boom
+e.check_prices()
+a = alerts(e)
+ok(not e.grid_state("ADA").get("pause_until") and not any("오류" in x for x in a), "T2 429 → 정지·오류 알림 없음")
+fr.get = orig_get
+
+# T3 '지정가 익절 걸어 둠' 같은 정보 알림은 조용히 (팝업·소리 없이 기록만, 종류 order)
+e, ex, cfg = lmk(limit_add=True)
+lstep(e, ex, 340)
+evs = [x for x in list(e.events.queue) if x[0] == "alert"]
+tpa = [x for x in evs if "걸어 둠" in x[1]]
+ok(tpa and all(x[3] == "order" and x[5] for x in tpa) and any(x[3] == "grid" and x[4] for x in evs),
+   "T3 '걸어 둠'은 조용한 알림(order), 시작 매수는 소리 알림")
+
+# T4 전체 한도: 다른 코인에 걸어 둔 매수 금액도 포함 → 시장가 시작 매수가 한도를 넘지 않음
+e, ex, cfg = lmk(limit_add=True, total_max_krw=30_000)
+cfg["grid"]["coins"] = ["ADA", "XLM"]; ex.price["XLM"] = 300.0; ex.bal["XLM"] = 0.0
+lstep(e, ex, 340)                       # ADA 1만 + 물타기 1.5만 걸림 = 2.5만 예약
+ex.price["XLM"] = 300.0; e.prices["XLM"] = 300.0; e.grid_state("XLM")["last_trade_ts"] = 0
+e.grid_step("XLM", 300.0)
+ok(e.grid_state("XLM")["qty"] == 0, "T4 ADA 원가 1만 + 걸어 둔 매수 1.5만 + XLM 1만 > 한도 3만 → XLM 시작 안 함")
+
+# T5 오류로 잠깐 정지한 동안에는 걸어 둔 물타기 매수를 취소하지 않음 (급변·투자유의만 취소)
+e, ex, cfg = lmk(limit_add=True)
+lstep(e, ex, 340)
+e.grid_state("ADA")["pause_until"] = time.time() + 600
+ex.price["ADA"] = 341; e.prices["ADA"] = 341; e.grid_step("ADA", 341)
+ok(len([o for o in ex.open.values() if o["side"] == "bid"]) == 1, "T5 오류 정지 중에도 물타기 매수 주문 유지")
+
+# T6 현금 보호: 자동매매가 걸어 둔 매수에 묶인 원화는 쓸 수 있는 돈으로 계산
+e, ex, cfg = lmk(limit_add=True)
+lstep(e, ex, 340)
+e._krw_cache = None
+free = e.krw_free()
+ok(abs(free - (ex.bal["KRW"] + ex.locked["KRW"])) < 1, f"T6 보호 계산 원화 {free:,.0f} = 주문 가능 {ex.bal['KRW']:,.0f} + 묶인 {ex.locked['KRW']:,.0f}")
+
+# T7 비트코인 약세 필터: 전날 종가 < 20일 평균이면 새 시작 매수만 쉼, 들고 있는 코인의 물타기·익절은 그대로
+def btc_days(closes):
+    return lambda path: ([{"trade_price": 1.0}] + [{"trade_price": c} for c in closes] if "candles/days" in path
+                         else [{"tick_size": "1"}] if "instruments" in path else orig_get(path))
+e, ex, cfg = lmk(limit_add=True, btc_filter=True)
+cfg["grid"]["coins"] = ["ADA", "XLM"]; ex.price["XLM"] = 300.0; ex.bal["XLM"] = 0.0
+fr.get = btc_days([100.0] * 20)          # 평균과 같음 → 약세 아님
+lstep(e, ex, 340)
+ok(e.grid_state("ADA")["buys"] == 1, "T7a 비트코인 평균 이상 → 시작 매수")
+e.btc_bear = None
+fr.get = btc_days([90.0] + [100.0] * 19)  # 전날 종가가 평균 아래
+e.prices["XLM"] = 300.0; e.grid_state("XLM")["last_trade_ts"] = 0; e.grid_step("XLM", 300.0)
+lstep(e, ex, 329)                        # ADA 물타기는 그대로
+v = {r["coin"]: r for r in e.grid_view()}
+ok(e.grid_state("XLM")["qty"] == 0 and e.grid_state("ADA")["buys"] == 2 and v["XLM"]["status"] == "새 시작 쉼",
+   "T7b 약세 → XLM 새 시작 쉼(화면 '새 시작 쉼'), ADA 물타기는 그대로 체결")
+e.btc_bear = None
+fr.get = btc_days([110.0] + [100.0] * 19)
+e.grid_state("XLM")["last_trade_ts"] = 0; e.grid_step("XLM", 300.0)
+ok(e.grid_state("XLM")["buys"] == 1 and any("회복" in x for x in alerts(e)), "T7c 회복 → 다시 시작 + 알림")
+fr.get = orig_get
+
+# T8 설정을 바꿔도 진행 중 사이클은 시작할 때 금액·익절액 그대로, 새 사이클부터 새 설정
+e, ex, cfg = lmk(limit_add=False)
+lstep(e, ex, 340)                                   # 1만 · 익절 500으로 시작
+cfg["grid"].update(unit_krw=20_000, profit_krw=1000)  # 설정 변경: 2만 · 1,000
+st = e.grid_state("ADA")
+ok(e.grid_next_amount(st) == 15_000 and e.cycle_profit(st) == 500, "T8a 진행 중 사이클: 다음 물타기 1.5만(1만 기준), 익절 500 유지")
+tp = float([o for o in ex.open.values() if o["side"] == "ask"][0]["price"])
+lstep(e, ex, tp); lstep(e, ex, tp)
+st = e.grid_state("ADA")
+ok(st["cycles"] == 1 and abs(st["cost"] - 20_000) < 1 and st["unit"] == 20_000 and st["profit"] == 1000,
+   f"T8b 익절 뒤 새 사이클은 2만 · 익절 1,000 (원가 {st['cost']:,.0f})")
+fr.get = orig_get

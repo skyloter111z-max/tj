@@ -37,7 +37,7 @@ except Exception:  # 라이브러리가 없거나 트레이를 못 쓰는 환경
     pystray = None
 
 POPUP_KINDS = {"hit", "fill", "proposal", "levels", "stop", "drift", "fail"}  # 근접(near)은 소리·트레이 알림만
-ALERT_GROUP = {"proposal": "주문", "fill": "주문", "hit": "주문", "near": "주문", "cancel": "주문", "grid": "매매"}
+ALERT_GROUP = {"proposal": "주문", "fill": "주문", "hit": "주문", "near": "주문", "cancel": "주문", "grid": "매매", "order": "매매"}
 GROUP_COLOR = {"주문": T.DOWN, "매매": T.UP, "시스템": T.MUTED}
 TAB_BOARD, TAB_INVEST, TAB_JOURNAL, TAB_GRID, TAB_ORDERS, TAB_LOGS, TAB_SETTINGS = range(7)
 
@@ -247,6 +247,7 @@ class App:
 
         self.speaker = fv.Speaker()
         self.speaker.start()
+        self.voice_err = {}  # 오류 음성 마지막 시각 (같은 오류 반복 방지)
         self.show_voice()
         self.icon = None
         if pystray:
@@ -335,6 +336,11 @@ class App:
             self.speaker.say(*say)
         elif akind in ("fail", "stop"):  # 오류·정지: 제목을 읽는다 (코인 기호는 한글 이름으로)
             t = title.split("·")[0].strip()
+            key = re.sub(r"\b[A-Z]{2,6}\b", "", t).strip()  # 코인만 다른 같은 오류는 하나로 본다
+            last = self.voice_err.get(key, 0)
+            if akind != "stop" and time.time() - last < 1800:
+                return  # 같은 오류는 30분에 한 번만 읽는다 (장애 때 밤새 반복 방지, 화면 기록은 그대로)
+            self.voice_err[key] = time.time()
             t = re.sub(r"\b[A-Z]{2,6}\b", lambda m: fv.kname(m.group(0)) if m.group(0) in fv.NAMES else m.group(0), t)
             self.speaker.say("err", "주의. " + t)
 
@@ -825,7 +831,7 @@ class App:
         self.render_side_alerts()
 
     def render_side_alerts(self):
-        recent = self.alert_data[:4]
+        recent = [r for r in self.alert_data if r[2] != "order"][:4]
         if recent == self.s_alerts_shown:
             return
         self.s_alerts_shown = recent
@@ -1438,10 +1444,15 @@ class App:
         vals = {"coins": ",".join(g["coins"]), "unit_krw": f"{g['unit_krw']:,}", "multiplier": f"{g.get('multiplier', 1.0):g}",
                 "drop_pct": f"{g['drop_pct']:g}",
                 "profit_krw": f"{g['profit_krw']:,}", "max_krw": f"{g['max_krw']:,}", "total_max_krw": f"{g['total_max_krw']:,}"}
+        n_num = len(self.GRID_FIELDS) - 1
+        for i in range(n_num):
+            fields.columnconfigure(i, weight=1, uniform="gf")
         for i, (key, label, unit, weight) in enumerate(self.GRID_FIELDS):
-            fields.columnconfigure(i, weight=weight, uniform="gf" if weight == 1 else None)
             cell = tk.Frame(fields, bg=T.PANEL)
-            cell.grid(row=0, column=i, sticky="ew", padx=(0, 12))
+            if key == "coins":  # 코인 칸은 윗줄 전체 폭 (코인이 많아도 다 보이게)
+                cell.grid(row=0, column=0, columnspan=n_num, sticky="ew", padx=(0, 12), pady=(0, 10))
+            else:
+                cell.grid(row=1, column=i - 1, sticky="ew", padx=(0, 12))
             lab(cell, label, "kr_xs", fg=T.MUTED).pack(anchor="w", pady=(0, 4))
             row = tk.Frame(cell, bg=T.PANEL)
             row.pack(fill="x")
@@ -1457,11 +1468,13 @@ class App:
         self.g_sim = tk.BooleanVar(value=g["simulate"])
         self.g_half = tk.BooleanVar(value=g["half_at_breakeven"])
         self.g_reentry = tk.BooleanVar(value=g.get("reentry_pct", 0) > 0)
+        self.g_btc = tk.BooleanVar(value=g.get("btc_filter", True))
         self.g_reinvest = tk.BooleanVar(value=g.get("reinvest", True))
         self.g_autoexit = tk.BooleanVar(value=g.get("auto_exit_warning", True))
         for text, var in (("켜기", self.g_on), ("모의", self.g_sim), ("본전에서 1회 금액 매도", self.g_half),
                           ("수익 재투자", self.g_reinvest), ("투자유의 지정 시 자동 청산", self.g_autoexit),
-                          ("익절 뒤 2% 아래서 재진입 (최대 24시간)", self.g_reentry)):
+                          ("익절 뒤 2% 아래서 재진입 (최대 24시간)", self.g_reentry),
+                          ("비트코인 20일선 아래면 새 시작 쉼", self.g_btc)):
             ttk.Checkbutton(chk, text=text, variable=var, style="Panel.TCheckbutton").pack(side="left", padx=(0, 16))
         T.Btn(chk, "저장", self.save_grid, "primary").pack(side="right")
         lab(rb, "BTC·ETH·XRP는 제외. 코인은 쉼표나 띄어쓰기로 나눠 적습니다. 코인 칸에 적고 [저장]한 코인만 사고팝니다.",
@@ -1469,7 +1482,8 @@ class App:
 
         # 현금 보호 (실전): 주문 가능 원화 기준 단계별로 매수를 줄인다
         cb = self.g_panels["cash"]["body"]
-        lab(cb, "주문 가능 원화(피보나치 예약에 묶인 돈 제외) 기준. 코인 모으기는 업비트 앱에서 직접 조절하라고 알림을 보냅니다.",
+        lab(cb, "주문 가능 원화 + 자동매매가 걸어 둔 물타기 주문에 묶인 원화 기준 (피보나치 예약에 묶인 돈은 제외). "
+                "코인 모으기는 업비트 앱에서 직접 조절하라고 알림을 보냅니다.",
             "kr_xs", fg=T.MUTED, anchor="w").pack(fill="x", padx=16, pady=(0, 8))
         cr = tk.Frame(cb, bg=T.PANEL)
         cr.pack(fill="x", padx=16, pady=(0, 14))
@@ -1587,7 +1601,8 @@ class App:
             w.destroy()
         amounts = " → ".join(f"{g['unit_krw'] * mult ** i:,.0f}" for i in range(5)) + " …" if mult > 1 else ""
         bid_on = not g["simulate"] and g.get("limit_add", True)
-        steps = ["시작 매수", (f"{g['drop_pct']:g}% 아래에 직전 매수의 {mult:g}배 지정가 매수 걸어 둠" if mult > 1 and bid_on
+        steps = [("시작 매수 (비트코인 20일선 위일 때)" if g.get("btc_filter", True) else "시작 매수"),
+                 (f"{g['drop_pct']:g}% 아래에 직전 매수의 {mult:g}배 지정가 매수 걸어 둠" if mult > 1 and bid_on
                            else f"{g['drop_pct']:g}% 하락마다 직전 매수의 {mult:g}배 추가 매수 ({amounts})" if mult > 1
                            else f"마지막 매수가 대비 {g['drop_pct']:g}% 하락마다 1회 금액 추가 매수"),
                  (("2회 이상 샀으면 본전에 절반 매도" if g.get("be_sell") == "half" else f"2회 이상 샀으면 본전에 {g['unit_krw']:,}원어치 매도")
@@ -1602,7 +1617,7 @@ class App:
             chip = tk.Frame(self.g_chips, bg=T.PANEL, highlightthickness=1, highlightbackground=T.DIVIDER)
             chip.pack(side="left")
             lab(chip, str(i), "num_b", fg=T.DOWN).pack(side="left", padx=(10, 6), pady=6)
-            lab(chip, text, "kr_s").pack(side="left", padx=(0, 10))
+            lab(chip, text, "kr_s", wraplength=165, justify="left").pack(side="left", padx=(0, 10), pady=4)
 
     def grid_max_buys(self):
         """코인 한도 안에서 살 수 있는 최대 매수 횟수 (마틴게일이면 금액이 커져서 금방 찬다)."""
@@ -1627,7 +1642,7 @@ class App:
             return "avg"
         return "ok"
 
-    STATUS_BADGE = {"투자유의 중지": T.UP, "결과 확인 중": T.ACCENT, "시세 대기": T.MUTED}
+    STATUS_BADGE = {"투자유의 중지": T.UP, "결과 확인 중": T.ACCENT, "시세 대기": T.MUTED, "새 시작 쉼": T.WARN}
 
     @staticmethod
     def upbit_pnl(r, p):
@@ -1727,7 +1742,7 @@ class App:
                                     "sub": f"다음 {manx(r['next_amt'])} → 한도 초과" if r.get("next_amt") else ""})
             sell_c = {"text": f"{'본전' if half else '전량'} {T.fmtp(sell)}", "fg": T.UP,
                       "sub": (f"지정가 걸림{' ' + str(len(orders)) + '건' if len(orders) > 1 else ''} · {pct(sell)}" if orders else
-                              f"{'본전 도달' if half else '익절 +' + format(g['profit_krw'], ',')} · {pct(sell)}")}
+                              f"{'본전 도달' if half else '익절 +' + format(r.get('profit', g['profit_krw']), ',')} · {pct(sell)}")}
         cost = r["cost"]
         return kind, {"id": r["coin"], "check": True, "dim": dim, "cells": {
             "coin": {"draw": coin_cell},
@@ -1777,9 +1792,15 @@ class App:
         self.g_note.config(text=f"막대: 왼쪽 끝 = 다음 추가매수가(0%), 오른쪽 끝 = 다음 매도가(100%), 흰 칸 = 현재가 · "
                                 f"매수 단계: 칸 1개 = 매수 1회 (코인한도 안에서 최대 {n_max}회)"
                                 + (" · 칸 12개로 줄여 표시" if n_max > 12 else ""))
+        n_ask = sum(len(r.get("orders") or []) for r in self.grid_rows)
+        bids = [r["bid"] for r in self.grid_rows if r.get("bid")]
+        locked = sum(b[1] for b in bids) * (1 + core.FEE)
+        bear = getattr(self.engine, "btc_bear", None)
+        sub = ("자동매매가 꺼져 있어 사고팔지 않습니다" if not g["enabled"] else
+               (f"걸어 둔 매도 {n_ask}건 · 매수 {len(bids)}건 (원화 {manx(locked)} 묶임)" if n_ask or bids else "걸어 둔 주문 없음")
+               + (" · 비트코인 약세: 새 시작 쉼" if bear and bear[0] else ""))
         self.g_stats.set("state", "켜짐" if g["enabled"] else "꺼짐", color=T.TEXT if g["enabled"] else T.UP,
-                         extra="모의" if sim else "실전", extra_color=T.MUTED if sim else T.UP,
-                         sub="자동매매가 꺼져 있어 사고팔지 않습니다" if not g["enabled"] else "")
+                         extra="모의" if sim else "실전", extra_color=T.MUTED if sim else T.UP, sub=sub)
         self.g_stats.set("cum", T.fmtk(tot, sign=True), "원", color=T.chg_color(tot),
                          extra=f"{cycles} 사이클 완료", extra_color=T.MUTED, sub=f"지금까지 낸 수수료 {fees:,.0f}원")
         buy_amt = cost / (1 + core.FEE)
@@ -1907,7 +1928,7 @@ class App:
             msg += "\n긴급 정지 중이라 [재개]를 누르면 켜집니다."
         g.update(new, enabled=self.g_on.get(), simulate=self.g_sim.get(), half_at_breakeven=self.g_half.get(),
                  reinvest=self.g_reinvest.get(), auto_exit_warning=self.g_autoexit.get(),
-                 reentry_pct=2.0 if self.g_reentry.get() else 0.0)
+                 reentry_pct=2.0 if self.g_reentry.get() else 0.0, btc_filter=self.g_btc.get())
         if not self.g_reentry.get():  # 끄면 기다리던 코인은 다음 확인 때 바로 다시 산다
             for st_ in g["state"].values():
                 st_.pop("last_exit", None)
@@ -2361,7 +2382,7 @@ class App:
         seen = self.cfg["ui"]["alerts_seen"]
         if self.nb.index() == TAB_LOGS:
             self.cfg["ui"]["alerts_seen"] = seen = self.max_alert_id()
-        self.nb.set_badge(TAB_LOGS, sum(1 for r in self.alert_data if r[0] > seen), T.MUTED)
+        self.nb.set_badge(TAB_LOGS, sum(1 for r in self.alert_data if r[0] > seen and r[2] != "order"), T.MUTED)
         if self.shown(TAB_BOARD):
             self.render_side_alerts()
 
@@ -2376,6 +2397,8 @@ class App:
         for rid, ts, kind, title, msg in self.alert_data:
             grp = ALERT_GROUP.get(kind, "시스템")
             if self.alert_filter != "전체" and grp != self.alert_filter:
+                continue
+            if kind == "order" and self.alert_filter == "전체":  # 주문 걸기·다시 걸기 기록은 '매매'에서만 (전체가 도배되지 않게)
                 continue
             unread = rid > read and rid not in self.alert_readset
             opened = rid in self.alert_open
@@ -2781,8 +2804,10 @@ class App:
                 self.render_board()
             elif kind == "alert":
                 title, msg, akind = ev[1], ev[2], ev[3]
+                quiet = len(ev) > 5 and ev[5]
                 self.speak_alert(title, akind, ev[4] if len(ev) > 4 else None)
-                self.tray_alert(title, msg)
+                if not quiet:  # 주문 걸기 같은 정보 알림은 기록만 (윈도우 알림·빨간 아이콘 없음)
+                    self.tray_alert(title, msg)
                 if akind in POPUP_KINDS:
                     self.popup(title, msg)
                 changed_logs = True

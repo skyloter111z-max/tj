@@ -12,7 +12,9 @@
 """
 import argparse
 import json
+import threading
 import time
+import urllib.error
 import urllib.request
 
 COINS = ["BTC", "ETH", "XRP"]
@@ -33,10 +35,27 @@ BUY_STEPS = [(0.382, 0.2), (0.5, 0.3), (0.618, 0.5)]
 ZONE_TOL = 0.06  # 주봉 레벨과 일봉 확장이 6% 안이면 겹침 구간으로 본다
 
 
+_GET_LOCK = threading.Lock()
+_GET_LAST = [0.0]
+GET_GAP = 0.11  # 업비트 시세 조회는 IP당 초당 10회까지 → 모든 조회 사이에 간격을 둔다 (여러 스레드 공통)
+
+
 def get(path):
-    req = urllib.request.Request(f"{API}{path}", headers={"accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.load(r)
+    """업비트 시세 조회. 초당 횟수를 넘지 않게 간격을 두고, 그래도 429(너무 많은 요청)가 오면 잠깐 쉬고 다시 (최대 3번)."""
+    for i in range(4):
+        with _GET_LOCK:
+            wait = _GET_LAST[0] + GET_GAP - time.time()
+            if wait > 0:
+                time.sleep(wait)
+            _GET_LAST[0] = time.time()
+        req = urllib.request.Request(f"{API}{path}", headers={"accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or i == 3:
+                raise
+            time.sleep(0.4 * (i + 1))
 
 
 def fetch(coin):
