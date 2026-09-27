@@ -1456,10 +1456,12 @@ class App:
         self.g_on = tk.BooleanVar(value=g["enabled"])
         self.g_sim = tk.BooleanVar(value=g["simulate"])
         self.g_half = tk.BooleanVar(value=g["half_at_breakeven"])
+        self.g_reentry = tk.BooleanVar(value=g.get("reentry_pct", 0) > 0)
         self.g_reinvest = tk.BooleanVar(value=g.get("reinvest", True))
         self.g_autoexit = tk.BooleanVar(value=g.get("auto_exit_warning", True))
         for text, var in (("켜기", self.g_on), ("모의", self.g_sim), ("본전에서 1회 금액 매도", self.g_half),
-                          ("수익 재투자", self.g_reinvest), ("투자유의 지정 시 자동 청산", self.g_autoexit)):
+                          ("수익 재투자", self.g_reinvest), ("투자유의 지정 시 자동 청산", self.g_autoexit),
+                          ("익절 뒤 2% 아래서 재진입 (최대 24시간)", self.g_reentry)):
             ttk.Checkbutton(chk, text=text, variable=var, style="Panel.TCheckbutton").pack(side="left", padx=(0, 16))
         T.Btn(chk, "저장", self.save_grid, "primary").pack(side="right")
         lab(rb, "BTC·ETH·XRP는 제외. 코인은 쉼표나 띄어쓰기로 나눠 적습니다. 코인 칸에 적고 [저장]한 코인만 사고팝니다.",
@@ -1592,7 +1594,8 @@ class App:
                   if g["half_at_breakeven"] else "본전 매도 안 함"),
                  (f"익절가(+{g['profit_krw']:,}원)에 지정가 매도 · 물타면 취소 후 다시 걸기"
                   if g.get("limit_tp", True) and not g["simulate"] else f"사이클 수익이 익절 {g['profit_krw']:,}원 이상이면 전량 매도"),
-                 "다시 시작"]
+                 (f"판 가격 {g['reentry_pct']:g}% 아래서 다시 시작 (최대 {g.get('reentry_hours', 24)}시간)" if g.get("reentry_pct", 0) > 0
+                  else "바로 다시 시작")]
         for i, text in enumerate(steps, start=1):
             if i > 1:
                 lab(self.g_chips, "→", "kr", fg=T.MUTED).pack(side="left", padx=8)
@@ -1653,7 +1656,7 @@ class App:
         elif r["qty"]:
             badge = ("정상", T.DIVIDER, "", T.MUTED)
         else:
-            badge = ("시작 대기", T.DIVIDER, "", T.MUTED)
+            badge = ("재진입 대기", T.ACCENT, "", None) if r.get("bid") else ("시작 대기", T.DIVIDER, "", T.MUTED)
         auto = r.get("auto")
 
         def coin_cell(c, x0, x1, cy):
@@ -1710,7 +1713,10 @@ class App:
                           font=T.F["num_xs"])
 
         pct = (lambda v: f"{(v / p - 1) * 100:+.1f}%" if v and p else "")  # noqa: E731
-        if not r["qty"]:
+        if not r["qty"] and r.get("bid"):  # 익절 뒤 재진입 대기: 판 가격보다 아래에 매수 주문
+            buy = {"text": f"{T.fmtp(r['bid'][0])}에 {manx(r['bid'][1])}", "fg": T.DOWN, "sub": f"재진입 지정가 · {pct(r['bid'][0])}"}
+            sell_c = {"text": "-", "fg": T.MUTED}
+        elif not r["qty"]:
             buy = {"text": "-", "fg": T.MUTED}
             sell_c = {"text": "-", "fg": T.MUTED}
         else:
@@ -1900,7 +1906,11 @@ class App:
             self.g_on.set(False)
             msg += "\n긴급 정지 중이라 [재개]를 누르면 켜집니다."
         g.update(new, enabled=self.g_on.get(), simulate=self.g_sim.get(), half_at_breakeven=self.g_half.get(),
-                 reinvest=self.g_reinvest.get(), auto_exit_warning=self.g_autoexit.get())
+                 reinvest=self.g_reinvest.get(), auto_exit_warning=self.g_autoexit.get(),
+                 reentry_pct=2.0 if self.g_reentry.get() else 0.0)
+        if not self.g_reentry.get():  # 끄면 기다리던 코인은 다음 확인 때 바로 다시 산다
+            for st_ in g["state"].values():
+                st_.pop("last_exit", None)
         g["dip"].update(dip)
         g.update(cash)
         core.save_config(self.cfg)

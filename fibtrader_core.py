@@ -52,6 +52,8 @@ DEFAULTS = {
         "drop_pct": 5.0,            # 마지막 매수가(또는 절반 매도가) 대비 이만큼 떨어지면 추가 매수
         "profit_krw": 500,          # 사이클 수익(수수료 뺀 뒤)이 이 금액 이상이면 전량 매도
         "half_at_breakeven": True,  # 2회 이상 산 뒤 본전(수수료 포함)에 오면 일부 매도
+        "reentry_pct": 0.0,         # 익절 뒤 재진입: 0 = 바로 다시 삼, 2 = 판 가격보다 2% 아래에 지정가 매수로 기다림
+        "reentry_hours": 24,        # 그만큼 안 내려오면 이 시간 뒤 그냥 산다
         "be_sell": "unit",          # 본전에서 파는 양: "unit" = 1회 금액(시작 매수 금액)어치, "half" = 보유의 절반
         "limit_tp": True,           # 실전: 매수 직후 익절가(본전 절반 포함)에 지정가 매도를 걸어 둔다. 추가 매수 때 취소 후 다시 건다
         "max_krw": 500_000,         # 코인별 최대 투입(보유 원가) 한도
@@ -998,7 +1000,7 @@ class Engine(threading.Thread):
             self.grid_tp_sync(coin)  # 물타기 체결 → 익절 주문을 새 수량·새 평단으로 바로 다시 건다
             if use_bid and not st.get("blocked") and st.get("pause_until", 0) <= time.time():
                 self.grid_bid_sync(coin)  # 다음 단계 물타기 주문도 바로
-        if st.get("bid") and st["qty"] <= 0 and limit:  # 익절로 사이클이 끝남 → 걸어 둔 물타기 매수 취소
+        if st.get("bid") and st["qty"] <= 0 and limit and st["bid"].get("kind") != "start":  # 익절로 사이클이 끝남 → 걸어 둔 물타기 매수 취소
             self.grid_bid_cancel(coin)
         why = self.grid_guard(coin, price)
         if why:
@@ -1008,6 +1010,8 @@ class Engine(threading.Thread):
         unit, drop = g["unit_krw"], g["drop_pct"] / 100
         tag = "[모의] " if g["simulate"] or not self.api else ""
         total_cost = sum(self.grid_state(c)["cost"] for c in self.grid_tracked())  # 목록에서 뺀 보유분도 한도에 포함
+        if st["qty"] <= 0 and self.grid_reentry_wait(coin, price, use_bid):
+            return save_config(self.cfg)  # 판 가격보다 N% 아래로 내려오길 기다리는 중
         if st["qty"] <= 0:  # 새 사이클 시작
             if total_cost + unit > self.grid_total_cap():
                 return self.grid_cap_alert("total", f"자동매매 전체 원가 {total_cost:,.0f}원 · 전체 한도 {self.grid_total_cap():,.0f}원")
@@ -1175,6 +1179,8 @@ class Engine(threading.Thread):
                    f"{fmtp(px)}원에 {how} · {st['buys']}회 매수 사이클 · 누적 {st['profit_total']:,.0f}원",
                    say=None if tag else ("tp", f"{fv.kname(coin)} 익절, {fv.won(pnl)} 벌었습니다"))
         st.update(qty=0.0, cost=0.0, buys=0, ref=None, halved=False, realized=0.0)
+        if g.get("reentry_pct", 0) > 0:  # 재진입 대기: 판 가격 기록 (이보다 N% 아래에서 다시 시작)
+            st["last_exit"] = {"price": px, "ts": time.time()}
         if st.get("auto"):  # 하락으로 자동 추가된 코인은 익절로 사이클이 끝나면 목록에서 뺀다 (자리 비움)
             st["auto"] = False
             g["coins"] = [c for c in g["coins"] if c != coin]
@@ -1340,8 +1346,9 @@ class Engine(threading.Thread):
             funds, fee = rec["ef"] + df, rec["efee"] + dfee
         rec.update(ev=vol, ef=funds, efee=fee)
         px = df / dv
-        if st["qty"] <= 0 and st["buys"] == 0:  # 익절로 사이클이 끝난 뒤 체결됨 → 새 사이클의 첫 매수
+        if st["qty"] <= 0 and st["buys"] == 0:  # 재진입 매수 또는 익절로 사이클이 끝난 뒤 체결됨 → 새 사이클의 첫 매수
             st.update(buys=1, ref=px, halved=False, realized=0.0)
+            st.pop("last_exit", None)
             rec["counted"] = True
         elif not rec.get("counted"):
             st.update(buys=st["buys"] + 1, ref=px, halved=False)
@@ -1352,10 +1359,11 @@ class Engine(threading.Thread):
         first = rec.get("rows", 0) == 0
         rec["rows"] = rec.get("rows", 0) + 1
         self.db.add("grid_trades", now().isoformat(), 0, coin, "bid", px, dv, df + dfee, "지정가 물타기" if first else "지정가 물타기 추가 체결")
-        self.alert("grid", f"{coin} 물타기 {st['buys']}회 (지정가)",
+        start = rec.get("kind") == "start"
+        self.alert("grid", f"{coin} 재진입 매수 (지정가)" if start else f"{coin} 물타기 {st['buys']}회 (지정가)",
                    f"{fmtp(px)}원에 {df + dfee:,.0f}원 매수 · 평단 {fmtp(st['cost'] / st['qty'])} · 원가 {st['cost']:,.0f}원"
                    + ("" if o.get("state") != "wait" else " · 일부 체결"),
-                   say=("buy", f"{fv.kname(coin)} 물타기, {fv.won(df + dfee)} 샀습니다") if first else None)
+                   say=("buy", f"{fv.kname(coin)}{', 다시' if start else ' 물타기,'} {fv.won(df + dfee)} 샀습니다") if first else None)
         return dv
 
     def grid_bid_check(self, coin):
@@ -1420,10 +1428,44 @@ class Engine(threading.Thread):
         save_config(self.cfg)
         return True
 
+    def grid_reentry_wait(self, coin, price, use_bid):
+        """익절 뒤 재진입 대기 (설정 reentry_pct > 0). 기다려야 하면 True.
+        판 가격 × (1 − N%) 이하로 내려오면 산다: 실전 지정가면 그 가격에 매수 주문을 걸어 두고(체결되면 새 사이클),
+        아니면 그 가격 이하가 보일 때 시장가로. reentry_hours 동안 안 내려오면 걸어 둔 주문을 취소하고 바로 산다."""
+        g, st = self.cfg["grid"], self.grid_state(coin)
+        le, r = st.get("last_exit"), g.get("reentry_pct", 0) / 100
+        if not le or r <= 0:
+            st.pop("last_exit", None)
+            return False
+        target = le["price"] * (1 - r)
+        expired = time.time() - le["ts"] > g.get("reentry_hours", 24) * 3600
+        if not expired and price > target:
+            if use_bid:
+                self.grid_bid_sync(coin)  # 재진입 가격에 지정가 매수
+            return True
+        if st.get("bid") and not self.grid_bid_cancel(coin):  # 시간 초과 → 걸어 둔 재진입 주문 취소 후 바로 산다
+            return True
+        st.pop("last_exit", None)
+        if st["qty"] > 0:  # 취소 직전에 사짐 → 이미 새 사이클
+            return True
+        if expired:
+            self.alert("grid", f"{coin} 재진입 대기 끝", f"{g.get('reentry_hours', 24)}시간 동안 {g['reentry_pct']:g}% 아래로 안 내려와 지금 가격에 다시 삽니다.")
+        return False
+
     def grid_bid_want(self, coin):
         """지금 걸어야 할 지정가 매수 (가격, 금액). 걸면 안 되면 (None, 이유)."""
         g, st = self.cfg["grid"], self.grid_state(coin)
-        if st["qty"] <= 0 or not st.get("ref"):
+        if st["qty"] <= 0:  # 재진입 대기: 판 가격보다 N% 아래에 1회 금액
+            le, r = st.get("last_exit"), g.get("reentry_pct", 0) / 100
+            if not le or r <= 0:
+                return None, ""
+            amount = g["unit_krw"]
+            total = sum(self.grid_state(c)["cost"] for c in self.grid_tracked()) + self.grid_bid_reserved(skip=coin)
+            if total + amount > self.grid_total_cap():
+                return None, f"자동매매 전체 원가+걸어 둔 매수 {total:,.0f}원 · 전체 한도 {self.grid_total_cap():,.0f}원"
+            tick = self.grid_tick(coin)
+            return (round(math.floor(le["price"] * (1 - r) / tick + 1e-9) * tick, 8), amount), ""
+        if not st.get("ref"):
             return None, ""
         amount = self.grid_next_amount(st)
         if st["cost"] + amount > g["max_krw"]:
@@ -1457,10 +1499,11 @@ class Engine(threading.Thread):
                 self.grid_cap_alert(f"bid_{coin}", why)
             return
         price, amount = want
-        if not self.grid_cash_ok("add", amount):
+        kind = "start" if st["qty"] <= 0 else "add"
+        if not self.grid_cash_ok(kind, amount):
             return
         vol = int(amount / price * 1e8) / 1e8
-        rec = {"id": f"fg-{coin}-add-{int(time.time() * 1000)}", "uuid": None, "price": price, "amount": amount, "vol": vol,
+        rec = {"id": f"fg-{coin}-{kind}-{int(time.time() * 1000)}", "uuid": None, "kind": kind, "price": price, "amount": amount, "vol": vol,
                "ev": 0.0, "ef": 0.0, "efee": 0.0, "ts": time.time()}
         st["bid"] = rec
         save_config(self.cfg)  # 보내기 전에 기록 (결과를 몰라도 다음에 고유 번호로 조회)

@@ -671,3 +671,40 @@ ok(("buy", "에이다, 만 원 샀습니다") in says and any(s[0] == "tp" and s
    f"V1 음성 문장: {says}")
 ok(fv.won(22500) == "이만이천오백 원" and fv.won(15000) == "만오천 원", "V1b 금액 읽기 2.25만 → 이만이천오백 원")
 fr.get = orig_get
+
+# R1 재진입 대기(2%): 익절 뒤 바로 안 사고, 판 가격 2% 아래에 지정가 매수 → 체결되면 새 사이클 (익절·물타기 다시 걸림)
+e, ex, cfg = lmk(limit_add=True, reentry_pct=2.0)
+lstep(e, ex, 340)
+tp = float([o for o in ex.open.values() if o["side"] == "ask"][0]["price"])
+lstep(e, ex, tp)                      # 익절
+st = e.grid_state("ADA"); posts = ex.posts
+lstep(e, ex, tp)                      # 다음 확인: 바로 안 사고 재진입 주문만
+b = [o for o in ex.open.values() if o["side"] == "bid"]
+target = int(tp * 0.98)
+ok(st["qty"] == 0 and st["cycles"] == 1 and len(b) == 1 and float(b[0]["price"]) == target and abs(float(b[0]["volume"]) * target - 10000) < 1,
+   f"R1a 익절 뒤 바로 안 삼 → {target}원(판 가격 {tp:g}의 −2%)에 1만 원 재진입 주문")
+lstep(e, ex, target)                  # 내려와서 체결
+st = e.grid_state("ADA")
+a = [o for o in ex.open.values() if o["side"] == "ask"]; b = [o for o in ex.open.values() if o["side"] == "bid"]
+ok(st["buys"] == 1 and books_ok(e, ex) and len(a) == 1 and len(b) == 1 and "last_exit" not in st and float(b[0]["price"]) < target,
+   "R1b 재진입 체결 → 새 사이클 1회, 익절 매도 + 다음 물타기 매수 다시 걸림")
+ok(abs(cash_gain(ex) + st["cost"] - st["profit_total"]) < 1 and abs(jsum(e) - st["profit_total"]) < 0.01, "R1c 장부 = 현금 = 일지")
+
+# R2 24시간 안 내려오면 주문 취소하고 지금 가격에 삼
+e, ex, cfg = lmk(limit_add=True, reentry_pct=2.0)
+lstep(e, ex, 340)
+tp = float([o for o in ex.open.values() if o["side"] == "ask"][0]["price"])
+lstep(e, ex, tp); lstep(e, ex, tp + 5)
+st = e.grid_state("ADA"); st["last_exit"]["ts"] -= 25 * 3600
+lstep(e, ex, tp + 5)
+st = e.grid_state("ADA"); b = [o for o in ex.open.values() if o["side"] == "bid"]
+ok(st["buys"] == 1 and books_ok(e, ex) and len(b) == 1 and float(b[0]["price"]) < tp and "last_exit" not in st,
+   "R2 24시간 지나도 안 내려옴 → 재진입 주문 취소, 지금 가격에 시작 매수 (다음 물타기 주문만 남음)")
+
+# R3 모의(지정가 없음): 가격이 목표 아래로 보이면 그때 시장가로
+e, ex, cfg = mk(unit_krw=10000, profit_krw=500, reentry_pct=2.0)
+step(e, ex, 340); step(e, ex, 360)
+st = e.grid_state("ADA")
+step(e, ex, 358); c1 = st["cycles"], st["qty"]
+step(e, ex, 352)
+ok(c1[0] == 1 and c1[1] == 0 and st["qty"] > 0, "R3 시장가 방식: 358원(−0.6%)엔 안 사고 352원(−2.2%)에 다시 삼")
