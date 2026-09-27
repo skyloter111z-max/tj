@@ -3,6 +3,7 @@ fib_orders.py
 fib_check.py
 fib_ws.py
 fib_voice.py
+fib_icon.py
 fibtrader_core.py
 fibtrader_theme.py
 fibtrader_widgets.py

@@ -165,8 +165,14 @@ class App:
         self.stale = set()
 
         T.load_private_fonts()
+        if WIN:  # 작업표시줄에 파이썬 대신 TJ 아이콘이 보이게
+            try:
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("TJ.FibTrader")
+            except Exception:
+                pass
         self.root = tk.Tk()
         self.root.title("FibTrader")
+        self.set_window_icon()
         self.root.geometry("1440x900")
         self.root.minsize(1280, 800)
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
@@ -261,15 +267,21 @@ class App:
                 self.ui_calls.put(self.show)
 
     # ---------------- 트레이 ----------------
-    def tray_image(self, color):
-        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        d = ImageDraw.Draw(img)
-        d.rectangle((4, 4, 60, 60), fill=color)
-        d.text((24, 18), "F", fill="white")
-        return img
+    def set_window_icon(self):
+        """창·작업표시줄 아이콘 (TJ 캔들 로고). 그림 파일은 처음 한 번 만들어 둔다."""
+        try:
+            import fib_icon
+            path = os.path.join(HERE, "tj_icon.png")
+            if not os.path.exists(path):
+                fib_icon.save_png(path, 64)
+            self.icon_img = tk.PhotoImage(file=path)
+            self.root.iconphoto(True, self.icon_img)
+        except Exception:
+            pass  # 아이콘이 안 돼도 프로그램은 그대로
 
     def run_tray(self):
-        self.img_ok, self.img_alert = self.tray_image((89, 128, 166)), self.tray_image((240, 113, 106))
+        import fib_icon
+        self.img_ok, self.img_alert = fib_icon.make(64), fib_icon.make(64, alert=True)
         menu = pystray.Menu(pystray.MenuItem("열기", lambda *_: self.ui_calls.put(self.show), default=True),
                             pystray.MenuItem("음성 켬/끔", lambda *_: self.ui_calls.put(self.toggle_voice)),
                             pystray.MenuItem("긴급 정지", lambda *_: self.ui_calls.put(self.emergency)),

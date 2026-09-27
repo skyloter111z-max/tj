@@ -26,10 +26,12 @@ echo 라이브러리 설치 중...
 python -m pip install -q pystray pillow
 echo.
 echo 설치 확인 중...
-python -c "import fibtrader_core, fibtrader_theme, fibtrader_widgets, fib_orders, fib_check, fib_voice; print('확인 완료: 모든 파일 정상')" || (echo [실패] 파일이 빠졌거나 깨졌습니다. 이 화면을 캡처해 보내 주세요. & pause & exit /b 1)
+python -c "import fibtrader_core, fibtrader_theme, fibtrader_widgets, fib_orders, fib_check, fib_voice, fib_icon; print('확인 완료: 모든 파일 정상')" || (echo [실패] 파일이 빠졌거나 깨졌습니다. 이 화면을 캡처해 보내 주세요. & pause & exit /b 1)
 echo.
 echo 바탕화면 아이콘과 자동 실행 등록 중...
-powershell -NoProfile -Command "$py=(Get-Command pythonw).Source; foreach($f in 'Desktop','Startup'){ $d=[Environment]::GetFolderPath($f); $s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d 'FibTrader.lnk')); $s.TargetPath=$py; $s.Arguments='\"C:\fib\fibtrader.pyw\"'; $s.WorkingDirectory='C:\fib'; $s.Save() }"
+del C:\fib\tj_icon.png 2>nul
+python -c "import fib_icon; fib_icon.save_ico(r'C:\fib\tj.ico')" || echo [참고] 아이콘 파일을 못 만들었습니다. 기본 아이콘으로 둡니다.
+powershell -NoProfile -Command "$py=(Get-Command pythonw).Source; foreach($f in 'Desktop','Startup'){ $d=[Environment]::GetFolderPath($f); $s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d 'FibTrader.lnk')); $s.TargetPath=$py; $s.Arguments='\"C:\fib\fibtrader.pyw\"'; $s.WorkingDirectory='C:\fib'; if(Test-Path 'C:\fib\tj.ico'){ $s.IconLocation='C:\fib\tj.ico,0' }; $s.Save() }"
 del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\start_watch.bat" 2>nul
 powershell -NoProfile -Command "$d=[Environment]::GetFolderPath('Desktop'); foreach($o in 'FibTrader 잘때 절전','FibTrader 아침 원래대로'){ Remove-Item -ErrorAction SilentlyContinue (Join-Path $d ($o+'.lnk')) }; foreach($p in @(@('FibTrader 수면용','sleep.bat'),@('FibTrader 게임용','game.bat'))){ $s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d ($p[0]+'.lnk'))); $s.TargetPath='C:\fib\'+$p[1]; $s.WorkingDirectory='C:\fib'; $s.Save() }"
 del C:\fib\night.bat C:\fib\morning.bat 2>nul
