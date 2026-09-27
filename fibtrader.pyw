@@ -24,6 +24,7 @@ if sys.stdout is None:  # pythonw엔 콘솔이 없음
     sys.stdout = sys.stderr = open(os.path.join(HERE, "fibtrader.log"), "a", encoding="utf-8", buffering=1)
 
 import fib_recalc as fr  # noqa: E402
+import fib_voice as fv  # noqa: E402
 import fibtrader_core as core  # noqa: E402
 import fibtrader_theme as T  # noqa: E402
 import fibtrader_widgets as W  # noqa: E402
@@ -192,6 +193,8 @@ class App:
         self.status_dot.pack(side="left", padx=(12, 4))
         self.status = lab(right, "시작 중…", "kr_s", fg=T.MUTED)
         self.status.pack(side="left", padx=(0, 14))
+        self.voice_btn = T.Btn(right, "", self.toggle_voice, "secondary")
+        self.voice_btn.pack(side="left", pady=5, padx=(0, 8))
         self.stop_btn = T.Btn(right, "긴급 정지", self.emergency, "danger")
         self.stop_btn.pack(side="left", pady=5)
         self.topdiv = tk.Frame(self.root, bg=T.DIVIDER, height=1)
@@ -236,6 +239,9 @@ class App:
         self.refresh_chrome()
         self.root.bind("<Map>", lambda e: e.widget is self.root and self.root.after(50, self.redraw_stale))
 
+        self.speaker = fv.Speaker()
+        self.speaker.start()
+        self.show_voice()
         self.icon = None
         if pystray:
             threading.Thread(target=self.run_tray, daemon=True).start()
@@ -265,6 +271,7 @@ class App:
     def run_tray(self):
         self.img_ok, self.img_alert = self.tray_image((89, 128, 166)), self.tray_image((240, 113, 106))
         menu = pystray.Menu(pystray.MenuItem("열기", lambda *_: self.ui_calls.put(self.show), default=True),
+                            pystray.MenuItem("음성 켬/끔", lambda *_: self.ui_calls.put(self.toggle_voice)),
                             pystray.MenuItem("긴급 정지", lambda *_: self.ui_calls.put(self.emergency)),
                             pystray.MenuItem("종료", lambda *_: self.ui_calls.put(self.quit)))
         self.icon = pystray.Icon("FibTrader", self.img_ok, "FibTrader", menu)
@@ -294,8 +301,34 @@ class App:
         else:
             self.quit()
 
+    # ---------------- 음성 알림 ----------------
+    def voice_on(self):
+        return self.cfg["ui"].get("voice", True)
+
+    def show_voice(self):
+        self.voice_btn.config(text="음성 켬" if self.voice_on() else "음성 끔", fg=T.ACCENT if self.voice_on() else T.MUTED)
+
+    def toggle_voice(self):
+        """상단 [음성] 버튼: 체결·익절·오류를 효과음 + 음성으로 읽을지 (끄면 아무 소리도 안 남)."""
+        self.cfg["ui"]["voice"] = not self.voice_on()
+        core.save_config(self.cfg)
+        self.show_voice()
+        if self.voice_on():
+            self.speaker.say("info", "음성 알림을 켰습니다")
+
+    def speak_alert(self, title, akind, say):
+        if not self.voice_on():
+            return
+        if say:  # 체결·익절·본전 매도·청산: 엔진이 정해 준 문장
+            self.speaker.say(*say)
+        elif akind in ("fail", "stop"):  # 오류·정지: 제목을 읽는다 (코인 기호는 한글 이름으로)
+            t = title.split("·")[0].strip()
+            t = re.sub(r"\b[A-Z]{2,6}\b", lambda m: fv.kname(m.group(0)) if m.group(0) in fv.NAMES else m.group(0), t)
+            self.speaker.say("err", "주의. " + t)
+
     def quit(self):
         self.closing = True
+        self.speaker.stop()
         self.engine.stop_event.set()
         if self.icon:
             self.icon.stop()
@@ -2726,9 +2759,7 @@ class App:
                 self.render_board()
             elif kind == "alert":
                 title, msg, akind = ev[1], ev[2], ev[3]
-                if WIN:
-                    import winsound
-                    winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+                self.speak_alert(title, akind, ev[4] if len(ev) > 4 else None)
                 self.tray_alert(title, msg)
                 if akind in POPUP_KINDS:
                     self.popup(title, msg)

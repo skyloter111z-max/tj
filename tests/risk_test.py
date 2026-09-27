@@ -658,3 +658,16 @@ lstep(e2, ex2, 340); lstep(e2, ex2, 329)
 a2 = sorted((o for o in ex2.open.values() if o["side"] == "ask"), key=lambda o: float(o["price"]))
 ok(abs(float(a2[0]["volume"]) - float(a2[1]["volume"])) < 1e-7, "N1c 설정을 '절반'으로 하면 예전처럼 반씩")
 fr.get = orig_get
+
+# V1 음성 알림: 매수·익절 알림에 읽을 문장이 붙는다 (한국어 금액)
+import fib_voice as fv
+e, ex, cfg = lmk(limit_add=True)
+lstep(e, ex, 340)
+evs = [x for x in list(e.events.queue) if x[0] == "alert" and len(x) > 4 and x[4]]
+tp = float([o for o in ex.open.values() if o["side"] == "ask"][0]["price"]); lstep(e, ex, tp)
+evs += [x for x in list(e.events.queue) if x[0] == "alert" and len(x) > 4 and x[4] and x not in evs]
+says = [x[4] for x in evs]
+ok(("buy", "에이다, 만 원 샀습니다") in says and any(s[0] == "tp" and s[1].startswith("에이다 익절, 오백") for s in says),
+   f"V1 음성 문장: {says}")
+ok(fv.won(22500) == "이만이천오백 원" and fv.won(15000) == "만오천 원", "V1b 금액 읽기 2.25만 → 이만이천오백 원")
+fr.get = orig_get

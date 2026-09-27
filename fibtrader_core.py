@@ -16,6 +16,7 @@ import time
 import fib_check as fc
 import fib_orders as fo
 import fib_recalc as fr
+import fib_voice as fv
 import fib_ws as fws
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -400,11 +401,12 @@ class Engine(threading.Thread):
             self.poke.set()
         self.events.put(ev)
 
-    def alert(self, kind, title, msg):
+    def alert(self, kind, title, msg, say=None):
+        """say: 음성으로 읽을 것 (효과음 종류 "buy"/"tp"/"sell", 문장). 없으면 화면·트레이 알림만 (오류·정지는 화면 쪽에서 읽음)."""
         self.db.alert(kind, title, msg)
         if kind in ("grid", "fill"):  # 자동매매 매매·피보나치 체결 → 잔고·체결 내역 바로 갱신
             self.poke.set()
-        self.emit("alert", title, msg, kind)
+        self.emit("alert", title, msg, kind, say)
 
     # ---------- 레벨 (설정에 고정 저장, 체결·재계산 때만 바뀜) ----------
     def level_items(self, coin):
@@ -654,7 +656,8 @@ class Engine(threading.Thread):
                     self.cfg["progress"][coin][key] = max(self.cfg["progress"][coin][key], step + 1)
                     save_config(self.cfg)
                 label = f" ({step + 1}차)" if step is not None else ""
-                self.alert("fill", f"{coin} {word} 체결{label}", f"{coin} {word} {price:,.0f}원 × {vol:g} 체결")
+                self.alert("fill", f"{coin} {word} 체결{label}", f"{coin} {word} {price:,.0f}원 × {vol:g} 체결",
+                           say=("sell" if side == "ask" else "buy", f"{fv.kname(coin)} {f'{step + 1}차 ' if step is not None else ''}{word} 체결"))
                 filled.append(f"{coin} {word}{label} {price:,.0f}")
             if filled:
                 self.recalc_levels("체결 후 재계산: " + ", ".join(filled))
@@ -1012,7 +1015,8 @@ class Engine(threading.Thread):
                 return
             qty, krw, px, _ = self.grid_trade(coin, "bid", price, unit)
             st.update(qty=qty, cost=krw, buys=1, ref=px, halved=False, realized=0.0)
-            self.alert("grid", f"{tag}{coin} 시작 매수", f"{fmtp(px)}원에 {krw:,.0f}원 매수 (1회)")
+            self.alert("grid", f"{tag}{coin} 시작 매수", f"{fmtp(px)}원에 {krw:,.0f}원 매수 (1회)",
+                       say=None if tag else ("buy", f"{fv.kname(coin)}, {fv.won(krw)} 샀습니다"))
             if limit:
                 save_config(self.cfg)
                 self.grid_tp_sync(coin)  # 익절가에 지정가 매도
@@ -1040,7 +1044,8 @@ class Engine(threading.Thread):
                 frac = min(qty / before, 1)  # 실제로 판 비율만큼만 원가를 덜어낸다
                 st["realized"] += krw - st["cost"] * frac
                 st.update(qty=before - qty, cost=st["cost"] * (1 - frac), halved=True, ref=px)
-                self.alert("grid", f"{tag}{coin} 본전 매도", f"{fmtp(px)}원에 {qty:g}개 매도 ({krw:,.0f}원)")
+                self.alert("grid", f"{tag}{coin} 본전 매도", f"{fmtp(px)}원에 {qty:g}개 매도 ({krw:,.0f}원)",
+                           say=None if tag else ("sell", f"{fv.kname(coin)}, 본전 매도"))
             elif not use_bid and price <= st["ref"] * (1 - drop):
                 unit = self.grid_next_amount(st)  # 마틴게일이면 직전 매수의 배수
                 if st["cost"] + unit > g["max_krw"]:
@@ -1057,7 +1062,8 @@ class Engine(threading.Thread):
                 qty, krw, px, _ = self.grid_trade(coin, "bid", price, unit)
                 st.update(qty=st["qty"] + qty, cost=st["cost"] + krw, buys=st["buys"] + 1, ref=px, halved=False)
                 self.alert("grid", f"{tag}{coin} 물타기 {st['buys']}회",
-                           f"{fmtp(px)}원에 {krw:,.0f}원 매수 · 평단 {fmtp(st['cost'] / st['qty'])} · 원가 {st['cost']:,.0f}원")
+                           f"{fmtp(px)}원에 {krw:,.0f}원 매수 · 평단 {fmtp(st['cost'] / st['qty'])} · 원가 {st['cost']:,.0f}원",
+                           say=None if tag else ("buy", f"{fv.kname(coin)} 물타기, {fv.won(krw)} 샀습니다"))
                 if limit:
                     save_config(self.cfg)
                     self.grid_tp_sync(coin)  # 새 수량·새 평단으로 익절가 다시 계산해서 건다
@@ -1166,7 +1172,8 @@ class Engine(threading.Thread):
         st["profit_total"] += pnl
         st["cycles"] += 1
         self.alert("grid", f"{tag}{coin} 익절 {pnl:+,.0f}원",
-                   f"{fmtp(px)}원에 {how} · {st['buys']}회 매수 사이클 · 누적 {st['profit_total']:,.0f}원")
+                   f"{fmtp(px)}원에 {how} · {st['buys']}회 매수 사이클 · 누적 {st['profit_total']:,.0f}원",
+                   say=None if tag else ("tp", f"{fv.kname(coin)} 익절, {fv.won(pnl)} 벌었습니다"))
         st.update(qty=0.0, cost=0.0, buys=0, ref=None, halved=False, realized=0.0)
         if st.get("auto"):  # 하락으로 자동 추가된 코인은 익절로 사이클이 끝나면 목록에서 뺀다 (자리 비움)
             st["auto"] = False
@@ -1195,7 +1202,7 @@ class Engine(threading.Thread):
                 changed = True
                 if rec["kind"] == "half" and o["state"] == "done":
                     st.update(halved=True, ref=rec["ef"] / rec["ev"])
-                    self.alert("grid", f"{coin} 본전 매도 (지정가)",
+                    self.alert("grid", f"{coin} 본전 매도 (지정가)", say=("sell", f"{fv.kname(coin)}, 본전 매도"), msg=
                                f"{fmtp(rec['ef'] / rec['ev'])}원에 {rec['ev']:g}개 매도 ({rec['ef'] - rec['efee']:,.0f}원) · 나머지는 익절가에 걸려 있음")
                 elif o["state"] == "cancel" and not rec.get("mine"):
                     self.alert("grid", f"{coin} 지정가 매도 취소됨",
@@ -1347,7 +1354,8 @@ class Engine(threading.Thread):
         self.db.add("grid_trades", now().isoformat(), 0, coin, "bid", px, dv, df + dfee, "지정가 물타기" if first else "지정가 물타기 추가 체결")
         self.alert("grid", f"{coin} 물타기 {st['buys']}회 (지정가)",
                    f"{fmtp(px)}원에 {df + dfee:,.0f}원 매수 · 평단 {fmtp(st['cost'] / st['qty'])} · 원가 {st['cost']:,.0f}원"
-                   + ("" if o.get("state") != "wait" else " · 일부 체결"))
+                   + ("" if o.get("state") != "wait" else " · 일부 체결"),
+                   say=("buy", f"{fv.kname(coin)} 물타기, {fv.won(df + dfee)} 샀습니다") if first else None)
         return dv
 
     def grid_bid_check(self, coin):
@@ -1617,7 +1625,8 @@ class Engine(threading.Thread):
         st.update(qty=0.0, cost=0.0, buys=0, ref=None, halved=False, realized=0.0)
         self.cfg["grid"]["coins"] = [c for c in self.cfg["grid"]["coins"] if c != coin]
         save_config(self.cfg)
-        self.alert("grid", f"{coin} 청산", f"{fmtp(px)}원에 전량 매도 · 손익 {pnl:+,.0f}원 · 자동매매 목록에서 뺐습니다")
+        self.alert("grid", f"{coin} 청산", f"{fmtp(px)}원에 전량 매도 · 손익 {pnl:+,.0f}원 · 자동매매 목록에서 뺐습니다",
+                   say=("sell", f"{fv.kname(coin)} 청산, 손익 {fv.won(pnl)}"))
 
     def grid_forget(self, coin):
         """장부만 정리: 업비트에서 직접 팔았거나 5,000원 미만이라 못 파는 자동매매 보유분을 장부에서 지운다.
