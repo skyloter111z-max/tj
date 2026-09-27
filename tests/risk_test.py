@@ -339,14 +339,20 @@ class LEx(Ex):
         if mode == "lost_before": raise fo.UnknownResult("timeout (주문 안 들어감)")
         if identifier in s.by_ident: raise RuntimeError("POST /orders 실패 400: duplicate identifier")
         if abs(p / s.tick - round(p / s.tick)) > 1e-9: raise RuntimeError("POST /orders 실패 400: invalid_price_ask")
-        if v * p < 5000: raise RuntimeError("POST /orders 실패 400: under_min_total_ask")
-        if s.bal[c] + 1e-12 < v: raise RuntimeError("POST /orders 실패 400: insufficient_funds_ask")
-        s.bal[c] -= v; s.locked[c] = s.locked.get(c, 0.0) + v
+        if v * p < 5000: raise RuntimeError(f"POST /orders 실패 400: under_min_total_{side}")
+        if side == "ask":
+            if s.bal[c] + 1e-12 < v: raise RuntimeError("POST /orders 실패 400: insufficient_funds_ask")
+            s.bal[c] -= v; s.locked[c] = s.locked.get(c, 0.0) + v
+        else:
+            need = v * p * 1.0005
+            if s.bal["KRW"] + 1e-9 < need: raise RuntimeError("POST /orders 실패 400: insufficient_funds_bid")
+            s.bal["KRW"] -= need; s.locked["KRW"] = s.locked.get("KRW", 0.0) + need
         s.n += 1; u = f"L{s.n}"
         o = {"uuid": u, "identifier": identifier, "market": m, "side": side, "ord_type": "limit", "state": "wait", "price": str(p),
              "volume": str(v), "remaining_volume": str(v), "executed_volume": "0", "paid_fee": "0", "trades": []}
         s.orders[u] = o; s.by_ident[identifier] = o; s.open[u] = o
-        if s.price[c] >= p: s._exec(o, v, s.price[c])  # 현재가보다 낮게 걸면 바로 체결
+        if side == "ask" and s.price[c] >= p: s._exec(o, v, s.price[c])  # 현재가보다 낮게 걸면 바로 체결
+        if side == "bid" and s.price[c] <= p: s._exec(o, v, s.price[c])  # 현재가보다 높게 걸면 바로 체결
         if mode == "lost_after": raise fo.UnknownResult("timeout (주문은 들어감)")
         return {"uuid": u}
     def _exec(s, o, v, px):
@@ -355,13 +361,18 @@ class LEx(Ex):
         o["trades"].append({"funds": str(funds)})
         o["executed_volume"] = str(float(o["executed_volume"]) + v); o["remaining_volume"] = str(rem - v)
         o["paid_fee"] = str(float(o["paid_fee"]) + fee)
-        s.locked[c] -= v; s.bal["KRW"] += funds - fee
+        if o["side"] == "ask":
+            s.locked[c] -= v; s.bal["KRW"] += funds - fee
+        else:  # 매수: 묶어 둔 원화에서 지정가 기준으로 뺐으니 싸게 사졌으면 차액을 돌려준다
+            held = v * float(o["price"]) * 1.0005
+            s.locked["KRW"] -= held; s.bal["KRW"] += held - (funds + fee); s.bal[c] += v
+            s.avg[c] = (s.avg.get(c, 0.0) * (s.bal[c] - v + s.locked.get(c, 0.0)) + funds) / (s.bal[c] + s.locked.get(c, 0.0))
         if rem - v <= 1e-12: o["state"] = "done"; s.open.pop(o["uuid"], None)
     def move(s, coin, p):
         """가격이 p까지 오름/내림 → 닿은 매도 주문 체결 (partial이 있으면 그 비율만)."""
         s.price[coin] = p
         for o in list(s.open.values()):
-            if o["market"] == f"KRW-{coin}" and o["side"] == "ask" and p >= float(o["price"]):
+            if o["market"] == f"KRW-{coin}" and ((o["side"] == "ask" and p >= float(o["price"])) or (o["side"] == "bid" and p <= float(o["price"]))):
                 s._exec(o, float(o["remaining_volume"]) * (s.partial or 1.0), float(o["price"]))
     def cancel(s, u):
         o = s.open.get(u)
@@ -370,19 +381,23 @@ class LEx(Ex):
             s.fill_on_cancel = False; s._exec(o, float(o["remaining_volume"]), float(o["price"]))
             raise RuntimeError("DELETE /order 실패 400: 이미 체결된 주문")
         c = o["market"][4:]; rem = float(o["remaining_volume"])
-        s.locked[c] -= rem; s.bal[c] += rem; o["state"] = "cancel"; s.open.pop(u)
+        if o["side"] == "ask":
+            s.locked[c] -= rem; s.bal[c] += rem
+        else:
+            held = rem * float(o["price"]) * 1.0005; s.locked["KRW"] -= held; s.bal["KRW"] += held
+        o["state"] = "cancel"; s.open.pop(u)
         return o
 
 orig_get = fr.get
 def lmk(tick=1.0, **grid):
-    e, _, cfg = mk(**{**dict(limit_tp=True, unit_krw=10000, profit_krw=500, multiplier=1.5, drop_pct=3.0, half_at_breakeven=True), **grid})
+    e, _, cfg = mk(**{**dict(limit_tp=True, limit_add=False, unit_krw=10000, profit_krw=500, multiplier=1.5, drop_pct=3.0, half_at_breakeven=True), **grid})
     ex = LEx(tick); e.api = ex
     fr.get = lambda path: [{"tick_size": str(ex.tick)}] if "instruments" in path else orig_get(path)
     return e, ex, cfg
 def lstep(e, ex, p):
     ex.move("ADA", p); step(e, ex, p)
 def ada(ex): return ex.bal["ADA"] + ex.locked.get("ADA", 0.0)
-def cash_gain(ex): return ex.bal["KRW"] - 1_000_000
+def cash_gain(ex): return ex.bal["KRW"] + ex.locked.get("KRW", 0.0) - 1_000_000
 def jsum(e): return sum(t["pnl"] or 0 for t in core.build_journal(e.db, False))
 def opens(ex): return sorted((o["price"], o["volume"]) for o in ex.open.values())
 
@@ -514,3 +529,115 @@ st = e.grid_state("ADA")
 ok(not ex.open and st["cycles"] == 1 and abs(st["profit_total"] - cash_gain(ex)) < 0.01, "L12 지정가 끄면 시장가 방식으로 익절")
 fr.get = orig_get
 
+# ---------- M: 지정가 물타기 (실전) ----------
+def mmk(**grid):
+    e, ex, cfg = lmk(**{"limit_add": True, **grid}); return e, ex, cfg
+def bids(ex): return [o for o in ex.open.values() if o["side"] == "bid"]
+def asks(ex): return [o for o in ex.open.values() if o["side"] == "ask"]
+def books_ok(e, ex):  # 장부 수량 = 계좌 코인(잠긴 것 포함)
+    return abs(e.grid_state("ADA")["qty"] - ada(ex)) < 1e-7
+
+# M1 시작 매수 → 익절 지정가 + 다음 물타기 지정가(340×0.97 → 329원, 1.5만)
+e, ex, cfg = mmk()
+lstep(e, ex, 340)
+b = bids(ex)
+ok(len(asks(ex)) == 1 and len(b) == 1 and float(b[0]["price"]) == 329 and abs(float(b[0]["volume"]) * 329 - 15000) < 1
+   and abs(ex.locked["KRW"] - 15000 * 1.0005) < 1, f"M1 익절 매도 1건 + 물타기 매수 1건 @{b[0]['price'] if b else '-'} 1.5만 (원화 묶임 {ex.locked.get('KRW', 0):,.0f})")
+# M2 가격이 329에 닿음 → 업비트가 사 줌 → 장부 반영, 익절 다시 걸기(절반+나머지), 다음 물타기(319원, 2.25만)
+lstep(e, ex, 329)
+st = e.grid_state("ADA"); b = bids(ex); a = sorted(asks(ex), key=lambda o: float(o["price"]))
+ok(st["buys"] == 2 and books_ok(e, ex) and abs(st["cost"] - (10000 + 15000 * 1.0005)) < 2 and len(a) == 2
+   and abs(sum(float(o["volume"]) for o in a) - st["qty"]) < 3e-8 and len(b) == 1 and float(b[0]["price"]) == 319
+   and abs(float(b[0]["volume"]) * 319 - 22500) < 1,
+   f"M2 329원 체결 → 2회, 원가 {st['cost']:,.0f}, 익절 2건(절반 @{a[0]['price'] if a else '-'}) 다시 걸림, 다음 물타기 @{b[0]['price'] if b else '-'} 2.25만")
+# M3 반등 → 절반·나머지 익절 → 사이클 끝 → 걸어 둔 물타기 취소, 수익 = 현금 = 일지
+for o in list(a):
+    lstep(e, ex, float(o["price"]))
+lstep(e, ex, float(a[-1]["price"]))
+st = e.grid_state("ADA")
+ok(st["cycles"] == 1 and not bids(ex) or (st["cycles"] == 1 and st["buys"] == 1),
+   "M3a 익절로 사이클 끝 → 예전 물타기 주문 취소 (새 사이클이면 새 주문만)")
+ok(st["cycles"] == 1 and st["profit_total"] >= 500 and abs(cash_gain(ex) + st["cost"] - st["profit_total"]) < 1
+   and abs(jsum(e) - st["profit_total"]) < 0.01,
+   f"M3b 사이클 수익 {st['profit_total']:,.1f}원 (≥500) = 일지 {jsum(e):,.1f} = 현금 증가 + 새 사이클 원가")
+
+# M4 연속 급락: 329 → 319 → 309 체결, 매번 장부·익절·다음 물타기 갱신, 원화 = 계산과 일치
+e, ex, cfg = mmk()
+lstep(e, ex, 340)
+for p in (329, 319, 309):
+    lstep(e, ex, p)
+st = e.grid_state("ADA")
+spent = 1_000_000 - (ex.bal["KRW"] + ex.locked.get("KRW", 0.0))
+ok(st["buys"] == 4 and books_ok(e, ex) and abs(st["cost"] - spent) < 2 and len(bids(ex)) == 1 and len(asks(ex)) == 2,
+   f"M4 3번 연속 지정가 물타기 → 4회, 장부 원가 {st['cost']:,.0f} = 실제 쓴 돈 {spent:,.0f}, 익절 2건 + 다음 매수 1건")
+
+# M5 자동매매 끄기 → 걸어 둔 매수 취소 (익절은 그대로 두고 체결되면 반영) / 긴급 정지 → 전부 취소
+e, ex, cfg = mmk()
+lstep(e, ex, 340)
+fr_get0 = fr.get
+fr.get = lambda path: ([{"tick_size": str(ex.tick)}] if "instruments" in path else
+                       [{"market": m, "trade_price": ex.price.get(m[4:], 1.0)} for m in path.split("markets=")[1].split(",")] if "ticker" in path
+                       else fr_get0(path))
+cfg["grid"]["enabled"] = False; e.levels = {}
+e.check_prices()
+ok(not bids(ex) and len(asks(ex)) == 1 and ex.locked.get("KRW", 0) < 1e-6, "M5a 자동매매 끔 → 물타기 매수 취소, 원화 풀림, 익절은 유지")
+cfg["grid"]["enabled"] = True; lstep(e, ex, 341)
+ok(len(bids(ex)) == 1, "M5b 다시 켜면 물타기 매수 다시 걸림")
+e.emergency_stop(True)
+ok(not ex.open and ex.locked.get("KRW", 0) < 1e-6, "M5c 긴급 정지(주문 취소) → 매수·매도 모두 취소")
+fr.get = lambda path: [{"tick_size": str(ex.tick)}] if "instruments" in path else orig_get(path)
+
+# M6 전체 한도: 걸어 둔 매수 금액도 한도에 포함 → 한도 넘으면 안 걸고, 시장가로도 안 삼
+e, ex, cfg = mmk(total_max_krw=20000)
+lstep(e, ex, 340); lstep(e, ex, 300)
+ok(not bids(ex) and e.grid_state("ADA")["buys"] == 1, "M6 1만 + 다음 1.5만 > 전체 한도 2만 → 물타기 주문 안 걸고 안 삼")
+
+# M7 매수 주문이 거절되면 10분간 예전(시장가) 방식으로 물타기
+e, ex, cfg = mmk()
+orig_place = ex.place
+def rej(m, side, v, p, identifier=None):
+    if side == "bid": raise RuntimeError("POST /orders 실패 400: invalid_price_bid")
+    return orig_place(m, side, v, p, identifier)
+ex.place = rej
+lstep(e, ex, 340); lstep(e, ex, 329)
+ok(e.grid_state("ADA")["buys"] == 2 and e.grid_state("ADA").get("bid_fail_until", 0) > time.time() and books_ok(e, ex),
+   "M7 지정가 매수 거절 → 10분간 시장가로 물타기 (2회)")
+ex.place = orig_place
+
+# M8 매수 주문 결과 불명확 → 고유 번호로 찾아 이어감, 중복 없음
+e, ex, cfg = mmk()
+lstep(e, ex, 340)
+e.grid_state("ADA").get("bid") and None
+st = e.grid_state("ADA"); rid = st["bid"]["uuid"]
+ex.cancel(rid); e.grid_state("ADA").pop("bid")   # 새로 걸 때 응답을 못 받는 상황 만들기
+ex.fail_place = "lost_after"; lstep(e, ex, 341)
+posts = ex.posts; lstep(e, ex, 341); lstep(e, ex, 342)
+ok(len(bids(ex)) == 1 and ex.posts == posts and e.grid_state("ADA")["bid"]["uuid"], "M8 매수 주문 응답 못 받음 → 찾아서 이어감 (중복 주문 없음)")
+
+# M9 매수 일부 체결 → 반영, 1분 지나면 나머지 취소하고 다음 단계로
+e, ex, cfg = mmk()
+lstep(e, ex, 340)
+ex.partial = 0.5; lstep(e, ex, 329); ex.partial = None
+st = e.grid_state("ADA")
+ok(st["buys"] == 2 and books_ok(e, ex) and len(bids(ex)) == 1 and float(bids(ex)[0]["price"]) == 329,
+   "M9a 절반만 사짐 → 2회로 반영, 나머지 주문은 1분 대기")
+st["bid"]["fill_ts"] -= 61; lstep(e, ex, 335)
+b = bids(ex); st = e.grid_state("ADA")
+spent = 1_000_000 - (ex.bal["KRW"] + ex.locked.get("KRW", 0.0))
+tr = [t for t in core.build_journal(e.db, False) if t["side"] == "bid"]
+ok(len(b) == 1 and float(b[0]["price"]) == 319 and st["buys"] == 2 and abs(st["cost"] - spent) < 2 and books_ok(e, ex)
+   and tr[-1]["kind"] == "물타기 2회", f"M9b 1분 뒤 나머지 취소 → 다음 물타기 @{b[0]['price'] if b else '-'}, 원가 = 실제 쓴 돈, 일지 '물타기 2회'")
+
+# M10 투자유의·주의 지정(새 매수 중지) → 걸어 둔 매수 취소
+e, ex, cfg = mmk()
+lstep(e, ex, 340)
+e.grid_state("ADA")["blocked"] = True; lstep(e, ex, 341)
+ok(not bids(ex) and len(asks(ex)) == 1, "M10 새 매수 중지 지정 → 걸어 둔 물타기 매수 취소 (익절은 유지)")
+
+# M11 청산: 매수·매도 주문 모두 취소 → 시장가 전량 매도, 손익 = 현금
+e, ex, cfg = mmk()
+lstep(e, ex, 340); lstep(e, ex, 329)
+e.grid_liquidate("ADA")
+st = e.grid_state("ADA")
+ok(not ex.open and ada(ex) < 1e-7 and abs(st["profit_total"] - cash_gain(ex)) < 0.01, f"M11 청산: 주문 모두 취소 후 전량 매도, 손익 {st['profit_total']:,.0f} = 현금 {cash_gain(ex):,.0f}")
+fr.get = orig_get

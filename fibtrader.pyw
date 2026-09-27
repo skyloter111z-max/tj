@@ -1539,7 +1539,9 @@ class App:
         for w in self.g_chips.winfo_children():
             w.destroy()
         amounts = " → ".join(f"{g['unit_krw'] * mult ** i:,.0f}" for i in range(5)) + " …" if mult > 1 else ""
-        steps = ["시작 매수", (f"{g['drop_pct']:g}% 하락마다 직전 매수의 {mult:g}배 추가 매수 ({amounts})" if mult > 1
+        bid_on = not g["simulate"] and g.get("limit_add", True)
+        steps = ["시작 매수", (f"{g['drop_pct']:g}% 아래에 직전 매수의 {mult:g}배 지정가 매수 걸어 둠" if mult > 1 and bid_on
+                           else f"{g['drop_pct']:g}% 하락마다 직전 매수의 {mult:g}배 추가 매수 ({amounts})" if mult > 1
                            else f"마지막 매수가 대비 {g['drop_pct']:g}% 하락마다 1회 금액 추가 매수"),
                  "2회 이상 샀으면 본전에 절반 매도" if g["half_at_breakeven"] else "본전 절반 매도 안 함",
                  (f"익절가(+{g['profit_krw']:,}원)에 지정가 매도 · 물타면 취소 후 다시 걸기"
@@ -1658,7 +1660,9 @@ class App:
             buy = {"text": "-", "fg": T.MUTED}
             sell_c = {"text": "-", "fg": T.MUTED}
         else:
-            buy = ({"text": f"{T.fmtp(r['next_buy'])}에 {manx(r['next_amt'])}", "fg": T.DOWN, "sub": f"현재가 {pct(r['next_buy'])}"}
+            bid = r.get("bid")
+            buy = ({"text": f"{T.fmtp(bid[0])}에 {manx(bid[1])}", "fg": T.DOWN, "sub": f"지정가 걸림 · {pct(bid[0])}"} if bid else
+                   {"text": f"{T.fmtp(r['next_buy'])}에 {manx(r['next_amt'])}", "fg": T.DOWN, "sub": f"현재가 {pct(r['next_buy'])}"}
                    if can_buy else {"text": "추가매수 없음", "fg": T.MUTED,
                                     "sub": f"다음 {manx(r['next_amt'])} → 한도 초과" if r.get("next_amt") else ""})
             sell_c = {"text": f"{'절반' if half else '전량'} {T.fmtp(sell)}", "fg": T.UP,
