@@ -858,6 +858,24 @@ ok(st["cycles"] == 1 and st["buys"] == 1 and st["mult"] == 1.1 and st["drop"] ==
    f"T9c 새 사이클은 2.5만 · 1.1배 · 5%: 다음 물타기 {b[0]['price'] if b else '-'}원에 2.75만")
 fr.get = orig_get
 
+# T11 한 코인 몰림 방지: wide_after회 산 뒤부터 하락 간격을 넓힌다 (사이클 시작 때 값으로 도장)
+e, ex, cfg = lmk(limit_add=True, multiplier=1.1, drop_pct=5.0, wide_after=3, wide_drop_pct=8.0)
+lstep(e, ex, 1000)
+b = [o for o in ex.open.values() if o["side"] == "bid"]
+ok(len(b) == 1 and float(b[0]["price"]) == 950, f"T11a 1회 뒤 다음 물타기 5% 아래 ({b[0]['price'] if b else '-'})")
+lstep(e, ex, 950)
+b = [o for o in ex.open.values() if o["side"] == "bid"]
+ok(len(b) == 1 and float(b[0]["price"]) == 902, f"T11b 2회 뒤도 5% 아래 ({b[0]['price'] if b else '-'})")
+cfg["grid"].update(wide_after=10, wide_drop_pct=12.0)  # 진행 중 사이클은 시작할 때 값(3회·8%) 그대로
+lstep(e, ex, 902)
+st = e.grid_state("ADA")
+b = [o for o in ex.open.values() if o["side"] == "bid"]
+ok(st["buys"] == 3 and len(b) == 1 and float(b[0]["price"]) == int(902 * 0.92) and books_ok(e, ex),
+   f"T11c 3회 뒤부터 8% 아래 ({b[0]['price'] if b else '-'} = 902의 −8%), 설정을 바꿔도 사이클 도장 유지")
+v = e.grid_view()[0]
+ok(abs(v["next_buy"] - 902 * 0.92) < 1e-6, "T11d 화면의 다음 추가매수가도 8% 기준")
+fr.get = orig_get
+
 # T10 장부 이전: 도장 전 진행 중 사이클 → 1.5배·3% 도장 (한 번만), 끝난 사이클·이미 이전된 장부는 그대로
 for saved, want in (({"state": {"ADA": {"qty": 1.0}}}, (1.5, 3.0)), ({"state": {"ADA": {"qty": 0.0}}}, (None, None)),
                     ({"cycle_v": 2, "state": {"ADA": {"qty": 1.0}}}, (None, None)),

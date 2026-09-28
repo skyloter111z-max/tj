@@ -56,6 +56,8 @@ DEFAULTS = {
         "btc_filter_days": 20,
         "reentry_pct": 0.0,         # 익절 뒤 재진입: 0 = 바로 다시 삼, 2 = 판 가격보다 2% 아래에 지정가 매수로 기다림
         "reentry_hours": 24,        # 그만큼 안 내려오면 이 시간 뒤 그냥 산다
+        "wide_after": 15,           # 한 코인 몰림 방지: 이만큼 산 뒤부터는 하락 간격을 넓힌다 (0 = 안 씀)
+        "wide_drop_pct": 8.0,       # 넓힌 하락 간격 % (9년 백테스트: 15회부터 8% → 수익 거의 그대로, 한 코인 최대 500만 → 243만)
         "be_sell": "prev",          # 본전에서 파는 양: "prev" = 직전 단계 금액어치(2회 1회 금액, 3회 1회×배수, 4회 1회×배수² …),
                                     # "unit" = 1회 금액(시작 매수 금액)어치, "half" = 보유의 절반
         "be_sell_v": 2,             # 설정 판: 1 → 2 때 "unit"을 "prev"로 한 번 바꿈
@@ -1643,6 +1645,7 @@ class Engine(threading.Thread):
         g = self.cfg["grid"]
         st["unit"], st["profit"] = g["unit_krw"], g["profit_krw"]
         st["mult"], st["drop"] = max(1.0, float(g.get("multiplier", 1.0))), float(g["drop_pct"])
+        st["wide_after"], st["wide_drop"] = int(g.get("wide_after", 0)), float(g.get("wide_drop_pct", 0.0))
 
     def cycle_unit(self, st):
         return st.get("unit") or self.cfg["grid"]["unit_krw"]
@@ -1654,8 +1657,13 @@ class Engine(threading.Thread):
         return st.get("mult") or max(1.0, float(self.cfg["grid"].get("multiplier", 1.0)))
 
     def cycle_drop(self, st):
-        """추가 매수 하락폭 (비율, 0.03 = 3%)."""
-        return (st.get("drop") or self.cfg["grid"]["drop_pct"]) / 100
+        """추가 매수 하락폭 (비율, 0.03 = 3%). wide_after회 이상 샀으면 넓힌 간격(wide_drop)으로 → 한 코인에 돈이 몰리는 것을 막는다."""
+        g = self.cfg["grid"]
+        wa = st.get("wide_after", g.get("wide_after", 0))
+        wd = st.get("wide_drop", g.get("wide_drop_pct", 0.0))
+        if wa and wd and st.get("buys", 0) >= wa:
+            return wd / 100
+        return (st.get("drop") or g["drop_pct"]) / 100
 
     def grid_btc_bear(self):
         """비트코인 약세 필터: 전날 비트코인 일봉 종가가 최근 N일(기본 20일) 종가 평균보다 낮으면 True → 새 코인 시작 매수를 쉰다.

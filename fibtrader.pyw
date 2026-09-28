@@ -1603,7 +1603,9 @@ class App:
         amounts = " → ".join(f"{g['unit_krw'] * mult ** i:,.0f}" for i in range(5)) + " …" if mult > 1 else ""
         bid_on = not g["simulate"] and g.get("limit_add", True)
         steps = [("시작 매수 (비트코인 20일선 위일 때)" if g.get("btc_filter", True) else "시작 매수"),
-                 (f"{g['drop_pct']:g}% 아래에 직전 매수의 {mult:g}배 지정가 매수 걸어 둠" if mult > 1 and bid_on
+                 (f"{g['drop_pct']:g}% 아래에 직전 매수의 {mult:g}배 지정가 매수 걸어 둠"
+                  + (f" ({g['wide_after']}회부터 {g['wide_drop_pct']:g}% 간격)" if g.get("wide_after") and g.get("wide_drop_pct") else "")
+                  if mult > 1 and bid_on
                            else f"{g['drop_pct']:g}% 하락마다 직전 매수의 {mult:g}배 추가 매수 ({amounts})" if mult > 1
                            else f"마지막 매수가 대비 {g['drop_pct']:g}% 하락마다 1회 금액 추가 매수"),
                  (("2회 이상 샀으면 본전에 절반 매도" if g.get("be_sell") == "half" else
