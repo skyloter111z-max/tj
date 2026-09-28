@@ -59,6 +59,7 @@ DEFAULTS = {
         "be_sell": "prev",          # 본전에서 파는 양: "prev" = 직전 단계 금액어치(2회 1회 금액, 3회 1회×배수, 4회 1회×배수² …),
                                     # "unit" = 1회 금액(시작 매수 금액)어치, "half" = 보유의 절반
         "be_sell_v": 2,             # 설정 판: 1 → 2 때 "unit"을 "prev"로 한 번 바꿈
+        "cycle_v": 2,               # 장부 판: 1 → 2 때 진행 중 사이클에 배수·하락 도장 (그전 사이클은 모두 1.5배·3%로 시작)
         "limit_tp": True,           # 실전: 매수 직후 익절가(본전 절반 포함)에 지정가 매도를 걸어 둔다. 추가 매수 때 취소 후 다시 건다
         "max_krw": 500_000,         # 코인별 최대 투입(보유 원가) 한도
         "total_max_krw": 1_500_000, # 자동매매 전체 원가 한도 (여러 코인이 같이 빠질 때)
@@ -125,6 +126,11 @@ def load_config():
             if cfg["grid"].get("be_sell") == "unit":
                 cfg["grid"]["be_sell"] = "prev"
             cfg["grid"]["be_sell_v"] = 2
+        if saved.get("grid", {}).get("cycle_v", 1) < 2:  # 배수·하락 도장 전에 시작한 사이클 = 1.5배·3% 설정으로 시작한 것 → 끝까지 그 방식
+            for st in cfg["grid"].get("state", {}).values():
+                if st.get("qty", 0) > 0 and "mult" not in st:
+                    st["mult"], st["drop"] = 1.5, 3.0
+            cfg["grid"]["cycle_v"] = 2
         cfg["grid"]["dip"] = dip = {**DEFAULTS["grid"]["dip"], **saved.get("grid", {}).get("dip", {})}
         if dip["pool"] == OLD_DIP_POOL:  # 예전 기본 20개를 안 고치고 썼으면 대형 10개로 바꾼다
             dip["pool"] = list(DIP_POOL)
@@ -1026,7 +1032,7 @@ class Engine(threading.Thread):
             if st.get("bid") and why in ("급변", "투자유의 지정", "하루 한도") and limit:  # 이때만 걸어 둔 매수 취소
                 self.grid_bid_cancel(coin)  # (오류로 잠깐 정지·1분 대기 중에는 업비트에 걸린 주문을 그대로 둔다)
             return
-        unit, drop = g["unit_krw"], g["drop_pct"] / 100
+        unit = g["unit_krw"]
         tag = "[모의] " if g["simulate"] or not self.api else ""
         # 목록에서 뺀 보유분 + 다른 코인에 걸어 둔 지정가 매수(아직 안 산 금액)까지 한도에 포함
         total_cost = sum(self.grid_state(c)["cost"] for c in self.grid_tracked()) + self.grid_bid_reserved()
@@ -1075,7 +1081,7 @@ class Engine(threading.Thread):
                 st.update(qty=before - qty, cost=st["cost"] * (1 - frac), halved=True, ref=px)
                 self.alert("grid", f"{tag}{coin} 본전 매도", f"{fmtp(px)}원에 {qty:g}개 매도 ({krw:,.0f}원)",
                            say=None if tag else ("sell", f"{fv.kname(coin)}, 본전 매도"))
-            elif not use_bid and price <= st["ref"] * (1 - drop):
+            elif not use_bid and price <= st["ref"] * (1 - self.cycle_drop(st)):
                 unit = self.grid_next_amount(st)  # 마틴게일이면 직전 매수의 배수
                 if st["cost"] + unit > g["max_krw"]:
                     return self.grid_cap_alert(coin, f"{coin} 원가 {st['cost']:,.0f}원 + 다음 매수 {unit:,.0f}원 · 코인 한도 {g['max_krw']:,}원")
@@ -1514,7 +1520,7 @@ class Engine(threading.Thread):
         if total + amount > self.grid_total_cap():
             return None, f"자동매매 전체 원가+걸어 둔 매수 {total:,.0f}원 · 전체 한도 {self.grid_total_cap():,.0f}원"
         tick = self.grid_tick(coin)
-        price = round(math.floor(st["ref"] * (1 - g["drop_pct"] / 100) / tick + 1e-9) * tick, 8)
+        price = round(math.floor(st["ref"] * (1 - self.cycle_drop(st)) / tick + 1e-9) * tick, 8)
         return (price, amount), ""
 
     def grid_bid_sync(self, coin):
@@ -1633,15 +1639,23 @@ class Engine(threading.Thread):
         return g["total_max_krw"] + (max(0.0, self.grid_realized()) if g.get("reinvest", True) else 0.0)
 
     def grid_stamp(self, st):
-        """새 사이클을 시작할 때 그 사이클의 1회 금액·익절액을 적어 둔다 → 설정을 바꿔도 진행 중 사이클은 시작할 때 기준 그대로."""
+        """새 사이클을 시작할 때 그 사이클의 1회 금액·익절액·배수·하락폭을 적어 둔다 → 설정을 바꿔도 진행 중 사이클은 시작할 때 기준 그대로."""
         g = self.cfg["grid"]
         st["unit"], st["profit"] = g["unit_krw"], g["profit_krw"]
+        st["mult"], st["drop"] = max(1.0, float(g.get("multiplier", 1.0))), float(g["drop_pct"])
 
     def cycle_unit(self, st):
         return st.get("unit") or self.cfg["grid"]["unit_krw"]
 
     def cycle_profit(self, st):
         return st.get("profit") or self.cfg["grid"]["profit_krw"]
+
+    def cycle_mult(self, st):
+        return st.get("mult") or max(1.0, float(self.cfg["grid"].get("multiplier", 1.0)))
+
+    def cycle_drop(self, st):
+        """추가 매수 하락폭 (비율, 0.03 = 3%)."""
+        return (st.get("drop") or self.cfg["grid"]["drop_pct"]) / 100
 
     def grid_btc_bear(self):
         """비트코인 약세 필터: 전날 비트코인 일봉 종가가 최근 N일(기본 20일) 종가 평균보다 낮으면 True → 새 코인 시작 매수를 쉰다.
@@ -1676,7 +1690,7 @@ class Engine(threading.Thread):
     def grid_next_amount(self, st):
         """다음 추가 매수 금액. 배수 1이면 1회 금액 그대로, 2면 1만 → 2만 → 4만 … (이번 사이클 매수 횟수 기준, 사이클의 1회 금액)."""
         g = self.cfg["grid"]
-        mult = max(1.0, float(g.get("multiplier", 1.0)))
+        mult = self.cycle_mult(st) if st.get("buys") else max(1.0, float(g.get("multiplier", 1.0)))
         unit = self.cycle_unit(st) if st.get("buys") else g["unit_krw"]
         return round(unit * mult ** max(st.get("buys", 0), 0) / 10) * 10 if st.get("buys") else unit
 
@@ -1687,8 +1701,7 @@ class Engine(threading.Thread):
         mode = g.get("be_sell", "prev")
         amount = self.cycle_unit(st)
         if mode == "prev" and st["buys"] > 2:
-            mult = max(1.0, float(g.get("multiplier", 1.0)))
-            amount = round(amount * mult ** (st["buys"] - 2) / 10) * 10
+            amount = round(amount * self.cycle_mult(st) ** (st["buys"] - 2) / 10) * 10
         sell = q / 2 if mode == "half" else min(amount / price, q)
         sell = int(sell * 1e8) / 1e8
         if sell * price < MIN_SELL_KRW or (q - sell) * price < MIN_SELL_KRW:
@@ -1722,7 +1735,7 @@ class Engine(threading.Thread):
                       else "새 시작 쉼" if q <= 0 and not st.get("bid") and (self.btc_bear or (False,))[0]
                       else f"정지 {int((st['pause_until'] - t) // 60) + 1}분" if st.get("pause_until", 0) > t else "자동매매 중")
             rows.append({"status": status, "listed": coin in listed, "auto": bool(st.get("auto")), "coin": coin, "price": p, "buys": st["buys"], "cost": st["cost"], "qty": q, "avg": avg,
-                         "pnl": pnl, "next_buy": st["ref"] * (1 - g["drop_pct"] / 100) if st["ref"] else None,
+                         "pnl": pnl, "next_buy": st["ref"] * (1 - self.cycle_drop(st)) if st["ref"] else None,
                          "breakeven": avg / (1 - FEE) if avg and st["buys"] >= 2 and not st["halved"] else None,
                          "tp": tp, "cycles": st["cycles"], "profit_total": st["profit_total"], "halved": bool(st.get("halved")) and q > 0,
                          "profit": self.cycle_profit(st) if q else g["profit_krw"], "unit": self.cycle_unit(st) if q else g["unit_krw"],

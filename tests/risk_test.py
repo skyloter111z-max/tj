@@ -833,3 +833,36 @@ st = e.grid_state("ADA")
 ok(st["cycles"] == 1 and abs(st["cost"] - 20_000) < 1 and st["unit"] == 20_000 and st["profit"] == 1000,
    f"T8b 익절 뒤 새 사이클은 2만 · 익절 1,000 (원가 {st['cost']:,.0f})")
 fr.get = orig_get
+
+# T9 배수·하락폭도 사이클 시작 때 기준 그대로: 1.5배·3%로 시작한 사이클은 설정을 1.1배·5%로 바꿔도 끝까지 1.5배·3%
+e, ex, cfg = lmk(limit_add=True)
+lstep(e, ex, 340); lstep(e, ex, 329)                # 1만 → 1.5만 (2회)
+cfg["grid"].update(unit_krw=25_000, profit_krw=1250, multiplier=1.1, drop_pct=5.0)
+lstep(e, ex, 330)                                   # 설정 바꾼 뒤 확인 주기
+st = e.grid_state("ADA")
+b = [o for o in ex.open.values() if o["side"] == "bid"]
+a = sorted((o for o in ex.open.values() if o["side"] == "ask"), key=lambda o: float(o["price"]))
+ok(len(b) == 1 and float(b[0]["price"]) == int(329 * 0.97) and abs(float(b[0]["volume"]) * float(b[0]["price"]) - 22_500) < 1,
+   f"T9a 진행 중 사이클 다음 물타기: {b[0]['price'] if b else '-'}원(3% 아래)에 2.25만 (1.5배) 그대로")
+lstep(e, ex, int(329 * 0.97))                       # 3회째 체결
+a = sorted((o for o in ex.open.values() if o["side"] == "ask"), key=lambda o: float(o["price"]))
+w = float(a[0]["volume"]) * float(a[0]["price"]) if a else 0
+ok(e.grid_state("ADA")["buys"] == 3 and abs(w - 15_000) < 40 and books_ok(e, ex), f"T9b 본전 매도도 1.5배 기준 직전 단계 {w:,.0f}원어치 (1.5만)")
+st = e.grid_state("ADA")
+st_px = float(max(a, key=lambda o: float(o["price"]))["price"])
+lstep(e, ex, float(a[0]["price"])); lstep(e, ex, st_px); lstep(e, ex, st_px)  # 본전 → 익절 → 새 사이클
+st = e.grid_state("ADA")
+b = [o for o in ex.open.values() if o["side"] == "bid"]
+ok(st["cycles"] == 1 and st["buys"] == 1 and st["mult"] == 1.1 and st["drop"] == 5.0 and len(b) == 1
+   and abs(float(b[0]["price"]) - int(st["ref"] * 0.95)) <= 1 and abs(float(b[0]["volume"]) * float(b[0]["price"]) - 27_500) < 30,
+   f"T9c 새 사이클은 2.5만 · 1.1배 · 5%: 다음 물타기 {b[0]['price'] if b else '-'}원에 2.75만")
+fr.get = orig_get
+
+# T10 장부 이전: 도장 전 진행 중 사이클 → 1.5배·3% 도장 (한 번만), 끝난 사이클·이미 이전된 장부는 그대로
+for saved, want in (({"state": {"ADA": {"qty": 1.0}}}, (1.5, 3.0)), ({"state": {"ADA": {"qty": 0.0}}}, (None, None)),
+                    ({"cycle_v": 2, "state": {"ADA": {"qty": 1.0}}}, (None, None)),
+                    ({"state": {"ADA": {"qty": 1.0, "mult": 1.1, "drop": 5.0}}}, (1.1, 5.0))):
+    d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
+    open(core.CONFIG_PATH, "w", encoding="utf-8").write(json.dumps({"grid": {**saved, "multiplier": 1.1, "drop_pct": 5.0}}))
+    s = core.load_config()["grid"]["state"]["ADA"]
+    ok((s.get("mult"), s.get("drop")) == want, f"T10 저장 {saved} → 배수·하락 {(s.get('mult'), s.get('drop'))}")
