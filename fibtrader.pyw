@@ -1341,7 +1341,7 @@ class App:
 
     GRID_PANELS = (("rules", "규칙 · 설정"), ("cash", "현금 보호"), ("watch", "자동매매 감시"), ("log", "거래 기록"))
     GRID_FILTERS = (("all", "전체"), ("ok", "정상"), ("avg", "물타는 중"), ("limit", "한도 근접"), ("view", "조회만"))
-    GRID_SORTS = (("cum", "누적 수익"), ("pnl", "지금 손익"), ("n", "매수 횟수"), ("sym", "이름"))
+    GRID_SORTS = (("cum", "누적 수익"), ("pnl", "지금 손익"), ("chg", "등락률"), ("n", "매수 횟수"), ("sym", "이름"))
     GRID_SUB_BG = "#162029"  # 표 위 버튼 줄 (GROUND와 PANEL 사이)
 
     def build_grid(self, nb):
@@ -1392,7 +1392,8 @@ class App:
         self.g_watch_btn.pack(side="right", padx=(0, 8))
         tk.Frame(tc, bg=T.DIVIDER, height=1).pack(fill="x")
 
-        cols = [{"key": "chk", "w": 26}, {"key": "coin", "title": "코인 · 상태", "w": 150},
+        cols = [{"key": "chk", "w": 26}, {"key": "coin", "title": "코인 · 상태", "w": 124},
+                {"key": "px", "title": "현재가", "sub": "전일 대비", "w": 124, "anchor": "e"},
                 {"key": "cyc", "title": "완료", "sub": "사이클", "w": 52, "anchor": "e"},
                 {"key": "cum", "title": "누적 수익", "sub": "수수료 뺀", "tfg": T.TEXT, "w": 96, "anchor": "e"},
                 {"key": "pnl", "title": "지금 손익", "sub": "업비트 기준", "w": 124, "anchor": "e"},
@@ -1678,8 +1679,6 @@ class App:
 
         def coin_cell(c, x0, x1, cy):
             c.create_text(x0, cy - 10, text=r["coin"], fill=dc(T.TEXT), font=T.F["num_cell_b"], anchor="w")
-            x = x0 + T.measure("num_cell_b", r["coin"]) + 8
-            c.create_text(x, cy - 9, text=T.fmtp(p), fill=dc(T.MUTED), font=T.F["num_s"], anchor="w")
             tw = W.draw_tag(c, x0, cy + 11, badge[0], dc(badge[1]), fill=dc(badge[2]) if badge[2] else "",
                             fg=dc(badge[3]) if badge[3] else None)
             if auto:
@@ -1745,9 +1744,20 @@ class App:
             sell_c = {"text": f"{'본전' if half else '전량'} {T.fmtp(sell)}", "fg": T.UP,
                       "sub": (f"지정가 걸림{' ' + str(len(orders)) + '건' if len(orders) > 1 else ''} · {pct(sell)}" if orders else
                               f"{'본전 도달' if half else '익절 +' + format(r.get('profit', g['profit_krw']), ',')} · {pct(sell)}")}
+        live = self.live.get(r["coin"])
+        ch, amt = (live[1], live[2]) if live else (None, None)
+
+        def px_cell(c, x0, x1, cy):
+            # 현황 탭처럼: 현재가를 크게(전일 대비 색), 아래에 전일 대비 금액 · %
+            col = dc(T.chg_color(ch) if ch is not None else T.TEXT)
+            c.create_text(x1 - 4, cy - 8, text=T.fmtp(p) if p else "-", fill=col, font=T.F["num_l"], anchor="e")
+            if ch is not None:
+                c.create_text(x1 - 4, cy + 11, text=f"{T.arrow(amt)}{T.fmtp(abs(amt))}  {T.arrow(ch)}{abs(ch):.2f}%",
+                              fill=col, font=T.F["num_xs"], anchor="e")
+
         cost = r["cost"]
         return kind, {"id": r["coin"], "check": True, "dim": dim, "cells": {
-            "coin": {"draw": coin_cell},
+            "coin": {"draw": coin_cell}, "px": {"draw": px_cell},
             "cyc": {"text": f"{r['cycles']}회" if r["cycles"] else "–", "fg": T.TEXT if r["cycles"] else T.MUTED,
                     "font": "num_cell_b" if r["cycles"] else "num"},
             "cum": {"text": f"{done:+,.0f}" if round(done) else "0", "fg": T.chg_color(done), "font": "num_cell_b"},
@@ -1786,6 +1796,7 @@ class App:
         flt = ui.get("grid_filter", "all")
         shown = [x for x in items if flt == "all" or x[0] == flt]
         key = {"cum": lambda x: -x[4], "pnl": lambda x: x[3], "n": lambda x: -(x[2]["buys"] if x[2]["qty"] else 0),
+               "chg": lambda x: self.grid_price(x[2])[1],  # 전일 대비 많이 내린 코인부터
                "sym": lambda x: x[2]["coin"]}.get(ui.get("grid_sort", "cum"))
         shown.sort(key=key)
         self.g_table.set_rows([x[1] for x in shown])
