@@ -1471,7 +1471,7 @@ class App:
         self.g_btc = tk.BooleanVar(value=g.get("btc_filter", True))
         self.g_reinvest = tk.BooleanVar(value=g.get("reinvest", True))
         self.g_autoexit = tk.BooleanVar(value=g.get("auto_exit_warning", True))
-        for text, var in (("켜기", self.g_on), ("모의", self.g_sim), ("본전에서 1회 금액 매도", self.g_half),
+        for text, var in (("켜기", self.g_on), ("모의", self.g_sim), ("본전에서 직전 단계 금액 매도", self.g_half),
                           ("수익 재투자", self.g_reinvest), ("투자유의 지정 시 자동 청산", self.g_autoexit),
                           ("익절 뒤 2% 아래서 재진입 (최대 24시간)", self.g_reentry),
                           ("비트코인 20일선 아래면 새 시작 쉼", self.g_btc)):
