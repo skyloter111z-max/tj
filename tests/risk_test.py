@@ -884,3 +884,30 @@ for saved, want in (({"state": {"ADA": {"qty": 1.0}}}, (1.5, 3.0)), ({"state": {
     open(core.CONFIG_PATH, "w", encoding="utf-8").write(json.dumps({"grid": {**saved, "multiplier": 1.1, "drop_pct": 5.0}}))
     s = core.load_config()["grid"]["state"]["ADA"]
     ok((s.get("mult"), s.get("drop")) == want, f"T10 저장 {saved} → 배수·하락 {(s.get('mult'), s.get('drop'))}")
+
+# G1 텔레그램 (조회 전용): 주인 채팅만 응답, 주인 번호 없으면 번호만 알려 줌, 알림은 주인에게만, 현황 글 생성
+import fib_telegram as ftg
+got = []
+tg = ftg.Telegram(got.append, token="x", chat_id="111")
+tg.handle({"chat": {"id": 222}, "text": "/status"})
+tg.handle({"chat": {"id": 111}, "text": "현황"})
+tg.handle({"chat": {"id": 111}, "text": "/today@FibBot"})
+tg.handle({"chat": {"id": 111}, "text": "/sell BTC"})
+sent = [tg.out.get_nowait() for _ in range(tg.out.qsize())]
+ok(got == ["status", "today"] and len(sent) == 1 and sent[0][0] == "111" and "조회 전용" in sent[0][1],
+   f"G1a 남의 채팅 무시, 주인 명령만 처리, 모르는 명령(매도 등)엔 안내만: {got}")
+tg2 = ftg.Telegram(got.append, token="x", chat_id="")
+tg2.handle({"chat": {"id": 333}, "text": "/status"}); tg2.notify("알림", "내용")
+sent = [tg2.out.get_nowait() for _ in range(tg2.out.qsize())]
+ok(len(sent) == 1 and sent[0][0] == "333" and "333" in sent[0][1] and "[자동매매" not in sent[0][1] and got == ["status", "today"],
+   "G1b 주인 번호 없을 때: 말 건 채팅에 번호만 알려 주고 현황·알림은 안 보냄")
+ok(not ftg.Telegram(got.append, token="", chat_id="1").enabled, "G1c 토큰 없으면 꺼짐")
+e, ex, cfg = lmk(limit_add=True)
+e.tg = ftg.Telegram(lambda c: None, token="x", chat_id="111")
+lstep(e, ex, 340); lstep(e, ex, 329)
+fr.get = lambda path: [{"market": m, "trade_price": 330.0, "signed_change_rate": -0.02} for m in path.split("=")[1].split(",")] if "ticker" in path else orig_get(path)
+txt = e.tg_status_text(); day = e.tg_day_text(core.now().strftime("%Y-%m-%d"), "오늘")
+msgs = [e.tg.out.get_nowait()[1] for _ in range(e.tg.out.qsize())]
+ok("[자동매매" in txt and "ADA 330" in txt and "2회" in txt and "매수 2번" in day and any("물타기" in m for m in msgs),
+   "G1d 현황·오늘 글 생성, 매수 알림은 텔레그램으로도 보냄")
+fr.get = orig_get

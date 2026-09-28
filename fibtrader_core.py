@@ -16,6 +16,7 @@ import time
 import fib_check as fc
 import fib_orders as fo
 import fib_recalc as fr
+import fib_telegram as ftg
 import fib_voice as fv
 import fib_ws as fws
 
@@ -397,6 +398,7 @@ class Engine(threading.Thread):
         self.stop_event = threading.Event()
         self.poke = threading.Event()  # 체결 직후 화면 잔고를 바로 갱신하라는 신호 (PriceFeed가 받음)
         self.commands = queue.Queue()
+        self.tg = ftg.Telegram(lambda cmd: self.request("tg_command", cmd))  # 휴대폰 조회 전용 (토큰 없으면 꺼짐)
         self.levels = {}          # coin -> [(이름, 가격)]
         self.prices = {}
         self.alert_state = {}
@@ -432,6 +434,8 @@ class Engine(threading.Thread):
         if kind in ("grid", "fill"):  # 자동매매 매매·피보나치 체결 → 잔고·체결 내역 바로 갱신
             self.poke.set()
         self.emit("alert", title, msg, kind, say, quiet)
+        if not quiet:
+            self.tg.notify(title, msg)
 
     # ---------- 레벨 (설정에 고정 저장, 체결·재계산 때만 바뀜) ----------
     def level_items(self, coin):
@@ -1753,6 +1757,84 @@ class Engine(threading.Thread):
                          "bid": (st["bid"]["price"], st["bid"]["amount"]) if st.get("bid") else None})
         return rows
 
+    # ---------- 텔레그램 (조회 전용): 엔진 스레드에서 글을 만들어 보낸다 ----------
+    def tg_command(self, cmd):
+        if cmd == "status":
+            self.tg.send(self.tg_status_text())
+        elif cmd == "today":
+            self.tg.send(self.tg_day_text(now().strftime("%Y-%m-%d"), "오늘"))
+        elif cmd == "daily":
+            y = (now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+            self.tg.send(self.tg_day_text(y, "어제") + "\n\n" + self.tg_status_text())
+
+    def tg_status_text(self):
+        g = self.cfg["grid"]
+        coins = list(dict.fromkeys(fr.COINS + self.grid_tracked()))
+        try:
+            tick = {t["market"][4:]: (t["trade_price"], t["signed_change_rate"] * 100)
+                    for t in fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in coins))}
+        except Exception:
+            tick = {c: (p, None) for c, p in self.prices.items()}
+        arrow = lambda ch: "" if ch is None else f" {'▲' if ch > 0 else '▼' if ch < 0 else ''}{abs(ch):.2f}%"  # noqa: E731
+        lines = [f"📊 FibTrader 현황 {now():%m-%d %H:%M}", "", "[피보나치]"]
+        for c in fr.COINS:
+            p, ch = tick.get(c, (self.prices.get(c), None))
+            lv, pg = self.cfg.get("levels", {}).get(c, {}), self.cfg["progress"][c]
+            sd, bd = pg["sell_done"], pg["buy_done"]
+            s = lv.get("sells", [])[sd] if sd < len(lv.get("sells", [])) else None
+            b = lv.get("buys", [])[bd] if bd < len(lv.get("buys", [])) else None
+            parts = [f"{c} {fmtp(p) if p else '-'}{arrow(ch)}"]
+            if b and p:
+                parts.append(f"{bd + 1}차 매수 {fmtp(b)} ({(b / p - 1) * 100:+.1f}%)")
+            if s and p:
+                parts.append(f"{sd + 1}차 매도 {fmtp(s)} ({(s / p - 1) * 100:+.1f}%)")
+            lines.append(" · ".join(parts))
+        rows = self.grid_view()
+        state = "꺼짐" if not g["enabled"] else "모의" if g["simulate"] or not self.api else "실전"
+        cost = sum(r["cost"] for r in rows)
+        upnl = sum(r["qty"] * tick.get(r["coin"], (r["price"] or 0, None))[0] - r["cost"] / (1 + FEE) for r in rows if r["qty"])
+        done = sum(r["profit_total"] + r.get("realized", 0.0) for r in rows)
+        day = journal_summary(build_journal(self.db, g["simulate"] or not self.api), "date").get(now().strftime("%Y-%m-%d"), {})
+        lines += ["", f"[자동매매 · {state}]",
+                  f"투입 원가 {cost:,.0f}원 / 전체 한도 {self.grid_total_cap():,.0f}원",
+                  f"지금 손익 {upnl:+,.0f}원" + (f" ({upnl / (cost / (1 + FEE)) * 100:+.1f}%)" if cost else ""),
+                  f"오늘 익절 {day.get('cycles', 0)}번 · 실현 {day.get('pnl', 0.0):+,.0f}원 · 누적 {done:+,.0f}원"]
+        bear = (self.btc_bear or (None,))[0]
+        if bear:
+            lines.append("비트코인 20일선 아래: 새 시작 쉼 (물타기·익절은 계속)")
+        for r in sorted(rows, key=lambda r: -r["cost"]):
+            p, ch = tick.get(r["coin"], (r["price"], None))
+            if r["qty"]:
+                u = r["qty"] * (p or 0) - r["cost"] / (1 + FEE)
+                lines.append(f"{r['coin']} {fmtp(p)}{arrow(ch)} · {r['buys']}회 {r['cost'] / 1e4:,.1f}만 · {u:+,.0f}원"
+                             + (" · 본전 매도함" if r.get("halved") else ""))
+            else:
+                lines.append(f"{r['coin']} {fmtp(p) if p else '-'}{arrow(ch)} · {r['status']}")
+        try:
+            free = self.krw_free()
+            if free is not None:
+                lines += ["", f"주문 가능 원화(자동매매 걸어 둔 매수 포함) {free:,.0f}원"]
+        except Exception:
+            pass
+        return "\n".join(lines)
+
+    def tg_day_text(self, date, label):
+        g = self.cfg["grid"]
+        trades = [t for t in build_journal(self.db, g["simulate"] or not self.api) if t["date"] == date]
+        sells = [t for t in trades if t["side"] == "ask"]
+        buys = [t for t in trades if t["side"] == "bid"]
+        pnl = sum(t["pnl"] or 0.0 for t in sells)
+        cycles = sum(1 for t in sells if t.get("full"))
+        lines = [f"📅 {label}({date}) 자동매매", f"익절 {cycles}번 · 실현 {pnl:+,.0f}원 · 매수 {len(buys)}번 {sum(t['krw'] for t in buys):,.0f}원"]
+        per = {}
+        for t in sells:
+            a = per.setdefault(t["coin"], [0, 0.0])
+            a[0] += 1 if t.get("full") else 0
+            a[1] += t["pnl"] or 0.0
+        for c, (n, v) in sorted(per.items(), key=lambda kv: -kv[1][1]):
+            lines.append(f"  {c} 익절 {n}번 {v:+,.0f}원")
+        return "\n".join(lines)
+
     def grid_refresh(self):
         """[조회] 버튼: 자동매매 대상·보유 코인 시세를 바로 받아 표를 새로 그린다 (주문은 안 함)."""
         coins = self.grid_tracked()
@@ -1926,6 +2008,7 @@ class Engine(threading.Thread):
 
     # ---------- 메인 루프 ----------
     def run(self):
+        self.tg.start()
         self.emit("status", "레벨 계산 중…")
         while not self.stop_event.is_set():
             try:
