@@ -659,6 +659,34 @@ a2 = sorted((o for o in ex2.open.values() if o["side"] == "ask"), key=lambda o: 
 ok(abs(float(a2[0]["volume"]) - float(a2[1]["volume"])) < 1e-7, "N1c 설정을 '절반'으로 하면 예전처럼 반씩")
 fr.get = orig_get
 
+# N2 본전 매도 = 직전 단계 금액어치(기본): 3회(1만·1.5만·2.25만)면 1.5만, 4회면 2.25만어치. 나머지는 익절가, 수량 합 = 장부
+e, ex, cfg = lmk(limit_add=True)
+lstep(e, ex, 340); lstep(e, ex, 329); lstep(e, ex, 319)
+st = e.grid_state("ADA")
+a = sorted((o for o in ex.open.values() if o["side"] == "ask"), key=lambda o: float(o["price"]))
+w = float(a[0]["volume"]) * float(a[0]["price"]) if a else 0
+ok(st["buys"] == 3 and len(a) == 2 and abs(w - 15000) < 40 and abs(sum(float(o["volume"]) for o in a) - st["qty"]) < 3e-8,
+   f"N2a 3회 매수 → 본전 매도 {w:,.0f}원어치 (1.5만)")
+lstep(e, ex, 309)
+st = e.grid_state("ADA")
+a = sorted((o for o in ex.open.values() if o["side"] == "ask"), key=lambda o: float(o["price"]))
+w = float(a[0]["volume"]) * float(a[0]["price"]) if a else 0
+ok(st["buys"] == 4 and len(a) == 2 and abs(w - 22500) < 40 and abs(sum(float(o["volume"]) for o in a) - st["qty"]) < 3e-8 and books_ok(e, ex),
+   f"N2b 4회 매수 → 취소 후 다시 걸린 본전 매도 {w:,.0f}원어치 (2.25만), 장부 일치")
+lstep(e, ex, float(a[0]["price"]))
+st = e.grid_state("ADA")
+a = [o for o in ex.open.values() if o["side"] == "ask"]
+ok(st["halved"] and len(a) == 1 and abs(float(a[0]["volume"]) - st["qty"]) < 3e-8 and books_ok(e, ex),
+   "N2c 본전 매도 체결 → 나머지 전량은 익절가 1건")
+fr.get = orig_get
+
+# N3 설정 이전: 예전 저장 파일의 "unit"은 한 번만 "prev"로, "half"와 이전 뒤 고른 "unit"은 그대로
+for saved, want in (({"be_sell": "unit"}, "prev"), ({"be_sell": "half"}, "half"), ({"be_sell": "unit", "be_sell_v": 2}, "unit"), ({}, "prev")):
+    d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
+    open(core.CONFIG_PATH, "w", encoding="utf-8").write(json.dumps({"grid": saved}))
+    got = core.load_config()["grid"]["be_sell"]
+    ok(got == want, f"N3 저장 {saved} → {got}")
+
 # V1 음성 알림: 매수·익절 알림에 읽을 문장이 붙는다 (한국어 금액)
 import fib_voice as fv
 e, ex, cfg = lmk(limit_add=True)

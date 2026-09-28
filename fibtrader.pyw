@@ -1605,7 +1605,9 @@ class App:
                  (f"{g['drop_pct']:g}% 아래에 직전 매수의 {mult:g}배 지정가 매수 걸어 둠" if mult > 1 and bid_on
                            else f"{g['drop_pct']:g}% 하락마다 직전 매수의 {mult:g}배 추가 매수 ({amounts})" if mult > 1
                            else f"마지막 매수가 대비 {g['drop_pct']:g}% 하락마다 1회 금액 추가 매수"),
-                 (("2회 이상 샀으면 본전에 절반 매도" if g.get("be_sell") == "half" else f"2회 이상 샀으면 본전에 {g['unit_krw']:,}원어치 매도")
+                 (("2회 이상 샀으면 본전에 절반 매도" if g.get("be_sell") == "half" else
+                   f"2회 이상 샀으면 본전에 {g['unit_krw']:,}원어치 매도" if g.get("be_sell") == "unit" else
+                   "2회 이상 샀으면 본전에 직전 단계 금액어치 매도")
                   if g["half_at_breakeven"] else "본전 매도 안 함"),
                  (f"익절가(+{g['profit_krw']:,}원)에 지정가 매도 · 물타면 취소 후 다시 걸기"
                   if g.get("limit_tp", True) and not g["simulate"] else f"사이클 수익이 익절 {g['profit_krw']:,}원 이상이면 전량 매도"),

@@ -56,7 +56,9 @@ DEFAULTS = {
         "btc_filter_days": 20,
         "reentry_pct": 0.0,         # 익절 뒤 재진입: 0 = 바로 다시 삼, 2 = 판 가격보다 2% 아래에 지정가 매수로 기다림
         "reentry_hours": 24,        # 그만큼 안 내려오면 이 시간 뒤 그냥 산다
-        "be_sell": "unit",          # 본전에서 파는 양: "unit" = 1회 금액(시작 매수 금액)어치, "half" = 보유의 절반
+        "be_sell": "prev",          # 본전에서 파는 양: "prev" = 직전 단계 금액어치(2회 1회 금액, 3회 1회×배수, 4회 1회×배수² …),
+                                    # "unit" = 1회 금액(시작 매수 금액)어치, "half" = 보유의 절반
+        "be_sell_v": 2,             # 설정 판: 1 → 2 때 "unit"을 "prev"로 한 번 바꿈
         "limit_tp": True,           # 실전: 매수 직후 익절가(본전 절반 포함)에 지정가 매도를 걸어 둔다. 추가 매수 때 취소 후 다시 건다
         "max_krw": 500_000,         # 코인별 최대 투입(보유 원가) 한도
         "total_max_krw": 1_500_000, # 자동매매 전체 원가 한도 (여러 코인이 같이 빠질 때)
@@ -119,6 +121,10 @@ def load_config():
     if saved is not None:
         cfg.update({k: v for k, v in saved.items() if k in DEFAULTS and k != "grid"})
         cfg["grid"].update(saved.get("grid", {}))
+        if saved.get("grid", {}).get("be_sell_v", 1) < 2:  # 예전 기본 "1회 금액어치" → "직전 단계 금액어치" (9년 백테스트로 결정)
+            if cfg["grid"].get("be_sell") == "unit":
+                cfg["grid"]["be_sell"] = "prev"
+            cfg["grid"]["be_sell_v"] = 2
         cfg["grid"]["dip"] = dip = {**DEFAULTS["grid"]["dip"], **saved.get("grid", {}).get("dip", {})}
         if dip["pool"] == OLD_DIP_POOL:  # 예전 기본 20개를 안 고치고 썼으면 대형 10개로 바꾼다
             dip["pool"] = list(DIP_POOL)
@@ -1675,9 +1681,15 @@ class Engine(threading.Thread):
         return round(unit * mult ** max(st.get("buys", 0), 0) / 10) * 10 if st.get("buys") else unit
 
     def grid_be_qty(self, st, price):
-        """본전에서 팔 수량. 1회 금액어치(기본) 또는 절반. 판 뒤 남는 것도 업비트 최소 주문 이상이어야 하며, 안 되면 0."""
+        """본전에서 팔 수량. 직전 단계 금액어치(기본), 1회 금액어치 또는 절반. 판 뒤 남는 것도 업비트 최소 주문 이상이어야 하며, 안 되면 0.
+        직전 단계 = 마지막 매수 바로 앞 단계의 매수 금액: 2회 샀으면 1회 금액, 3회면 1회×배수, 4회면 1회×배수² …"""
         g, q = self.cfg["grid"], st["qty"]
-        sell = q / 2 if g.get("be_sell", "unit") == "half" else min(self.cycle_unit(st) / price, q)
+        mode = g.get("be_sell", "prev")
+        amount = self.cycle_unit(st)
+        if mode == "prev" and st["buys"] > 2:
+            mult = max(1.0, float(g.get("multiplier", 1.0)))
+            amount = round(amount * mult ** (st["buys"] - 2) / 10) * 10
+        sell = q / 2 if mode == "half" else min(amount / price, q)
         sell = int(sell * 1e8) / 1e8
         if sell * price < MIN_SELL_KRW or (q - sell) * price < MIN_SELL_KRW:
             return 0.0
