@@ -1729,7 +1729,7 @@ class App:
 
         pct = (lambda v: f"{(v / p - 1) * 100:+.1f}%" if v and p else "")  # noqa: E731
         if not r["qty"] and r.get("bid"):  # 익절 뒤 재진입 대기: 판 가격보다 아래에 매수 주문
-            buy = {"text": f"{T.fmtp(r['bid'][0])}에 {manx(r['bid'][1])}", "fg": T.DOWN, "sub": f"재진입 지정가 · {pct(r['bid'][0])}"}
+            buy = {"text": f"{T.fmtp(r['bid'][0])}에 {manx(r['bid'][1])}", "fg": T.DOWN, "sub": f"지금가보다 {abs((r['bid'][0] / p - 1) * 100):.1f}% 아래 대기" if p else "재진입 대기"}
             sell_c = {"text": "-", "fg": T.MUTED}
         elif not r["qty"]:
             buy = {"text": "-", "fg": T.MUTED}
