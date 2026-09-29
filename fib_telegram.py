@@ -179,7 +179,16 @@ def self_test():
     if not t.token:
         return
     if ":" not in t.token:
-        print("   토큰 모양이 이상합니다. BotFather 토큰은 '숫자:영문' 모양입니다 (앞뒤 따옴표·공백 없이).")
+        tk_ = t.token
+        hints = [f"글자 수 {len(tk_)}자 (정상은 45자 안팎)"]
+        if any(ord(ch) > 127 for ch in tk_):
+            hints.append("한글 등 영어가 아닌 글자가 들어 있음 → '토큰'이라는 글자를 그대로 넣었을 수 있음")
+        if any(ch in tk_ for ch in "\"'<>"):
+            hints.append("따옴표나 < > 기호가 들어 있음")
+        if " " in tk_:
+            hints.append("중간에 띄어쓰기가 있음")
+        print("   토큰 모양이 이상합니다. BotFather 토큰은 '숫자:영문' 모양입니다 (예: 1234567890:AAH…).")
+        print("   · " + "\n   · ".join(hints))
     try:
         me = t.call("getMe", {}, timeout=15)
         print(f"2) 봇 연결: 성공 → @{me.get('username')} ({me.get('first_name')})  ← 텔레그램에서 이 봇과 대화하세요")
