@@ -266,19 +266,23 @@ class Candles(tk.Canvas):
     마우스를 올리면 십자선 + 그 봉의 시가·고가·저가·종가·등락률. 양봉 UP, 음봉 DOWN.
     zoom=True면 휠로 확대·축소, 끌어서 과거 보기, 두 번 클릭하면 최신으로. ma=(5, 20, …)면 이동평균선."""
     AXIS_W, TIME_H = 86, 18
-    MA_COLORS = {5: "#E8B04B", 10: "#E8B04B", 20: "#5DBB8A", 60: "#B48CF0", 120: "#8FA0B3"}
+    # 바이비트 느낌 색 (상승 빨강 · 하락 초록 = 바이비트의 '빨강 상승' 설정)
+    BG, GRID, TXT, BORDER = "#0B0E11", "#1A1E24", "#848E9C", "#1E2329"
+    CUP, CDOWN = "#F6465D", "#2EBD85"
+    XH, TAGBG, TAGFG = "#5E6673", "#2B3139", "#EAECEF"
+    MA_COLORS = {5: "#F0B90B", 10: "#F0B90B", 20: "#E45BB3", 60: "#9D7BF5", 120: "#3FA7E0"}
     MIN_VIEW = 15
 
     def __init__(self, parent, height=150, zoom=False, ma=(), view=None, on_need_older=None):
-        super().__init__(parent, bg=T.GROUND, height=height, highlightthickness=1, highlightbackground=T.DIVIDER,
+        super().__init__(parent, bg=self.BG, height=height, highlightthickness=1, highlightbackground=self.BORDER,
                          cursor="crosshair")
         self.data, self.lines, self.unit, self.geom = [], [], "", None
         self.ma, self.default_view, self.on_need_older = tuple(ma), view, on_need_older
         self.view_n, self.off = view, 0     # 보이는 봉 수 (None = 전부), 오른쪽 끝에서 가려진 봉 수 (0 = 최신이 오른쪽 끝)
-        self.mx, self.drag, self.loading, self.hint = None, None, False, ""
+        self.mx, self.drag, self.loading = None, None, False
         self.bind("<Configure>", lambda e: self.draw())
         self.bind("<Motion>", self.hover)
-        self.bind("<Leave>", lambda e: self.delete("xh"))
+        self.bind("<Leave>", lambda e: (self.delete("xh"), self.header(len(self.data) - 1)))
         if zoom:
             self.on_wheel = self.wheel  # install_wheel이 포인터 아래 위젯의 on_wheel을 부른다
             self.bind("<ButtonPress-1>", self.press)
@@ -361,7 +365,7 @@ class Candles(tk.Canvas):
                 return m * mag
         return 10 * mag
 
-    def tag(self, x, y, text, bg, fg=T.GROUND, anchor="w", font="num_xs", tags=()):
+    def tag(self, x, y, text, bg, fg="#0B0E11", anchor="w", font="num_xs", tags=()):
         tid = self.create_text(x + (4 if anchor == "w" else -4), y, text=text, fill=fg, font=T.F[font], anchor=anchor, tags=tags)
         x0, y0, x1, y1 = self.bbox(tid)
         rid = self.create_rectangle(x0 - 4, y0 - 1, x1 + 4, y1 + 1, fill=bg, outline="", tags=tags)
@@ -402,7 +406,7 @@ class Candles(tk.Canvas):
         self.delete("all")
         w, h = max(self.winfo_width(), 160), max(self.winfo_height(), 80)
         if not self.data:
-            self.create_text(w / 2, h / 2, text="불러오는 중…", fill=T.MUTED, font=T.F["kr_xs"])
+            self.create_text(w / 2, h / 2, text="불러오는 중…", fill=self.TXT, font=T.F["kr_xs"])
             return
         start, end = self.window()
         vis = self.data[start:end]
@@ -430,26 +434,26 @@ class Candles(tk.Canvas):
             last = ty
         step = self.nice_step(hi - lo)
         v = math.ceil(lo / step) * step
-        grid = T.blend(T.TEXT, T.GROUND, 0.06)
+        grid = self.GRID
         while v <= hi:
             yy = y(v)
-            self.create_line(0, yy, px1, yy, fill=grid)
+            self.create_line(0, yy, px1, yy, fill=grid, dash=(1, 3))
             if all(abs(yy - m[1]) > 10 for m in placed):
-                self.create_text(px1 + 6, yy, text=T.fmtp(v), fill=T.MUTED, font=T.F["num_xs"], anchor="w")
+                self.create_text(px1 + 6, yy, text=T.fmtp(v), fill=self.TXT, font=T.F["num_xs"], anchor="w")
             v += step
-        self.create_line(px1, 0, px1, h, fill=T.DIVIDER)
-        self.create_line(0, bot, w, bot, fill=T.DIVIDER)
+        self.create_line(px1, 0, px1, h, fill=self.BORDER)
+        self.create_line(0, bot, w, bot, fill=self.BORDER)
         if has_vol:
             vmax = max(c[5] for c in vis) or 1
             for i, c in enumerate(vis):
                 cx = 4 + slot * (i + 0.5)
                 bh = c[5] / vmax * vol_h
-                col = T.blend(T.UP if c[3] >= c[0] else T.DOWN, T.GROUND, 0.35)
+                col = T.blend(self.CUP if c[3] >= c[0] else self.CDOWN, self.BG, 0.4)
                 self.create_rectangle(cx - max(slot * 0.32, 0.5), bot - bh, cx + max(slot * 0.32, 0.5), bot, fill=col, outline="")
         for i, c in enumerate(vis):
             o, hh, ll, cl = c[:4]
             cx = 4 + slot * (i + 0.5)
-            col = T.UP if cl >= o else T.DOWN
+            col = self.CUP if cl >= o else self.CDOWN
             self.create_line(cx, y(hh), cx, y(ll), fill=col)
             bw = max(slot * 0.64, 1)
             y0, y1 = sorted((y(o), y(cl)))
@@ -469,92 +473,112 @@ class Candles(tk.Canvas):
                 pts += [4 + slot * (i - start + 0.5), y(m)]
             for sg in segs + [pts]:
                 if len(sg) >= 4:
-                    self.create_line(*sg, fill=self.MA_COLORS.get(p, T.MUTED), width=1)
+                    self.create_line(*sg, fill=self.MA_COLORS.get(p, self.TXT), width=1)
         if len(vis[0]) >= 5 and vis[0][4]:
             k = max(1, round(n / 5))
             for i in range(k // 2, n, k):
                 t = vis[i][4]
                 prev = vis[i - k][4] if i - k >= 0 else None
                 self.create_text(4 + slot * (i + 0.5), bot + self.TIME_H / 2 + 1, text=self.time_label(t, prev),
-                                 fill=T.MUTED, font=T.F["num_xs"])
+                                 fill=self.TXT, font=T.F["num_xs"])
         for ly, ty, label, price, color, solid in placed:
+            if label == "현재가":  # 바이비트처럼: 마지막 봉 색의 점선 + 가격 태그 + 봉 마감까지 남은 시간
+                color = self.CUP if vis[-1][3] >= vis[-1][0] else self.CDOWN
+                self.create_line(0, ly, px1, ly, fill=color, dash=(1, 2))
+                self.tag(px1, ty, T.fmtp(price), color, fg="#FFFFFF", font="num_s")
+                left = self.countdown()
+                if left:
+                    self.tag(px1, ty + 17, left, color, fg="#FFFFFF")
+                continue
             self.create_line(0, ly, px1, ly, fill=color, dash=() if solid else (2, 3))
             if abs(ty - ly) > 1:
                 self.create_line(px1 - 2, ly, px1, ty, fill=color)
-            self.tag(px1, ty, T.fmtp(price), color, fg=T.GROUND)
+            self.tag(px1, ty, T.fmtp(price), color, fg=self.BG)
             tid = self.create_text(px1 - 6, ty, text=label, fill=color, font=T.F["kr_xs"], anchor="e")
             x0, y0, x1, y1 = self.bbox(tid)
-            rid = self.create_rectangle(x0 - 5, y0 - 1, x1 + 4, y1 + 1, fill=T.GROUND, outline=color)
+            rid = self.create_rectangle(x0 - 5, y0 - 1, x1 + 4, y1 + 1, fill=self.BG, outline=color)
             self.tag_raise(tid, rid)
         # 보이는 범위 밖 기준선 (확대 차트): 위·아래 끝에 [이름 가격 ▲/▼]
         if self.view_n is not None:
             above = [(lb, pr, col) for lb, pr, col, so in self.lines if pr and pr > hi]
             below = [(lb, pr, col) for lb, pr, col, so in self.lines if pr and pr < lo]
             for j, (lb, pr, col) in enumerate(sorted(above, key=lambda a: a[1])):
-                self.tag(px1 - 4, top + (26 if self.ma else 8) + j * 16, f"{lb} {T.fmtp(pr)} ▲ {(pr / vis[-1][3] - 1) * 100:+.1f}%", T.GROUND, fg=col, anchor="e")
+                self.tag(px1 - 4, top + (40 if self.ma else 24) + j * 16, f"{lb} {T.fmtp(pr)} ▲ {(pr / vis[-1][3] - 1) * 100:+.1f}%", self.BG, fg=col, anchor="e")
             for j, (lb, pr, col) in enumerate(sorted(below, key=lambda a: -a[1])):
-                self.tag(px1 - 4, pbot - 8 - j * 16, f"{lb} {T.fmtp(pr)} ▼ {(pr / vis[-1][3] - 1) * 100:+.1f}%", T.GROUND, fg=col, anchor="e")
-        if self.ma:  # 이동평균선 범례 (왼쪽 위, 마우스를 올리면 그 봉 값으로 바뀜)
-            x = 8
+                self.tag(px1 - 4, pbot - 8 - j * 16, f"{lb} {T.fmtp(pr)} ▼ {(pr / vis[-1][3] - 1) * 100:+.1f}%", self.BG, fg=col, anchor="e")
+        self.create_text(w - 6, h - 3, text=self.unit, fill=self.TXT, font=T.F["num_xs"], anchor="se")
+        self.header(len(self.data) - 1)
+
+    def countdown(self):
+        """마지막 봉이 닫힐 때까지 남은 시간 (분·시간봉: 00:12:34, 일·주봉: 3일 04:10)."""
+        import datetime as _dt
+        if not self.data or len(self.data[-1]) < 5 or not self.data[-1][4]:
+            return ""
+        try:
+            start = _dt.datetime.fromisoformat(self.data[-1][4])
+        except ValueError:
+            return ""
+        now = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).replace(tzinfo=None)
+        left = int((start + _dt.timedelta(minutes=self.gap_minutes()) - now).total_seconds())
+        if left <= 0:
+            return ""
+        d, r = divmod(left, 86400)
+        hh, r = divmod(r, 3600)
+        return f"{d}일 {hh:02d}:{r // 60:02d}" if d else f"{hh:02d}:{r // 60:02d}:{r % 60:02d}"
+
+    def header(self, i):
+        """왼쪽 위 정보 줄 (바이비트처럼 늘 보임): 시·고·저·종·등락률·거래대금, 그 아래 이동평균 값. 마우스를 올리면 그 봉 값."""
+        self.delete("hdr")
+        if not self.data or not self.geom or i < 0:
+            return
+        px1 = self.geom[6]
+        c = self.data[i]
+        o, hh, ll, cl = c[:4]
+        prev = self.data[i - 1][3] if i else o
+        chg = (cl / prev - 1) * 100 if prev else 0
+        colr = self.CUP if cl >= o else self.CDOWN
+        x, yy = 8, 12
+        for name, v in (("시", o), ("고", hh), ("저", ll), ("종", cl)):
+            tid = self.create_text(x, yy, text=name, fill=self.TXT, font=T.F["kr_xs"], anchor="w", tags="hdr")
+            x = self.bbox(tid)[2] + 3
+            tid = self.create_text(x, yy, text=T.fmtp(v), fill=colr, font=T.F["num_xs"], anchor="w", tags="hdr")
+            x = self.bbox(tid)[2] + 9
+        tid = self.create_text(x, yy, text=f"{chg:+.2f}%", fill=colr, font=T.F["num_xs"], anchor="w", tags="hdr")
+        x = self.bbox(tid)[2]
+        if len(c) >= 6 and c[5] and x + 130 < px1:
+            self.create_text(x + 10, yy, text=f"거래대금 {c[5] / 1e8:,.1f}억", fill=self.TXT, font=T.F["kr_xs"], anchor="w", tags="hdr")
+        if self.ma and getattr(self, "ma_now", None):
+            x, yy = 8, 28
             for p in self.ma:
-                tid = self.create_text(x, 12, text=f"MA{p}", fill=self.MA_COLORS.get(p, T.MUTED), font=T.F["num_xs"], anchor="w")
-                x = self.bbox(tid)[2] + 8
-            if self.hint and px1 - x > 300:
-                self.create_text(x + 8, 12, text=self.hint, fill=T.blend(T.MUTED, T.GROUND, 0.6), font=T.F["kr_xs"], anchor="w")
-        self.create_text(w - 6, h - 3, text=self.unit, fill=T.MUTED, font=T.F["num_xs"], anchor="se")
+                m = self.ma_now.get(p, [None] * len(self.data))[i]
+                tid = self.create_text(x, yy, text=f"MA{p} {T.fmtp(m) if m else '-'}", fill=self.MA_COLORS.get(p, self.TXT),
+                                       font=T.F["num_xs"], anchor="w", tags="hdr")
+                x = self.bbox(tid)[2] + 10
 
     def hover(self, e):
-        """십자선 + 가격 태그 + 그 봉 정보 (업비트처럼)."""
+        """십자선 + 가격·시간 태그, 왼쪽 위 정보 줄은 그 봉 값으로."""
         self.delete("xh")
         self.mx = e.x
         if not self.data or not self.geom:
             return
         x0, slot, top, pbot, lo, hi, px1, bot = self.geom
         if e.x > px1 or e.y > bot:
+            self.header(len(self.data) - 1)
             return
         start, end = self.window()
         j = min(end - start - 1, max(0, int((e.x - x0) / slot)))
         i = start + j
         c = self.data[i]
         cx = x0 + slot * (j + 0.5)
-        col = T.blend(T.TEXT, T.GROUND, 0.5)
-        self.create_line(cx, 0, cx, bot, fill=col, dash=(2, 2), tags="xh")
-        self.create_line(0, e.y, px1, e.y, fill=col, dash=(2, 2), tags="xh")
+        self.create_line(cx, 0, cx, bot, fill=self.XH, dash=(3, 3), tags="xh")
+        self.create_line(0, e.y, px1, e.y, fill=self.XH, dash=(3, 3), tags="xh")
         if top <= e.y <= pbot:
             price = hi - (e.y - top) / (pbot - top) * (hi - lo)
-            self.tag(px1, e.y, T.fmtp(price), T.TEXT, fg=T.GROUND, tags="xh")
+            self.tag(px1, e.y, T.fmtp(price), self.TAGBG, fg=self.TAGFG, tags="xh")
         if len(c) >= 5 and c[4]:
             t = c[4].replace("T", " ")
-            self.tag(cx, bot + self.TIME_H / 2 + 1, t[5:16], T.TEXT, fg=T.GROUND, anchor="w", tags="xh")
-        o, hh, ll, cl = c[:4]
-        prev = self.data[i - 1][3] if i else o
-        chg = (cl / prev - 1) * 100 if prev else 0
-        colr = T.chg_color(chg)
-        parts = [("시", o), ("고", hh), ("저", ll), ("종", cl)]
-        x = 8
-        yy = 12
-        bg = self.create_rectangle(0, 0, 0, 0, fill=T.GROUND, outline="", tags="xh")
-        first = x
-        for name, v in parts:
-            tid = self.create_text(x, yy, text=name, fill=T.MUTED, font=T.F["kr_xs"], anchor="w", tags="xh")
-            x = self.bbox(tid)[2] + 3
-            tid = self.create_text(x, yy, text=T.fmtp(v), fill=colr, font=T.F["num_s"], anchor="w", tags="xh")
-            x = self.bbox(tid)[2] + 10
-        tid = self.create_text(x, yy, text=f"{chg:+.2f}%", fill=colr, font=T.F["num_s"], anchor="w", tags="xh")
-        x = self.bbox(tid)[2]
-        if len(c) >= 6 and c[5] and x + 140 < px1:  # 좁으면 거래대금은 생략
-            tid = self.create_text(x + 10, yy, text=f"거래대금 {c[5] / 1e8:,.1f}억", fill=T.MUTED, font=T.F["kr_xs"], anchor="w", tags="xh")
-            x = self.bbox(tid)[2]
-        self.coords(bg, first - 4, yy - 9, x + 4, yy + 9)
-        if self.ma and getattr(self, "ma_now", None):  # 그 봉의 이동평균 값
-            x, yy = 8, 30
-            bg2 = self.create_rectangle(0, 0, 0, 0, fill=T.GROUND, outline="", tags="xh")
-            for p in self.ma:
-                m = self.ma_now.get(p, [None] * len(self.data))[i]
-                tid = self.create_text(x, yy, text=f"MA{p} {T.fmtp(m) if m else '-'}", fill=self.MA_COLORS.get(p, T.MUTED),
-                                       font=T.F["num_xs"], anchor="w", tags="xh")
-                x = self.bbox(tid)[2] + 10
-            self.coords(bg2, 4, yy - 8, x, yy + 8)
+            self.tag(cx, bot + self.TIME_H / 2 + 1, t[5:16], self.TAGBG, fg=self.TAGFG, anchor="w", tags="xh")
+        self.header(i)
 
 
 class SummaryBar(tk.Frame):

@@ -570,7 +570,6 @@ class App:
         self.chart_cache, self.chart_fetch, self.chart_busy, self.chart_key = {}, {}, set(), None
         self.c_chart = W.Candles(c, height=420, zoom=True, ma=(5, 20, 60, 120), view=80,
                                  on_need_older=lambda: self.chart_load(self.sel_coin, self.chart_tf, older=True))
-        self.c_chart.hint = "휠 확대·축소 · 끌어서 과거 · 두 번 클릭 최신"
         self.c_ruler = W.Ruler(c)
         self.c_ruler.pack(fill="both", expand=True)
         if self.cfg["ui"]["chart_1b"]:
