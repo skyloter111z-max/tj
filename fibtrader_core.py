@@ -68,6 +68,8 @@ DEFAULTS = {
         "total_max_krw": 1_500_000, # 자동매매 전체 원가 한도 (여러 코인이 같이 빠질 때)
         "reinvest": True,           # 수익 재투자: 실현 수익만큼 전체 한도를 늘린다 (내 돈은 설정한 한도까지만)
         "auto_exit_warning": True,  # 투자유의(상장폐지 심사) 지정되면 자동매매 보유분을 바로 청산
+        # 업비트 "주의" 중 새 매수를 쉬는 종류 (상장폐지 사유 아님, 보유분은 그대로). 입금량 급증은 쉬지 않는다.
+        "caution_block": ["PRICE_FLUCTUATIONS", "TRADING_VOLUME_SOARING", "GLOBAL_PRICE_DIFFERENCES", "CONCENTRATION_OF_SMALL_ACCOUNTS"],
         "cash_warn": 7_000_000,     # 현금 보호 (실전): 주문 가능 원화가 이 아래면 '주의' 알림 (코인 모으기 줄이기)
         "cash_floor_start": 4_000_000,  # 이 아래로 내려가면 새 코인 시작 매수 중지 (물타기는 계속) + 모으기 중지 알림
         "cash_floor_all": 2_000_000,    # 이 아래로 내려가면 자동매매 매수 전부 중지 (매도는 계속)
@@ -274,6 +276,10 @@ def journal_summary(trades, key):
             a["cycles"] += 1 if t.get("full") else 0
         a["fee"] += t["fee"]
     return agg
+
+
+CAUTION_NAMES = {"PRICE_FLUCTUATIONS": "가격 급등락", "TRADING_VOLUME_SOARING": "거래량 급등", "DEPOSIT_AMOUNT_SOARING": "입금량 급등",
+                 "GLOBAL_PRICE_DIFFERENCES": "해외 가격 차이", "CONCENTRATION_OF_SMALL_ACCOUNTS": "소수 계정 거래 집중"}
 
 
 def make_api():
@@ -946,7 +952,8 @@ class Engine(threading.Thread):
             ev = (m or {}).get("market_event") or {}
             gone = m is None
             designated = not gone and (m.get("market_warning") == "CAUTION" or bool(ev.get("warning")))
-            caution = [k for k, v in (ev.get("caution") or {}).items() if v]
+            watch = g.get("caution_block", DEFAULTS["grid"]["caution_block"])
+            caution = [k for k, v in (ev.get("caution") or {}).items() if v and k in watch]
             st = self.grid_state(coin)
             block = gone or designated or bool(caution)
             if designated and st["qty"] > 0 and not st.get("pending") and g.get("auto_exit_warning", True):
@@ -956,14 +963,16 @@ class Engine(threading.Thread):
                     t = fr.get(f"/ticker?markets=KRW-{coin}")
                     self.prices[coin] = t[0]["trade_price"]
                 self.grid_liquidate(coin)  # 파는 것은 막지 않는다 (blocked여도 청산)
-            if block and not st.get("blocked"):
-                st["blocked"] = True
+            kind = "gone" if gone else "warning" if designated else "caution" if caution else None
+            if block and (not st.get("blocked") or st.get("blocked_why") != kind):
+                st["blocked"], st["blocked_why"] = True, kind
                 why = ("원화마켓에서 사라짐 (매매 불가)" if gone else "투자유의 지정 (상장폐지 심사 대상)" if designated
-                       else "주의 지정: " + ", ".join(caution))
-                self.alert("fail", f"{coin} 자동매매 새 매수 중지", f"{why}. " + ("" if designated else "보유분은 그대로 두었습니다."))
+                       else "업비트 주의: " + ", ".join(CAUTION_NAMES.get(k, k) for k in caution))
+                self.alert("fail", f"{coin} 자동매매 새 매수 중지", f"{why}. " + ("" if designated else "보유분은 그대로 두고 익절 주문도 유지합니다."))
             elif not block and st.get("blocked"):
                 st["blocked"] = False
-                self.alert("grid", f"{coin} 자동매매 재개", "업비트 지정이 풀렸습니다.")
+                st.pop("blocked_why", None)
+                self.alert("grid", f"{coin} 자동매매 재개", "업비트 지정이 풀렸거나 새 매수를 쉬지 않는 종류(입금량 급증 등)입니다.")
 
     def grid_dip(self, force=False):
         """자동매매 감시 (5분마다): 추천 목록 중 자동매매 목록에 없는 코인을 지켜보다가, 전일 대비 min~max% 떨어지고
@@ -1743,7 +1752,7 @@ class Engine(threading.Thread):
             tp = (self.cycle_profit(st) + st["cost"] - st["realized"]) / (q * (1 - FEE)) if q else None
             t = time.time()
             status = ("결과 확인 중" if st.get("pending") else "조회만 · 매매 안 함" if coin not in listed
-                      else "투자유의 중지" if st.get("blocked")
+                      else ("투자유의 중지" if st.get("blocked_why") in (None, "warning", "gone") else "주의 · 새 매수 쉼") if st.get("blocked")
                       else "새 시작 쉼" if q <= 0 and not st.get("bid") and (self.btc_bear or (False,))[0]
                       else f"정지 {int((st['pause_until'] - t) // 60) + 1}분" if st.get("pause_until", 0) > t else "자동매매 중")
             rows.append({"status": status, "listed": coin in listed, "auto": bool(st.get("auto")), "coin": coin, "price": p, "buys": st["buys"], "cost": st["cost"], "qty": q, "avg": avg,

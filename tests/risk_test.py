@@ -237,7 +237,15 @@ flags = {"ADA": {"warning": False, "caution": {"PRICE_FLUCTUATIONS": True}}}
 fr.get = lambda path: ([{"market": "KRW-ADA", "market_event": flags["ADA"]}] if path.startswith("/market/all") else orig_get(path))
 e.grid_check_warnings(force=True)
 st = e.grid_state("ADA")
-ok(st["qty"] > 0 and st.get("blocked"), "18a 주의(가격 급등락) 지정: 새 매수만 중지, 보유분 유지")
+ok(st["qty"] > 0 and st.get("blocked") and e.grid_view()[0]["status"] == "주의 · 새 매수 쉼",
+   "18a 주의(가격 급등락) 지정: 새 매수만 중지, 보유분 유지, 화면은 '주의 · 새 매수 쉼'")
+flags["ADA"] = {"warning": False, "caution": {"DEPOSIT_AMOUNT_SOARING": True}}
+e.grid_check_warnings(force=True)
+ok(st["qty"] > 0 and not st.get("blocked") and e.grid_view()[0]["status"] == "자동매매 중",
+   "18c 입금량 급등만 있으면 새 매수를 쉬지 않음 (상장폐지 사유 아님)")
+flags["ADA"] = {"warning": False, "caution": {"TRADING_VOLUME_SOARING": True, "DEPOSIT_AMOUNT_SOARING": True}}
+e.grid_check_warnings(force=True)
+ok(st.get("blocked") and st.get("blocked_why") == "caution", "18d 거래량 급등이 같이 있으면 새 매수 쉼")
 flags["ADA"] = {"warning": True, "caution": {}}
 e.grid_check_warnings(force=True)
 ok(st["qty"] == 0 and "ADA" not in cfg["grid"]["coins"] and ex.bal["ADA"] < 1e-9, "18b 투자유의 지정: 자동매매 보유분 즉시 청산, 목록에서 제외")

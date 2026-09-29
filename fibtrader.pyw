@@ -1647,7 +1647,7 @@ class App:
             return "avg"
         return "ok"
 
-    STATUS_BADGE = {"투자유의 중지": T.UP, "결과 확인 중": T.ACCENT, "시세 대기": T.MUTED, "새 시작 쉼": T.WARN}
+    STATUS_BADGE = {"투자유의 중지": T.UP, "주의 · 새 매수 쉼": T.WARN, "결과 확인 중": T.ACCENT, "시세 대기": T.MUTED, "새 시작 쉼": T.WARN}
 
     @staticmethod
     def upbit_pnl(r, p):
