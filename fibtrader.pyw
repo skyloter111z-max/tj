@@ -6,6 +6,7 @@
 화면 디자인: 다크 테마, 현황 1b(선택 집중) + 통합 앱 사양 12장 (디자인 스펙 md 기준)
 """
 import ctypes
+import datetime
 import os
 import queue
 import re
@@ -15,6 +16,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
+import urllib.parse
 from tkinter import messagebox, ttk
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -558,10 +560,17 @@ class App:
             self.c_ma.append(parts)
         ct = tk.Frame(c, bg=g)
         ct.pack(fill="x", pady=(14, 6))
-        lab(ct, "4H 캔들 · 피보나치 레벨", "kr_xs", fg=T.MUTED, bg=g).pack(side="left")
+        lab(ct, "캔들 · 피보나치 레벨", "kr_xs", fg=T.MUTED, bg=g).pack(side="left")
         self.c_chart_btn = T.Btn(ct, "차트 ▾", self.toggle_center_chart, "ghost", bg=g)
         self.c_chart_btn.pack(side="right")
-        self.c_chart = W.Candles(c, height=380)
+        tf = self.cfg["ui"].get("chart_tf", "4시간")
+        self.chart_tf = tf if tf in self.CHART_TF else "4시간"
+        self.c_tf = W.Segmented(ct, list(self.CHART_TF), self.chart_tf, self.set_chart_tf, bg=g, padx=7)
+        self.c_tf.pack(side="right", padx=(0, 10))
+        self.chart_cache, self.chart_fetch, self.chart_busy, self.chart_key = {}, {}, set(), None
+        self.c_chart = W.Candles(c, height=420, zoom=True, ma=(5, 20, 60, 120), view=80,
+                                 on_need_older=lambda: self.chart_load(self.sel_coin, self.chart_tf, older=True))
+        self.c_chart.hint = "휠 확대·축소 · 끌어서 과거 · 두 번 클릭 최신"
         self.c_ruler = W.Ruler(c)
         self.c_ruler.pack(fill="both", expand=True)
         if self.cfg["ui"]["chart_1b"]:
@@ -630,6 +639,85 @@ class App:
             self.c_chart.pack_forget()
         self.c_chart_btn.config(text="차트 ▴" if on else "차트 ▾")
         self.render_board()
+
+    # 현황 차트: 업비트처럼 시간 단위를 고르고, 휠로 확대·축소, 끌어서 과거 보기 (끝에 닿으면 더 옛날 봉을 불러옴)
+    CHART_TF = {"1분": ("minutes/1", 1), "5분": ("minutes/5", 5), "15분": ("minutes/15", 15), "1시간": ("minutes/60", 60),
+                "4시간": ("minutes/240", 240), "일": ("days", 1440), "주": ("weeks", 10080)}
+    CHART_MAX = 10000  # 코인·단위마다 기억하는 최대 봉 수
+
+    def set_chart_tf(self, tf):
+        self.chart_tf = tf
+        self.cfg["ui"]["chart_tf"] = tf
+        core.save_config(self.cfg)
+        self.render_chart()
+
+    def chart_load(self, coin, tf, older=False):
+        """업비트 캔들 200개를 뒤에서 받아 온다 (older면 가진 것보다 옛날 200개)."""
+        key = (coin, tf)
+        if key in self.chart_busy:
+            return
+        cur = self.chart_cache.get(key, [])
+        if older and not cur:
+            return
+        self.chart_busy.add(key)
+        self.chart_fetch[key] = time.time()
+        path = f"/candles/{self.CHART_TF[tf][0]}?market=KRW-{coin}&count=200"
+        if older:
+            path += "&to=" + urllib.parse.quote(f"{cur[0][4]}:00+09:00")
+
+        def work():
+            try:
+                rows = fr.get(path)
+            except Exception:  # noqa: BLE001 — 차트는 못 불러와도 매매에는 영향 없음 (다음에 다시)
+                rows = None
+            self.ui_calls.put(lambda: self.chart_got(key, rows, older))
+        threading.Thread(target=work, daemon=True).start()
+
+    def chart_got(self, key, rows, older):
+        self.chart_busy.discard(key)
+        if rows is None:
+            if older:
+                self.chart_fetch[key] = 0.0
+            self.c_chart.loading = False
+            return
+        merged = {c[4]: c for c in self.chart_cache.get(key, [])}
+        for r in rows:
+            c = core.candle_row(r)
+            merged[c[4]] = c
+        cs = [merged[t] for t in sorted(merged)]
+        self.chart_cache[key] = cs[-self.CHART_MAX:]
+        if key == (self.sel_coin, self.chart_tf):
+            self.render_chart()
+
+    def render_chart(self):
+        if not self.cfg["ui"]["chart_1b"]:
+            return
+        coin, tf = self.sel_coin, self.chart_tf
+        key = (coin, tf)
+        reset = key != self.chart_key
+        self.chart_key = key
+        if time.time() - self.chart_fetch.get(key, 0.0) > 60:  # 1분마다 최신 봉 다시 받기
+            self.chart_load(coin, tf)
+        cs = list(self.chart_cache.get(key, []))
+        p = self.prices.get(coin)
+        if p and cs:  # 마지막 봉은 실시간 가격으로, 새 봉 시간이 되면 새 봉을 붙인다
+            step = datetime.timedelta(minutes=self.CHART_TF[tf][1])
+            last = datetime.datetime.fromisoformat(cs[-1][4])
+            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).replace(tzinfo=None)
+            k = int((now - last) / step) if now >= last else 0
+            if k >= 1 and tf != "주":  # (주봉은 월요일 기준이라 1분 뒤 새로 받는 값에 맡김)
+                cs.append((p, p, p, p, (last + step * k).strftime("%Y-%m-%dT%H:%M"), 0.0))
+            else:
+                o, h, l, _c, *rest = cs[-1]
+                cs[-1] = (o, max(h, p), min(l, p), p, *rest)
+        pg = self.cfg["progress"][coin]
+        lv = self.cfg.get("levels", {}).get(coin, {})
+        sd, bd = pg["sell_done"], pg["buy_done"]
+        s1 = lv.get("sells", [])[sd] if sd < len(lv.get("sells", [])) else None
+        b1 = lv.get("buys", [])[bd] if bd < len(lv.get("buys", [])) else None
+        self.c_chart.set(cs, [(f"{sd + 1}차 매도", s1, T.DOWN, False), ("현재가", p, T.LINE_NOW, True),
+                              (f"{bd + 1}차 매수", b1, T.UP, False)],
+                         f"{tf}봉", reset=reset)
 
     def select_coin(self, coin):
         if coin not in fr.COINS:  # 자동매매 코인은 자동매매 탭에서
@@ -800,17 +888,7 @@ class App:
             parts[1].config(text=f"{side} {dist:+.1f}%", fg=T.UP if side == "위" else T.DOWN)
             parts[2].config(text=f"기울기 {slope:+.2f}%", fg=T.TEXT)
             parts[3].config(text=f"RSI {rsi:.0f}", fg=T.TEXT)
-        if self.cfg["ui"]["chart_1b"] and b.get("candles"):
-            lv = self.cfg.get("levels", {}).get(coin, {})
-            sd, bd = pg["sell_done"], pg["buy_done"]
-            s1 = lv.get("sells", [])[sd] if sd < len(lv.get("sells", [])) else None
-            b1 = lv.get("buys", [])[bd] if bd < len(lv.get("buys", [])) else None
-            cs = list(b["candles"])
-            if p and cs:  # 마지막 봉은 실시간 가격으로
-                o, h, l, _c, *rest = cs[-1]
-                cs[-1] = (o, max(h, p), min(l, p), p, *rest)
-            self.c_chart.set(cs, [(f"{sd + 1}차 매도", s1, T.DOWN, False), ("현재가", p, T.LINE_NOW, True),
-                                  (f"{bd + 1}차 매수", b1, T.UP, False)], "4h · 48봉")
+        self.render_chart()
         self.c_ruler.set(self.ruler_rows(coin))
 
     def render_side(self, coin):
