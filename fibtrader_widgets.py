@@ -282,7 +282,8 @@ class Candles(tk.Canvas):
         self.mx, self.drag, self.loading = None, None, False
         self.bind("<Configure>", lambda e: self.draw())
         self.bind("<Motion>", self.hover)
-        self.bind("<Leave>", lambda e: (self.delete("xh"), self.header(len(self.data) - 1)))
+        self.hov = None  # 마우스가 차트 위에 있으면 그 위치 (실시간 가격으로 다시 그려도 정보 상자를 유지)
+        self.bind("<Leave>", self.leave)
         if zoom:
             self.on_wheel = self.wheel  # install_wheel이 포인터 아래 위젯의 on_wheel을 부른다
             self.bind("<ButtonPress-1>", self.press)
@@ -520,6 +521,9 @@ class Candles(tk.Canvas):
                 self.tag(px1 - 4, pbot - 8 - j * 16, f"{lb} {T.fmtp(pr)} ▼ {(pr / vis[-1][3] - 1) * 100:+.1f}%", self.BG, fg=col, anchor="e")
         self.create_text(w - 6, h - 3, text=self.unit, fill=self.TXT, font=T.F["num_xs"], anchor="se")
         self.header(len(self.data) - 1)
+        if self.hov:  # 실시간 가격 때문에 다시 그려도 마우스가 올라가 있으면 십자선·정보 상자를 그대로
+            ev = type("E", (), {"x": self.hov[0], "y": self.hov[1]})
+            self.hover(ev)
 
     def countdown(self):
         """마지막 봉이 닫힐 때까지 남은 시간 (분·시간봉: 00:12:34, 일·주봉: 3일 04:10)."""
@@ -567,10 +571,16 @@ class Candles(tk.Canvas):
                                        font=T.F["num_xs"], anchor="w", tags="hdr")
                 x = self.bbox(tid)[2] + 10
 
+    def leave(self, e):
+        self.hov = None
+        self.delete("xh")
+        self.header(len(self.data) - 1)
+
     def hover(self, e):
         """십자선 + 가격·시간 태그, 왼쪽 위 정보 줄은 그 봉 값으로."""
         self.delete("xh")
         self.mx = e.x
+        self.hov = (e.x, e.y)
         if not self.data or not self.geom:
             return
         x0, slot, top, pbot, lo, hi, px1, bot = self.geom

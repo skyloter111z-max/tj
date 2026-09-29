@@ -11,3 +11,4 @@ fibtrader_widgets.py
 fibtrader.pyw
 sleep.bat
 game.bat
+tg_test.bat

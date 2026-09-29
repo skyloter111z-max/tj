@@ -10,6 +10,7 @@ import os
 import queue
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -23,10 +24,34 @@ HELP = ("FibTrader 조회 전용 봇입니다 (주문·설정 변경은 안 됩�
         "매매·체결·오류 알림은 자동으로 옵니다. 매일 09시에 어제 요약을 보냅니다.")
 
 
+def env(name):
+    """환경변수. 프로그램이 setx보다 먼저 켜진 창(탐색기·트레이)에서 실행되면 새 값이 안 보이므로,
+    없으면 윈도우 사용자 환경변수(레지스트리 HKCU\\Environment)에서 직접 읽는다."""
+    v = os.environ.get(name, "").strip()
+    if v or os.name != "nt":
+        return v
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+            return str(winreg.QueryValueEx(k, name)[0]).strip()
+    except OSError:
+        return ""
+
+
+def why(e):
+    """오류를 사람이 알아볼 말로 (토큰이 섞인 주소는 절대 넣지 않는다)."""
+    if isinstance(e, urllib.error.HTTPError):
+        return {401: "토큰이 틀림 (BotFather 토큰 다시 확인)", 404: "토큰이 틀림 (BotFather 토큰 다시 확인)",
+                409: "같은 봇을 다른 곳에서도 켜 둠 (FibTrader 두 개?)"}.get(e.code, f"텔레그램 오류 {e.code}")
+    if isinstance(e, urllib.error.URLError):
+        return "텔레그램 서버에 연결 안 됨 (인터넷·방화벽·백신 확인)"
+    return type(e).__name__
+
+
 class Telegram:
     def __init__(self, on_command, token=None, chat_id=None):
-        self.token = token if token is not None else os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-        chat = chat_id if chat_id is not None else os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+        self.token = token if token is not None else env("TELEGRAM_BOT_TOKEN")
+        chat = chat_id if chat_id is not None else env("TELEGRAM_CHAT_ID")
         self.chat = str(chat) if chat else ""
         self.enabled = bool(self.token)
         self.on_command = on_command  # (명령 이름) → 엔진에 요청 (엔진 스레드에서 글을 만들어 send로 보냄)
@@ -89,7 +114,7 @@ class Telegram:
                 self.status = "연결됨"
                 return
             except Exception as e:  # noqa: BLE001 — 어떤 오류든 봇 스레드가 죽지 않게. 오류 글에 주소(토큰 포함)가 섞이지 않게 종류만 남긴다
-                self.status = f"보내기 실패 ({type(e).__name__})"
+                self.status = f"보내기 실패: {why(e)}"
                 time.sleep(2 * (i + 1))
 
     # ---- 받기 (명령) ----
@@ -105,9 +130,9 @@ class Telegram:
                 if self.offset is not None:
                     params["offset"] = self.offset
                 updates = self.call("getUpdates", params, timeout=35)
-                self.status = "연결됨"
+                self.status = "연결됨" if self.chat else "연결됨 · 채팅 번호 없음 (봇에게 아무 말이나 보내면 번호를 답해 줌)"
             except Exception as e:  # noqa: BLE001 — 네트워크가 끊겨도 다시 시도 (봇 스레드가 죽지 않게)
-                self.status = f"연결 실패 ({type(e).__name__}) · 다시 시도"
+                self.status = f"연결 실패: {why(e)} · 다시 시도 중"
                 self.stop_event.wait(10)
                 continue
             for u in updates:
@@ -145,3 +170,52 @@ class Telegram:
 
     def stop(self):
         self.stop_event.set()
+
+
+def self_test():
+    """C:\\fib\\tg_test.bat 로 실행: 토큰·봇·채팅 번호를 하나씩 확인한다 (토큰 값은 절대 화면에 안 보임)."""
+    t = Telegram(lambda cmd: None)
+    print("1) 토큰(TELEGRAM_BOT_TOKEN):", "있음" if t.token else "없음 → setx TELEGRAM_BOT_TOKEN \"BotFather가 준 토큰\" 입력 후 다시")
+    if not t.token:
+        return
+    if ":" not in t.token:
+        print("   토큰 모양이 이상합니다. BotFather 토큰은 '숫자:영문' 모양입니다 (앞뒤 따옴표·공백 없이).")
+    try:
+        me = t.call("getMe", {}, timeout=15)
+        print(f"2) 봇 연결: 성공 → @{me.get('username')} ({me.get('first_name')})  ← 텔레그램에서 이 봇과 대화하세요")
+    except Exception as e:  # noqa: BLE001
+        print("2) 봇 연결: 실패 →", why(e))
+        return
+    print("3) 채팅 번호(TELEGRAM_CHAT_ID):", t.chat or "없음")
+    try:
+        ups = t.call("getUpdates", {"timeout": 0}, timeout=15)
+        chats = {}
+        for u in ups:
+            ch = (u.get("message") or {}).get("chat") or {}
+            if ch.get("id"):
+                chats[str(ch["id"])] = ch.get("first_name") or ch.get("title") or ""
+        if chats:
+            for cid, name in chats.items():
+                print(f"   최근 봇에게 말 건 채팅: {cid} ({name})" + ("  ← 설정된 번호와 같음" if cid == t.chat else ""))
+            if not t.chat:
+                cid = next(iter(chats))
+                print(f"   → 명령 프롬프트에 입력:  setx TELEGRAM_CHAT_ID {cid}   그다음 FibTrader를 트레이에서 종료 후 다시 켜기")
+        elif not t.chat:
+            print("   아직 봇에게 온 메시지가 없습니다. 텔레그램에서 위 봇에게 '안녕'을 보낸 뒤 이 창을 다시 실행하세요.")
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            print("   (FibTrader가 켜져 있어 메시지는 FibTrader가 받는 중 → 정상. 번호 확인이 필요하면 FibTrader를 끄고 다시 실행)")
+        else:
+            print("   메시지 확인 실패 →", why(e))
+    except Exception as e:  # noqa: BLE001
+        print("   메시지 확인 실패 →", why(e))
+    if t.chat:
+        try:
+            t.call("sendMessage", {"chat_id": t.chat, "text": "FibTrader 텔레그램 테스트: 이 메시지가 보이면 알림 연결 성공입니다."}, timeout=15)
+            print("4) 테스트 메시지 보내기: 성공 → 휴대폰 텔레그램을 확인하세요")
+        except Exception as e:  # noqa: BLE001
+            print("4) 테스트 메시지 보내기: 실패 →", why(e), "(채팅 번호가 틀렸거나, 봇에게 먼저 말을 안 걸었음)")
+
+
+if __name__ == "__main__":
+    self_test()

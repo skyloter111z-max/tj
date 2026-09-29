@@ -2688,6 +2688,13 @@ class App:
         T.Btn(r1, "바탕화면 바로가기 만들기", self.desktop_link).pack(side="left")
         T.Btn(r1, "PC 켤 때 자동 실행", self.startup_link).pack(side="left", padx=8)
         T.Btn(kb, "자동 실행 해제", self.remove_startup).pack(anchor="w", pady=(8, 0))
+        tg = tk.Frame(kb, bg=T.PANEL)
+        tg.pack(fill="x", pady=(12, 0))
+        lab(tg, "텔레그램", "kr_s").pack(side="left")
+        T.Btn(tg, "테스트 메시지", self.tg_test).pack(side="right")
+        self.tg_label = lab(kb, "", "kr_xs", fg=T.MUTED, wraplength=360, justify="left")
+        self.tg_label.pack(anchor="w", pady=(4, 0))
+        self.update_tg_label()
 
         self.settings_snapshot = self.settings_values()
         self.saved_at = time.strftime("%H:%M")
@@ -2840,6 +2847,26 @@ class App:
             os.remove(path)
         messagebox.showinfo("FibTrader", "자동 실행을 해제했습니다.")
 
+    def update_tg_label(self):
+        tg = getattr(self.engine, "tg", None)
+        if tg is None or not hasattr(self, "tg_label"):
+            return
+        ok = tg.status.startswith("연결됨") and tg.chat
+        self.tg_label.config(text=tg.status, fg=T.DOWN if ok else T.UP if tg.enabled else T.MUTED)
+
+    def tg_test(self):
+        tg = self.engine.tg
+        if not tg.enabled:
+            messagebox.showinfo("텔레그램", "토큰이 없습니다.\n명령 프롬프트에서 setx TELEGRAM_BOT_TOKEN \"토큰\" 입력 후 FibTrader를 다시 켜세요.\n"
+                                "자세한 확인은 C:\\fib\\tg_test.bat 을 실행하세요.")
+        elif not tg.chat:
+            messagebox.showinfo("텔레그램", "채팅 번호가 없습니다.\n텔레그램에서 봇에게 아무 말이나 보내면 채팅 번호를 답해 줍니다.\n"
+                                "답이 없으면 C:\\fib\\tg_test.bat 을 실행해 화면을 캡처해 주세요.")
+        else:
+            tg.send("FibTrader 테스트 메시지: 이게 보이면 알림 연결 성공입니다.")
+            self.show_notice("텔레그램 테스트 메시지를 보냈습니다 (몇 초 뒤 도착)")
+        self.update_tg_label()
+
     # ---------------- 이벤트 처리 ----------------
     def set_status(self, text):
         err = "오류" in text
@@ -2849,6 +2876,7 @@ class App:
         src = getattr(getattr(self, "feed", None), "source", "")
         self.status.config(text=f"{api} · 시세 {src} · {ts} 확인" if not err else text[:80], fg=T.UP if err else T.MUTED)
         self.status_dot.config(fg=T.UP if err or not self.engine.api else T.DOWN)
+        self.update_tg_label()
         self.refresh_chrome()
 
     def check_stale_status(self):
