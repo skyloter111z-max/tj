@@ -926,3 +926,44 @@ msgs = [e.tg.out.get_nowait()[1] for _ in range(e.tg.out.qsize())]
 ok("[자동매매" in txt and "ADA 330" in txt and "2회" in txt and "매수 2번" in day and any("물타기" in m for m in msgs),
    "G1d 현황·오늘 글 생성, 매수 알림은 텔레그램으로도 보냄")
 fr.get = orig_get
+
+# T12 장부 3판 바로잡기: 새 설정(2.5만·1.1배·5%)으로 시작했는데 2판 이전에 1.5배·3%로 도장된 사이클(ADA)만 새 설정으로,
+#     예전 1회 금액(1만)으로 시작한 사이클(SOL)·이미 제대로 도장된 사이클(XLM)·끝난 사이클은 그대로
+base = {"unit_krw": 25000, "profit_krw": 1250, "multiplier": 1.1, "drop_pct": 5.0, "wide_after": 15, "wide_drop_pct": 8.0}
+cases = [
+    ({**base, "cycle_v": 2, "state": {
+        "ADA": {"qty": 75.3, "cost": 25012.5, "buys": 1, "ref": 332.0, "unit": 25000, "profit": 1250, "mult": 1.5, "drop": 3.0},
+        "SOL": {"qty": 0.2, "cost": 32500.0, "buys": 3, "ref": 162000.0, "unit": 10000, "profit": 500, "mult": 1.5, "drop": 3.0},
+        "XLM": {"qty": 80.0, "cost": 25012.5, "buys": 1, "ref": 313.0, "unit": 25000, "profit": 1250, "mult": 1.1, "drop": 5.0,
+                "wide_after": 15, "wide_drop": 8.0},
+        "BCH": {"qty": 0.0, "cost": 0.0, "buys": 0, "unit": 25000, "mult": 1.5, "drop": 3.0}}},
+     {"ADA": (1.1, 5.0, 15), "SOL": (1.5, 3.0, None), "XLM": (1.1, 5.0, 15), "BCH": (1.5, 3.0, None)}),
+    ({**base, "state": {  # 1판(도장 전)에서 바로 올라오는 경우도 같은 결과
+        "ADA": {"qty": 75.3, "cost": 25012.5, "buys": 1, "ref": 332.0, "unit": 25000, "profit": 1250},
+        "SOL": {"qty": 0.2, "cost": 32500.0, "buys": 3, "ref": 162000.0, "unit": 10000, "profit": 500}}},
+     {"ADA": (1.1, 5.0, 15), "SOL": (1.5, 3.0, None)}),
+]
+for saved, want in cases:
+    d = tempfile.mkdtemp(); core.CONFIG_PATH = os.path.join(d, "c.json")
+    open(core.CONFIG_PATH, "w", encoding="utf-8").write(json.dumps({"grid": saved}))
+    c = core.load_config()
+    got = {k: (v.get("mult"), v.get("drop"), v.get("wide_after")) for k, v in c["grid"]["state"].items()}
+    ok(got == want and c["grid"]["cycle_v"] == 3, f"T12a 장부 바로잡기 {got}")
+    e12 = core.Engine(c, core.DB(os.path.join(d, "t.db")), queue.Queue())
+    ada_st = c["grid"]["state"]["ADA"]
+    ok(e12.grid_next_amount(ada_st) == 27500 and abs(e12.cycle_drop(ada_st) - 0.05) < 1e-12,
+       f"T12b ADA 다음 물타기 {e12.grid_next_amount(ada_st):,}원 · {e12.cycle_drop(ada_st) * 100:g}% 아래 (2.75만 · 5%)")
+    sol_st = c["grid"]["state"]["SOL"]
+    ok(e12.grid_next_amount(sol_st) == 33750 and abs(e12.cycle_drop(sol_st) - 0.03) < 1e-12 and abs(e12.grid_be_qty(sol_st, 162000) * 162000 - 15000) < 1,
+       f"T12c SOL(예전 사이클) 다음 물타기 {e12.grid_next_amount(sol_st):,}원 · 3%, 본전 매도 1.5만어치 그대로")
+# T12d 바로잡은 뒤 다음 확인 때: 업비트에 걸려 있던 예전 물타기 주문(3% 아래·1.5배)을 취소하고 새 기준(5% 아래·1.1배)으로 다시 건다
+e, ex, cfg = lmk(limit_add=True, multiplier=1.5, drop_pct=3.0)
+lstep(e, ex, 340)
+b0 = [o for o in ex.open.values() if o["side"] == "bid"]
+st = e.grid_state("ADA"); st.update(mult=1.1, drop=5.0, wide_after=15, wide_drop=8.0)
+lstep(e, ex, 338)
+b = [o for o in ex.open.values() if o["side"] == "bid"]
+ok(len(b0) == 1 and float(b0[0]["price"]) == 329 and len(b) == 1 and float(b[0]["price"]) == 323
+   and abs(float(b[0]["volume"]) * 323 - 11000) < 5 and books_ok(e, ex),
+   f"T12d 예전 주문 {b0[0]['price'] if b0 else '-'}원 취소 → {b[0]['price'] if b else '-'}원에 1.1만 다시 걸림")
+fr.get = orig_get

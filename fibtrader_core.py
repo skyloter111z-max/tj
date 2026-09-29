@@ -62,7 +62,8 @@ DEFAULTS = {
         "be_sell": "prev",          # 본전에서 파는 양: "prev" = 직전 단계 금액어치(2회 1회 금액, 3회 1회×배수, 4회 1회×배수² …),
                                     # "unit" = 1회 금액(시작 매수 금액)어치, "half" = 보유의 절반
         "be_sell_v": 2,             # 설정 판: 1 → 2 때 "unit"을 "prev"로 한 번 바꿈
-        "cycle_v": 2,               # 장부 판: 1 → 2 때 진행 중 사이클에 배수·하락 도장 (그전 사이클은 모두 1.5배·3%로 시작)
+        "cycle_v": 3,               # 장부 판: 1 → 2 때 진행 중 사이클에 배수·하락 도장 (그전 사이클은 모두 1.5배·3%로 시작),
+                                    # 2 → 3 때 지금 1회 금액으로 시작한 사이클은 지금 배수·하락으로 바로잡음
         "limit_tp": True,           # 실전: 매수 직후 익절가(본전 절반 포함)에 지정가 매도를 걸어 둔다. 추가 매수 때 취소 후 다시 건다
         "max_krw": 500_000,         # 코인별 최대 투입(보유 원가) 한도
         "total_max_krw": 1_500_000, # 자동매매 전체 원가 한도 (여러 코인이 같이 빠질 때)
@@ -141,6 +142,17 @@ def load_config():
                 if st.get("qty", 0) > 0 and "mult" not in st:
                     st["mult"], st["drop"] = 1.5, 3.0
             cfg["grid"]["cycle_v"] = 2
+        if saved.get("grid", {}).get("cycle_v", 1) < 3:
+            # 2판 이전 때 1.5배·3%로 도장한 사이클 중, 1회 금액이 지금 설정과 같은 것은 지금 설정(1.1배·5% 등)으로 바꾼 뒤 시작한 사이클이다
+            # (예: 2.5만으로 시작한 ADA가 1.5배·3%로 잘못 도장됨). 예전 1회 금액(1만·2만)으로 시작한 사이클은 그대로 둔다.
+            g = cfg["grid"]
+            cur = (max(1.0, float(g.get("multiplier", 1.0))), float(g["drop_pct"]))
+            for st in g.get("state", {}).values():
+                if (st.get("qty", 0) > 0 and st.get("unit") == g["unit_krw"] and (st.get("mult"), st.get("drop")) == (1.5, 3.0)
+                        and "wide_after" not in st and cur != (1.5, 3.0)):
+                    st["mult"], st["drop"] = cur
+                    st["wide_after"], st["wide_drop"] = int(g.get("wide_after", 0)), float(g.get("wide_drop_pct", 0.0))
+            g["cycle_v"] = 3
         cfg["grid"]["dip"] = dip = {**DEFAULTS["grid"]["dip"], **saved.get("grid", {}).get("dip", {})}
         if dip["pool"] == OLD_DIP_POOL:  # 예전 기본 20개를 안 고치고 썼으면 대형 10개로 바꾼다
             dip["pool"] = list(DIP_POOL)
@@ -1820,7 +1832,7 @@ class Engine(threading.Thread):
             p, ch = tick.get(r["coin"], (r["price"], None))
             if r["qty"]:
                 u = r["qty"] * (p or 0) - r["cost"] / (1 + FEE)
-                lines.append(f"{r['coin']} {fmtp(p)}{arrow(ch)} · {r['buys']}회 {r['cost'] / 1e4:,.1f}만 · {u:+,.0f}원"
+                lines.append(f"{r['coin']} {fmtp(p) if p else '-'}{arrow(ch)} · {r['buys']}회 {r['cost'] / 1e4:,.1f}만 · {u:+,.0f}원"
                              + (" · 본전 매도함" if r.get("halved") else ""))
             else:
                 lines.append(f"{r['coin']} {fmtp(p) if p else '-'}{arrow(ch)} · {r['status']}")

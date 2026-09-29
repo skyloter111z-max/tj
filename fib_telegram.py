@@ -10,7 +10,6 @@ import os
 import queue
 import threading
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -89,8 +88,7 @@ class Telegram:
                 self.call("sendMessage", {"chat_id": chat, "text": text, "disable_web_page_preview": "true"}, timeout=20)
                 self.status = "연결됨"
                 return
-            except (urllib.error.URLError, OSError, ValueError, RuntimeError) as e:
-                # 오류 글에 주소(토큰 포함)가 섞이지 않게 종류만 남긴다
+            except Exception as e:  # noqa: BLE001 — 어떤 오류든 봇 스레드가 죽지 않게. 오류 글에 주소(토큰 포함)가 섞이지 않게 종류만 남긴다
                 self.status = f"보내기 실패 ({type(e).__name__})"
                 time.sleep(2 * (i + 1))
 
@@ -108,13 +106,16 @@ class Telegram:
                     params["offset"] = self.offset
                 updates = self.call("getUpdates", params, timeout=35)
                 self.status = "연결됨"
-            except (urllib.error.URLError, OSError, ValueError, RuntimeError) as e:
+            except Exception as e:  # noqa: BLE001 — 네트워크가 끊겨도 다시 시도 (봇 스레드가 죽지 않게)
                 self.status = f"연결 실패 ({type(e).__name__}) · 다시 시도"
                 self.stop_event.wait(10)
                 continue
             for u in updates:
                 self.offset = u["update_id"] + 1
-                self.handle(u.get("message") or {})
+                try:
+                    self.handle(u.get("message") or {})
+                except Exception:  # noqa: BLE001 — 이상한 메시지 하나 때문에 봇이 멈추지 않게
+                    pass
 
     def handle(self, m):
         chat = str((m.get("chat") or {}).get("id", ""))
