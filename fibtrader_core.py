@@ -68,8 +68,10 @@ DEFAULTS = {
         "total_max_krw": 1_500_000, # 자동매매 전체 원가 한도 (여러 코인이 같이 빠질 때)
         "reinvest": True,           # 수익 재투자: 실현 수익만큼 전체 한도를 늘린다 (내 돈은 설정한 한도까지만)
         "auto_exit_warning": True,  # 투자유의(상장폐지 심사) 지정되면 자동매매 보유분을 바로 청산
-        # 업비트 "주의" 중 새 매수를 쉬는 종류 (상장폐지 사유 아님, 보유분은 그대로). 입금량 급증은 쉬지 않는다.
-        "caution_block": ["PRICE_FLUCTUATIONS", "TRADING_VOLUME_SOARING", "GLOBAL_PRICE_DIFFERENCES", "CONCENTRATION_OF_SMALL_ACCOUNTS"],
+        # 업비트 "주의" 중 새 매수를 쉬는 종류 (상장폐지 사유 아님, 보유분은 그대로).
+        # 가격 급등락·거래량 급등·입금량 급등·해외 가격 차이는 쉬지 않고, 소수 계정 거래 집중(작전성)만 쉰다.
+        "caution_block": ["CONCENTRATION_OF_SMALL_ACCOUNTS"],
+        "caution_v": 2,             # 설정 판: 1 → 2 때 예전 기본 목록을 새 기본으로 한 번 바꿈
         "cash_warn": 7_000_000,     # 현금 보호 (실전): 주문 가능 원화가 이 아래면 '주의' 알림 (코인 모으기 줄이기)
         "cash_floor_start": 4_000_000,  # 이 아래로 내려가면 새 코인 시작 매수 중지 (물타기는 계속) + 모으기 중지 알림
         "cash_floor_all": 2_000_000,    # 이 아래로 내려가면 자동매매 매수 전부 중지 (매도는 계속)
@@ -131,6 +133,9 @@ def load_config():
             if cfg["grid"].get("be_sell") == "unit":
                 cfg["grid"]["be_sell"] = "prev"
             cfg["grid"]["be_sell_v"] = 2
+        if saved.get("grid", {}).get("caution_v", 1) < 2:  # 예전 기본(4종류 쉼) → 소수 계정 거래 집중만 쉼 (사용자 결정)
+            cfg["grid"]["caution_block"] = list(DEFAULTS["grid"]["caution_block"])
+            cfg["grid"]["caution_v"] = 2
         if saved.get("grid", {}).get("cycle_v", 1) < 2:  # 배수·하락 도장 전에 시작한 사이클 = 1.5배·3% 설정으로 시작한 것 → 끝까지 그 방식
             for st in cfg["grid"].get("state", {}).values():
                 if st.get("qty", 0) > 0 and "mult" not in st:

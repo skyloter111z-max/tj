@@ -233,19 +233,26 @@ ok(e.grid_total_cap() == 20000, "17b 재투자 끄면 설정 한도 그대로")
 e, ex, cfg = mk(unit_krw=10000)
 step(e, ex, 340)
 orig_get = fr.get
-flags = {"ADA": {"warning": False, "caution": {"PRICE_FLUCTUATIONS": True}}}
+flags = {"ADA": {"warning": False, "caution": {"CONCENTRATION_OF_SMALL_ACCOUNTS": True}}}
 fr.get = lambda path: ([{"market": "KRW-ADA", "market_event": flags["ADA"]}] if path.startswith("/market/all") else orig_get(path))
 e.grid_check_warnings(force=True)
 st = e.grid_state("ADA")
 ok(st["qty"] > 0 and st.get("blocked") and e.grid_view()[0]["status"] == "주의 · 새 매수 쉼",
-   "18a 주의(가격 급등락) 지정: 새 매수만 중지, 보유분 유지, 화면은 '주의 · 새 매수 쉼'")
-flags["ADA"] = {"warning": False, "caution": {"DEPOSIT_AMOUNT_SOARING": True}}
+   "18a 주의(소수 계정 거래 집중) 지정: 새 매수만 중지, 보유분 유지, 화면은 '주의 · 새 매수 쉼'")
+flags["ADA"] = {"warning": False, "caution": {"DEPOSIT_AMOUNT_SOARING": True, "PRICE_FLUCTUATIONS": True,
+                                               "TRADING_VOLUME_SOARING": True, "GLOBAL_PRICE_DIFFERENCES": True}}
 e.grid_check_warnings(force=True)
 ok(st["qty"] > 0 and not st.get("blocked") and e.grid_view()[0]["status"] == "자동매매 중",
-   "18c 입금량 급등만 있으면 새 매수를 쉬지 않음 (상장폐지 사유 아님)")
-flags["ADA"] = {"warning": False, "caution": {"TRADING_VOLUME_SOARING": True, "DEPOSIT_AMOUNT_SOARING": True}}
+   "18c 입금량·가격 급등락·거래량·해외 가격 차이는 새 매수를 쉬지 않음 (상장폐지 사유 아님)")
+flags["ADA"] = {"warning": False, "caution": {"TRADING_VOLUME_SOARING": True, "CONCENTRATION_OF_SMALL_ACCOUNTS": True}}
 e.grid_check_warnings(force=True)
-ok(st.get("blocked") and st.get("blocked_why") == "caution", "18d 거래량 급등이 같이 있으면 새 매수 쉼")
+ok(st.get("blocked") and st.get("blocked_why") == "caution", "18d 소수 계정 거래 집중이 같이 있으면 새 매수 쉼")
+for saved, want in (({"caution_block": ["PRICE_FLUCTUATIONS", "TRADING_VOLUME_SOARING", "GLOBAL_PRICE_DIFFERENCES", "CONCENTRATION_OF_SMALL_ACCOUNTS"]},
+                     ["CONCENTRATION_OF_SMALL_ACCOUNTS"]), ({"caution_v": 2, "caution_block": []}, [])):
+    d = tempfile.mkdtemp(); _p = core.CONFIG_PATH; core.CONFIG_PATH = os.path.join(d, "c.json")
+    open(core.CONFIG_PATH, "w", encoding="utf-8").write(json.dumps({"grid": saved}))
+    got = core.load_config()["grid"]["caution_block"]; core.CONFIG_PATH = _p
+    ok(got == want, f"18e 설정 이전 {saved} → {got}")
 flags["ADA"] = {"warning": True, "caution": {}}
 e.grid_check_warnings(force=True)
 ok(st["qty"] == 0 and "ADA" not in cfg["grid"]["coins"] and ex.bal["ADA"] < 1e-9, "18b 투자유의 지정: 자동매매 보유분 즉시 청산, 목록에서 제외")
