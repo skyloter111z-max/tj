@@ -25,17 +25,18 @@ HELP = ("FibTrader 조회 전용 봇입니다 (주문·설정 변경은 안 됩�
 
 
 def env(name):
-    """환경변수. 프로그램이 setx보다 먼저 켜진 창(탐색기·트레이)에서 실행되면 새 값이 안 보이므로,
-    없으면 윈도우 사용자 환경변수(레지스트리 HKCU\\Environment)에서 직접 읽는다."""
-    v = os.environ.get(name, "").strip()
-    if v or os.name != "nt":
-        return v
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
-            return str(winreg.QueryValueEx(k, name)[0]).strip()
-    except OSError:
-        return ""
+    """윈도우에서는 setx로 저장한 사용자 환경변수(레지스트리 HKCU\\Environment)를 먼저 읽는다.
+    먼저 켜져 있던 창(탐색기·트레이)에서 실행되면 프로그램이 받은 값이 예전 값일 수 있기 때문. 없으면 프로그램 환경변수."""
+    if os.name == "nt":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+                v = str(winreg.QueryValueEx(k, name)[0]).strip()
+            if v:
+                return v
+        except OSError:
+            pass
+    return os.environ.get(name, "").strip()
 
 
 def why(e):
