@@ -914,7 +914,7 @@ ok(got == ["status", "today"] and len(sent) == 1 and sent[0][0] == "111" and "�
 tg2 = ftg.Telegram(got.append, token="x", chat_id="")
 tg2.handle({"chat": {"id": 333}, "text": "/status"}); tg2.notify("알림", "내용")
 sent = [tg2.out.get_nowait() for _ in range(tg2.out.qsize())]
-ok(len(sent) == 1 and sent[0][0] == "333" and "333" in sent[0][1] and "[자동매매" not in sent[0][1] and got == ["status", "today"],
+ok(len(sent) == 1 and sent[0][0] == "333" and "333" in sent[0][1] and "자동매매" not in sent[0][1] and got == ["status", "today"],
    "G1b 주인 번호 없을 때: 말 건 채팅에 번호만 알려 주고 현황·알림은 안 보냄")
 ok(not ftg.Telegram(got.append, token="", chat_id="1").enabled, "G1c 토큰 없으면 꺼짐")
 e, ex, cfg = lmk(limit_add=True)
@@ -923,7 +923,7 @@ lstep(e, ex, 340); lstep(e, ex, 329)
 fr.get = lambda path: [{"market": m, "trade_price": 330.0, "signed_change_rate": -0.02} for m in path.split("=")[1].split(",")] if "ticker" in path else orig_get(path)
 txt = e.tg_status_text(); day = e.tg_day_text(core.now().strftime("%Y-%m-%d"), "오늘")
 msgs = [e.tg.out.get_nowait()[1] for _ in range(e.tg.out.qsize())]
-ok("[자동매매" in txt and "ADA 330" in txt and "2회" in txt and "매수 2번" in day and any("물타기" in m for m in msgs),
+ok("【총괄】" in txt and "【자동매매" in txt and "1. ADA</b>  330" in txt and "2회 매수" in txt and "매수 2번" in day and any("물타기" in m for m in msgs),
    "G1d 현황·오늘 글 생성, 매수 알림은 텔레그램으로도 보냄")
 # G2 추가 조회 명령 11가지: 말 → 명령 연결, 코인 이름만 보내도 됨, 글이 오류 없이 만들어짐
 got = []

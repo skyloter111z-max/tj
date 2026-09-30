@@ -1831,22 +1831,19 @@ class Engine(threading.Thread):
     def tg_pnl_text(self):
         trades = [t for t in build_journal(self.db, self.tg_sim()) if t["side"] == "ask"]
         today = now().date()
-        days = {"오늘": (today, today), "어제": (today - datetime.timedelta(days=1),) * 2,
-                "최근 7일": (today - datetime.timedelta(days=6), today)}
-        lines = [f"💰 자동매매 실현 수익 ({'모의' if self.tg_sim() else '실전'}, 수수료 뺀 금액)"]
-        for label, (a, b) in days.items():
-            ts = [t for t in trades if a.isoformat() <= t["date"] <= b.isoformat()]
-            lines.append(f"{label}: {sum(t['pnl'] or 0 for t in ts):+,.0f}원 · 익절 {sum(1 for t in ts if t.get('full'))}번")
-        mon = today.strftime("%Y-%m")
-        ts = [t for t in trades if t["month"] == mon]
-        lines.append(f"이번 달: {sum(t['pnl'] or 0 for t in ts):+,.0f}원 · 익절 {sum(1 for t in ts if t.get('full'))}번")
-        lines.append(f"누적: {sum(t['pnl'] or 0 for t in trades):+,.0f}원 · 익절 {sum(1 for t in trades if t.get('full'))}번")
+        spans = [("오늘", today, today), ("어제", today - datetime.timedelta(days=1), today - datetime.timedelta(days=1)),
+                 ("최근 7일", today - datetime.timedelta(days=6), today), ("이번 달", today.replace(day=1), today)]
+        L = [f"💰 <b>자동매매 실현 수익</b> · {'모의' if self.tg_sim() else '실전'} (수수료 뺀 금액)", self.TG_LINE, "<b>【총괄】</b>"]
+        for label, a_, b_ in spans:
+            ts = [t for t in trades if a_.isoformat() <= t["date"] <= b_.isoformat()]
+            L.append(f"· {label}  <b>{sum(t['pnl'] or 0 for t in ts):+,.0f}원</b>  (익절 {sum(1 for t in ts if t.get('full'))}번)")
+        L.append(f"· 누적  <b>{sum(t['pnl'] or 0 for t in trades):+,.0f}원</b>  (익절 {sum(1 for t in trades if t.get('full'))}번)")
         per = journal_summary(trades, "coin")
         if per:
-            lines += ["", "코인별 누적 (많은 순)"]
-            for a in sorted(per.values(), key=lambda a: -a["pnl"])[:10]:
-                lines.append(f"  {a['key']} {a['pnl']:+,.0f}원 · 익절 {a['cycles']}번")
-        return "\n".join(lines)
+            L += [self.TG_LINE, "<b>【코인별 누적】</b> 많이 번 순", ""]
+            for i, a in enumerate(sorted(per.values(), key=lambda a: -a["pnl"]), 1):
+                L.append(f"<b>{i}. {a['key']}</b>  {a['pnl']:+,.0f}원 · 익절 {a['cycles']}번 · 매도 {a['sells']}번")
+        return "\n".join(L)
 
     def tg_month_text(self):
         per = journal_summary([t for t in build_journal(self.db, self.tg_sim()) if t["side"] == "ask"], "month")
@@ -2030,7 +2027,7 @@ class Engine(threading.Thread):
         lines = ["🔔 최근 알림 10개 (새것부터)"]
         for ts, title, msg in rows:
             first = (msg or "").split("\n")[0]
-            lines.append(f"{ts[5:16]} {title}" + (f" — {first[:60]}" if first else ""))
+            lines.append(f"{ts[5:16]} <b>{ftg.esc(title)}</b>" + (f" — {ftg.esc(first[:60])}" if first else ""))
         return "\n".join(lines)
 
     def tg_check_text(self):
@@ -2052,73 +2049,113 @@ class Engine(threading.Thread):
         lines.append(f"텔레그램: {self.tg.status}")
         return "\n".join(lines)
 
+    TG_LINE = "━━━━━━━━━━━━━━━━"
+
+    @staticmethod
+    def tg_icon(status):
+        return ("🟢" if status == "자동매매 중" else "🔴" if "중지" in status else "⚪" if "조회만" in status or "대기" in status
+                else "🟡")
+
     def tg_status_text(self):
+        """현황: 맨 위 총괄 → 피보나치 코인별 → 자동매매 코인별 (1. 2. 3. …)."""
         g = self.cfg["grid"]
         coins = list(dict.fromkeys(fr.COINS + self.grid_tracked()))
-        try:
-            tick = {t["market"][4:]: (t["trade_price"], t["signed_change_rate"] * 100)
-                    for t in fr.get("/ticker?markets=" + ",".join(f"KRW-{c}" for c in coins))}
-        except Exception:
-            tick = {c: (p, None) for c, p in self.prices.items()}
-        arrow = lambda ch: "" if ch is None else f" {'▲' if ch > 0 else '▼' if ch < 0 else ''}{abs(ch):.2f}%"  # noqa: E731
-        lines = [f"📊 FibTrader 현황 {now():%m-%d %H:%M}", "", "[피보나치]"]
-        for c in fr.COINS:
-            p, ch = tick.get(c, (self.prices.get(c), None))
-            lv, pg = self.cfg.get("levels", {}).get(c, {}), self.cfg["progress"][c]
-            sd, bd = pg["sell_done"], pg["buy_done"]
-            s = lv.get("sells", [])[sd] if sd < len(lv.get("sells", [])) else None
-            b = lv.get("buys", [])[bd] if bd < len(lv.get("buys", [])) else None
-            parts = [f"{c} {fmtp(p) if p else '-'}{arrow(ch)}"]
-            if b and p:
-                parts.append(f"{bd + 1}차 매수 {fmtp(b)} ({(b / p - 1) * 100:+.1f}%)")
-            if s and p:
-                parts.append(f"{sd + 1}차 매도 {fmtp(s)} ({(s / p - 1) * 100:+.1f}%)")
-            lines.append(" · ".join(parts))
+        tick = self.tg_tickers(coins)
+        price = lambda c: tick[c]["trade_price"] if c in tick else self.prices.get(c)  # noqa: E731
+        chg = lambda c: f" ({self.tg_chg(tick[c])})" if c in tick else ""  # noqa: E731
+        pct = lambda x, p: f"{(x / p - 1) * 100:+.1f}%" if x and p else "-"  # noqa: E731
         rows = self.grid_view()
-        state = "꺼짐" if not g["enabled"] else "모의" if g["simulate"] or not self.api else "실전"
-        cost = sum(r["cost"] for r in rows)
-        upnl = sum(r["qty"] * tick.get(r["coin"], (r["price"] or 0, None))[0] - r["cost"] / (1 + FEE) for r in rows if r["qty"])
-        done = sum(r["profit_total"] + r.get("realized", 0.0) for r in rows)
-        day = journal_summary(build_journal(self.db, g["simulate"] or not self.api), "date").get(now().strftime("%Y-%m-%d"), {})
-        lines += ["", f"[자동매매 · {state}]",
-                  f"투입 원가 {cost:,.0f}원 / 전체 한도 {self.grid_total_cap():,.0f}원",
-                  f"지금 손익 {upnl:+,.0f}원" + (f" ({upnl / (cost / (1 + FEE)) * 100:+.1f}%)" if cost else ""),
-                  f"오늘 익절 {day.get('cycles', 0)}번 · 실현 {day.get('pnl', 0.0):+,.0f}원 · 누적 {done:+,.0f}원"]
-        bear = (self.btc_bear or (None,))[0]
-        if bear:
-            lines.append("비트코인 20일선 아래: 새 시작 쉼 (물타기·익절은 계속)")
-        for r in sorted(rows, key=lambda r: -r["cost"]):
-            p, ch = tick.get(r["coin"], (r["price"], None))
-            if r["qty"]:
-                u = r["qty"] * (p or 0) - r["cost"] / (1 + FEE)
-                lines.append(f"{r['coin']} {fmtp(p) if p else '-'}{arrow(ch)} · {r['buys']}회 {r['cost'] / 1e4:,.1f}만 · {u:+,.0f}원"
-                             + (" · 본전 매도함" if r.get("halved") else ""))
-            else:
-                lines.append(f"{r['coin']} {fmtp(p) if p else '-'}{arrow(ch)} · {r['status']}")
-        try:
-            free = self.krw_free()
-            if free is not None:
-                lines += ["", f"주문 가능 원화(자동매매 걸어 둔 매수 포함) {free:,.0f}원"]
-        except Exception:
-            pass
-        return "\n".join(lines)
-
-    def tg_day_text(self, date, label):
-        g = self.cfg["grid"]
-        trades = [t for t in build_journal(self.db, g["simulate"] or not self.api) if t["date"] == date]
+        trades = build_journal(self.db, self.tg_sim())
+        today = now().strftime("%Y-%m-%d")
         sells = [t for t in trades if t["side"] == "ask"]
         buys = [t for t in trades if t["side"] == "bid"]
-        pnl = sum(t["pnl"] or 0.0 for t in sells)
-        cycles = sum(1 for t in sells if t.get("full"))
-        lines = [f"📅 {label}({date}) 자동매매", f"익절 {cycles}번 · 실현 {pnl:+,.0f}원 · 매수 {len(buys)}번 {sum(t['krw'] for t in buys):,.0f}원"]
-        per = {}
-        for t in sells:
-            a = per.setdefault(t["coin"], [0, 0.0])
-            a[0] += 1 if t.get("full") else 0
-            a[1] += t["pnl"] or 0.0
-        for c, (n, v) in sorted(per.items(), key=lambda kv: -kv[1][1]):
-            lines.append(f"  {c} 익절 {n}번 {v:+,.0f}원")
-        return "\n".join(lines)
+        t_sells = [t for t in sells if t["date"] == today]
+        t_buys = [t for t in buys if t["date"] == today]
+        cost = sum(r["cost"] for r in rows)
+        upnl = sum(r["qty"] * (price(r["coin"]) or 0) * (1 - FEE) + r.get("realized", 0.0) - r["cost"] for r in rows if r["qty"])
+        done = sum(r["profit_total"] + r.get("realized", 0.0) for r in rows)
+        cap = self.grid_total_cap()
+        L = [f"📊 <b>FibTrader 현황</b> · {now():%m-%d %H:%M}", self.TG_LINE, "<b>【총괄】</b>",
+             f"💰 누적 실현 수익  <b>{done:+,.0f}원</b>  (익절 {sum(1 for t in sells if t.get('full'))}번)",
+             f"📅 오늘 실현 수익  <b>{sum(t['pnl'] or 0 for t in t_sells):+,.0f}원</b>  (익절 {sum(1 for t in t_sells if t.get('full'))}번)",
+             f"📈 지금 평가손익  <b>{upnl:+,.0f}원</b>" + (f"  ({upnl / cost * 100:+.1f}%)" if cost else ""),
+             f"🧾 자동매매 투입  {cost:,.0f}원 / 한도 {cap:,.0f}원 ({cost / cap * 100 if cap else 0:.0f}%)",
+             f"🛒 오늘  매수 {len(t_buys)}번 {sum(t['krw'] for t in t_buys):,.0f}원 · 매도 {len(t_sells)}번 {sum(t['krw'] for t in t_sells):,.0f}원",
+             f"📚 누적  매수 {len(buys)}번 {sum(t['krw'] for t in buys):,.0f}원 · 매도 {len(sells)}번 {sum(t['krw'] for t in sells):,.0f}원"]
+        acc = {}
+        if self.api:
+            try:
+                acc = {a["currency"]: a for a in self.api.call("GET", "/accounts")}
+                free = self.krw_free()
+                L.append(f"🏦 주문 가능 원화  {free:,.0f}원 (자동매매 걸어 둔 매수 포함)")
+            except Exception:  # noqa: BLE001
+                pass
+        if (self.btc_bear or (None,))[0]:
+            L.append("⚠️ 비트코인 20일선 아래: 자동매매 새 시작 쉼 (물타기·익절은 계속)")
+        L += [self.TG_LINE, f"<b>【피보나치】</b> {'반자동' if self.cfg['mode'] == 'semi' else '알림만'} · {'모의' if self.cfg['simulate'] else '실전'}", ""]
+        for i, c in enumerate(fr.COINS, 1):
+            p = price(c)
+            lv, pg = self.cfg.get("levels", {}).get(c, {}), self.cfg["progress"][c]
+            sd, bd = pg["sell_done"], pg["buy_done"]
+            sl, bl = lv.get("sells", []), lv.get("buys", [])
+            L.append(f"<b>{i}. {c}</b>  {fmtp(p) if p else '-'}{chg(c)}")
+            a = acc.get(c)
+            if a and p:
+                q = float(a["balance"]) + float(a["locked"])
+                avg = float(a.get("avg_buy_price") or 0)
+                L.append(f"   · 보유  {q:,.8g}개 · 평가 {q * p:,.0f}원" + (f" ({pct(p, avg)})" if avg else ""))
+            L.append(f"   · 진행  매도 {sd}/{len(sl)} · 매수 {bd}/{len(bl)} 체결")
+            if bd < len(bl):
+                L.append(f"   · 다음 매수  {bd + 1}차 {fmtp(bl[bd])} ({pct(bl[bd], p)})")
+            if sd < len(sl):
+                L.append(f"   · 다음 매도  {sd + 1}차 {fmtp(sl[sd])} ({pct(sl[sd], p)})")
+            if lv.get("stop"):
+                L.append(f"   · 매수 중단선  {fmtp(lv['stop'])} ({pct(lv['stop'], p)})")
+            L.append("")
+        state = "꺼짐" if not g["enabled"] else "모의" if self.tg_sim() else "실전"
+        per = journal_summary(trades, "coin")
+        held = sorted((r for r in rows if r["qty"]), key=lambda r: -r["cost"])
+        idle = [r for r in rows if not r["qty"]]
+        L += [self.TG_LINE, f"<b>【자동매매 · {state}】</b> {len(rows)}개 (보유 {len(held)}개)", ""]
+        for i, r in enumerate(held + idle, 1):
+            c, p = r["coin"], price(r["coin"])
+            L.append(f"<b>{i}. {c}</b>  {fmtp(p) if p else '-'}{chg(c)}  {self.tg_icon(r['status'])} {r['status']}")
+            if r["qty"] and p:
+                u = r["qty"] * p * (1 - FEE) + r.get("realized", 0.0) - r["cost"]
+                L.append(f"   · 보유  {r['buys']}회 매수 · 원가 {r['cost']:,.0f}원 · 평단 {fmtp(r['cost'] / r['qty'])}")
+                L.append(f"   · 지금 손익  <b>{u:+,.0f}원</b> ({u / r['cost'] * 100:+.1f}%)" + (" · 본전 매도함" if r.get("halved") else ""))
+                if r.get("next_buy"):
+                    L.append(f"   · 다음 물타기  {fmtp(r['next_buy'])} ({pct(r['next_buy'], p)})"
+                             + (f"에 {r['next_amt']:,.0f}원" if r.get("next_amt") else ""))
+                if r.get("tp"):
+                    L.append(f"   · 익절 목표  {fmtp(r['tp'])} ({pct(r['tp'], p)}) → +{r['profit']:,.0f}원")
+            else:
+                L.append("   · 보유 없음 (다음 사이클 대기)")
+            j = per.get(c, {})
+            L.append(f"   · 누적  익절 {r['cycles']}번 · 실현 {r['profit_total'] + r.get('realized', 0.0):+,.0f}원"
+                     f" · 매수 {j.get('buys', 0)}번 · 매도 {j.get('sells', 0)}번")
+            L.append("")
+        return "\n".join(L).rstrip()
+
+    def tg_day_text(self, date, label):
+        """하루 요약: 총괄 → 거래한 코인별."""
+        trades = [t for t in build_journal(self.db, self.tg_sim()) if t["date"] == date]
+        sells = [t for t in trades if t["side"] == "ask"]
+        buys = [t for t in trades if t["side"] == "bid"]
+        L = [f"📅 <b>{label} 자동매매</b> · {date}", self.TG_LINE, "<b>【총괄】</b>",
+             f"💰 실현 수익  <b>{sum(t['pnl'] or 0.0 for t in sells):+,.0f}원</b>  (익절 {sum(1 for t in sells if t.get('full'))}번)",
+             f"🛒 매수 {len(buys)}번 {sum(t['krw'] for t in buys):,.0f}원 · 매도 {len(sells)}번 {sum(t['krw'] for t in sells):,.0f}원"]
+        per = journal_summary(trades, "coin")
+        if not per:
+            return "\n".join(L + [self.TG_LINE, "거래 없음"])
+        L += [self.TG_LINE, "<b>【코인별】</b>", ""]
+        for i, a in enumerate(sorted(per.values(), key=lambda a: (-a["pnl"], -a["buy_krw"])), 1):
+            L.append(f"<b>{i}. {a['key']}</b>")
+            if a["sells"]:
+                L.append(f"   · 익절 {a['cycles']}번 · 실현 <b>{a['pnl']:+,.0f}원</b>")
+            L.append(f"   · 매수 {a['buys']}번 {a['buy_krw']:,.0f}원 · 매도 {a['sells']}번 {a['sell_krw']:,.0f}원")
+            L.append("")
+        return "\n".join(L).rstrip()
 
     def grid_refresh(self):
         """[조회] 버튼: 자동매매 대상·보유 코인 시세를 바로 받아 표를 새로 그린다 (주문은 안 함)."""

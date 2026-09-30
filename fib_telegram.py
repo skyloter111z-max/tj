@@ -5,7 +5,9 @@
 - 표준 라이브러리만 사용. 네트워크 오류는 조용히 다시 시도 (프로그램 매매에는 영향 없음).
 """
 import datetime
+import html
 import json
+import re
 import os
 import queue
 import threading
@@ -42,6 +44,11 @@ COMMANDS = {
     "check": ("check", "점검", "health"),
 }
 ALIAS = {w: name for name, words in COMMANDS.items() for w in words}
+
+
+def esc(text):
+    """텔레그램 HTML에서 글자 그대로 보이게 (<, >, & 처리)."""
+    return html.escape(str(text), quote=False)
 
 
 def env(name):
@@ -100,7 +107,7 @@ class Telegram:
             self.out.put((str(chat), text))
 
     def notify(self, title, msg):
-        self.send(f"🔔 {title}\n{msg}".strip())
+        self.send(f"🔔 <b>{esc(title)}</b>\n{esc(msg)}".strip())
 
     def _sender(self):
         while not self.stop_event.is_set():
@@ -122,18 +129,28 @@ class Telegram:
                         self._post(chat, buf)
                         buf = ""
                     buf = f"{buf}\n\n{t}" if buf else t
-                    while len(buf) > LIMIT:
-                        self._post(chat, buf[:LIMIT])
-                        buf = buf[LIMIT:]
+                    while len(buf) > LIMIT:  # 긴 글은 줄 단위로 끊는다 (굵은 글씨 표시가 중간에 잘리지 않게)
+                        cut = buf.rfind("\n", 0, LIMIT)
+                        cut = cut if cut > LIMIT // 2 else LIMIT
+                        self._post(chat, buf[:cut])
+                        buf = buf[cut:].lstrip("\n")
                 if buf:
                     self._post(chat, buf)
 
     def _post(self, chat, text):
+        """굵은 글씨(HTML)로 보낸다. 텔레그램이 표시를 못 읽으면(400) 표시를 빼고 그냥 글로 다시 보낸다."""
+        params = {"chat_id": chat, "text": text, "parse_mode": "HTML", "disable_web_page_preview": "true"}
         for i in range(3):
             try:
-                self.call("sendMessage", {"chat_id": chat, "text": text, "disable_web_page_preview": "true"}, timeout=20)
+                self.call("sendMessage", params, timeout=20)
                 self.status = "연결됨"
                 return
+            except urllib.error.HTTPError as e:
+                if e.code == 400 and "parse_mode" in params:
+                    params = {"chat_id": chat, "text": html.unescape(re.sub(r"</?b>", "", text)), "disable_web_page_preview": "true"}
+                    continue
+                self.status = f"보내기 실패: {why(e)}"
+                time.sleep(2 * (i + 1))
             except Exception as e:  # noqa: BLE001 — 어떤 오류든 봇 스레드가 죽지 않게. 오류 글에 주소(토큰 포함)가 섞이지 않게 종류만 남긴다
                 self.status = f"보내기 실패: {why(e)}"
                 time.sleep(2 * (i + 1))
