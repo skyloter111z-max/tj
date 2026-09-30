@@ -19,21 +19,27 @@ import urllib.request
 KST = datetime.timezone(datetime.timedelta(hours=9))
 LIMIT = 3900  # 텔레그램 한 메시지 최대 4096자 → 여유 두고 나눔
 
-HELP = ("FibTrader 조회 전용 봇입니다 (주문·설정 변경은 안 됩니다).\n"
-        "/status 현황 : 피보나치·자동매매 한눈에\n"
-        "/today 오늘 · /yesterday 어제 : 그날 익절·매수\n"
-        "/pnl 수익 : 오늘·어제·7일·이번 달·누적 실현 수익\n"
-        "/month 월별 : 최근 6개월 월별 수익\n"
-        "/coin XRP 또는 그냥 XRP : 코인 하나 자세히\n"
-        "/price 시세 : 보는 코인 전체 시세·등락률\n"
-        "/balance 잔고 : 업비트 잔고·평가손익\n"
-        "/orders 주문 : 업비트에 걸린 주문\n"
-        "/plan 플랜 : BTC·ETH·XRP 피보나치 레벨 전체\n"
-        "/risk 위험 : 자동매매 한도·깊게 물린 코인·현금\n"
-        "/alerts 알림 : 최근 알림 10개\n"
-        "/check 점검 : 프로그램이 잘 돌고 있는지\n"
-        "/help 도움 : 이 안내\n"
+HELP = ("<b>FibTrader 조회 전용 봇</b> (주문·설정 변경은 안 됩니다)\n"
+        "아래 버튼을 누르거나 한글로 보내세요.\n\n"
+        "· <b>현황</b> : 총괄 + 코인별 한눈에\n"
+        "· <b>오늘</b> / <b>어제</b> : 그날 익절·매수\n"
+        "· <b>수익</b> : 오늘·어제·7일·이번 달·누적 수익\n"
+        "· <b>월별</b> : 최근 6개월 월별 수익\n"
+        "· <b>시세</b> : 보는 코인 전체 시세·등락률\n"
+        "· <b>코인 이름</b> (예: XRP) : 그 코인 자세히\n"
+        "· <b>잔고</b> : 업비트 잔고·평가손익\n"
+        "· <b>주문</b> : 업비트에 걸린 주문\n"
+        "· <b>플랜</b> : 피보나치 레벨 전체\n"
+        "· <b>위험</b> : 자동매매 한도·깊게 물린 코인·현금\n"
+        "· <b>알림</b> : 최근 알림 10개\n"
+        "· <b>점검</b> : 프로그램이 잘 돌고 있는지\n"
+        "· <b>도움</b> : 이 안내\n\n"
         "매매·체결·오류 알림은 자동으로 옵니다. 매일 09시에 어제 요약을 보냅니다.")
+
+# 채팅창 아래 한글 버튼판 (누르면 그 글자가 그대로 보내짐)
+KEYBOARD = json.dumps({"keyboard": [["현황", "오늘", "어제"], ["수익", "월별", "시세"], ["잔고", "주문", "플랜"],
+                                    ["위험", "알림", "점검"], ["도움"]],
+                       "resize_keyboard": True, "is_persistent": True}, ensure_ascii=False)
 
 # 받은 말 → 엔진 명령 (앞의 / 와 대소문자 무시)
 COMMANDS = {
@@ -42,6 +48,7 @@ COMMANDS = {
     "price": ("price", "시세", "가격"), "balance": ("balance", "잔고", "자산"), "orders": ("orders", "주문"),
     "plan": ("plan", "플랜", "레벨"), "risk": ("risk", "위험", "한도"), "alerts": ("alerts", "알림"),
     "check": ("check", "점검", "health"),
+    "help": ("help", "도움", "도움말", "start", "시작", "메뉴"),
 }
 ALIAS = {w: name for name, words in COMMANDS.items() for w in words}
 
@@ -100,11 +107,11 @@ class Telegram:
         return body["result"]
 
     # ---- 보내기 (묶어서) ----
-    def send(self, text, chat=None):
-        """보낼 글을 줄에 넣는다. chat 없으면 주인 채팅으로 (주인 번호 없으면 버림)."""
+    def send(self, text, chat=None, keyboard=False):
+        """보낼 글을 줄에 넣는다. chat 없으면 주인 채팅으로 (주인 번호 없으면 버림). keyboard면 한글 버튼판을 같이 보냄."""
         chat = chat or self.chat
         if self.enabled and chat and text:
-            self.out.put((str(chat), text))
+            self.out.put((str(chat), text, keyboard))
 
     def notify(self, title, msg):
         self.send(f"🔔 <b>{esc(title)}</b>\n{esc(msg)}".strip())
@@ -119,9 +126,11 @@ class Telegram:
             items = [first]
             while not self.out.empty() and len(items) < 30:
                 items.append(self.out.get_nowait())
-            by_chat = {}
-            for chat, text in items:
+            by_chat, kb = {}, set()
+            for chat, text, keyboard in items:
                 by_chat.setdefault(chat, []).append(text)
+                if keyboard:
+                    kb.add(chat)
             for chat, texts in by_chat.items():
                 buf = ""
                 for t in texts:
@@ -135,11 +144,13 @@ class Telegram:
                         self._post(chat, buf[:cut])
                         buf = buf[cut:].lstrip("\n")
                 if buf:
-                    self._post(chat, buf)
+                    self._post(chat, buf, keyboard=chat in kb)
 
-    def _post(self, chat, text):
+    def _post(self, chat, text, keyboard=False):
         """굵은 글씨(HTML)로 보낸다. 텔레그램이 표시를 못 읽으면(400) 표시를 빼고 그냥 글로 다시 보낸다."""
         params = {"chat_id": chat, "text": text, "parse_mode": "HTML", "disable_web_page_preview": "true"}
+        if keyboard:
+            params["reply_markup"] = KEYBOARD
         for i in range(3):
             try:
                 self.call("sendMessage", params, timeout=20)
@@ -147,7 +158,8 @@ class Telegram:
                 return
             except urllib.error.HTTPError as e:
                 if e.code == 400 and "parse_mode" in params:
-                    params = {"chat_id": chat, "text": html.unescape(re.sub(r"</?b>", "", text)), "disable_web_page_preview": "true"}
+                    params = {k: v for k, v in params.items() if k != "parse_mode"}
+                    params["text"] = html.unescape(re.sub(r"</?b>", "", text))
                     continue
                 self.status = f"보내기 실패: {why(e)}"
                 time.sleep(2 * (i + 1))
@@ -194,14 +206,16 @@ class Telegram:
         word = words[0].split("@")[0].lstrip("/").lower()
         arg = words[1].upper() if len(words) > 1 else ""
         name = ALIAS.get(word)
-        if name == "coin" and not arg:
-            self.send("코인 이름을 같이 보내 주세요. 예: /coin XRP 또는 그냥 XRP")
+        if name == "help":
+            self.send(HELP, keyboard=True)
+        elif name == "coin" and not arg:
+            self.send("코인 이름을 보내 주세요. 예: XRP (또는 코인 XRP)")
         elif name:
             self.on_command(f"{name}:{arg}" if name == "coin" else name)  # 명령 이름만 넘김 (주문·설정 명령은 없음)
         elif len(words) == 1 and not text.startswith("/") and 2 <= len(word) <= 10 and word.isascii() and word.isalnum() and not word.isdigit():
             self.on_command(f"coin:{word.upper()}")  # 그냥 "XRP"라고 보내면 그 코인 자세히
         else:
-            self.send(HELP)
+            self.send(HELP, keyboard=True)
 
     def start(self):
         if not self.enabled:
@@ -209,7 +223,7 @@ class Telegram:
         for fn in (self._sender, self._poller):
             threading.Thread(target=fn, daemon=True).start()
         if self.chat:
-            self.send("FibTrader가 켜졌습니다. /status 로 현황을 볼 수 있습니다.")
+            self.send("✅ <b>FibTrader가 켜졌습니다.</b>\n아래 버튼으로 현황·수익 등을 볼 수 있습니다.", keyboard=True)
 
     def stop(self):
         self.stop_event.set()
