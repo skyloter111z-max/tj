@@ -1803,6 +1803,32 @@ class Engine(threading.Thread):
         except Exception as e:  # noqa: BLE001 — 조회 실패는 휴대폰에 알려만 준다 (매매에는 영향 없음)
             self.tg.send(f"조회하다 오류가 났습니다 ({type(e).__name__}). 잠시 뒤 다시 보내 주세요.")
 
+    # 휴대폰 텔레그램 앱에서 보기 좋게: 한 줄에 한 가지, 짧은 줄(25자 안팎), 금액은 만·억 단위, 코인 번호는 ①②③
+    TG_LINE = "━━━━━━━━━━━━"
+    TG_NUM = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+
+    @classmethod
+    def tg_n(cls, i):
+        return cls.TG_NUM[i - 1] if 1 <= i <= len(cls.TG_NUM) else f"{i}."
+
+    @staticmethod
+    def tg_won(x, sign=False):
+        """금액 짧게: 1억 이상 1.23억, 1만 이상 2.5만, 그 아래는 원 단위."""
+        s = "+" if sign and x > 0 else "-" if x < 0 else ""
+        a = abs(x)
+        if a >= 1e8:
+            v = f"{a / 1e8:,.2f}".rstrip("0").rstrip(".") + "억"
+        elif a >= 1e4:
+            v = f"{a / 1e4:,.2f}".rstrip("0").rstrip(".") + "만"
+        else:
+            v = f"{a:,.0f}"
+        return f"{s}{v}원"
+
+    @staticmethod
+    def tg_icon(status):
+        return ("🟢" if status == "자동매매 중" else "🔴" if "중지" in status else "⚪" if "조회만" in status or "대기" in status
+                else "🟡")
+
     def tg_tickers(self, coins):
         """업비트 시세 {코인: 시세 dict}. 원화마켓에 없는 코인은 빠진다."""
         coins = [c for c in dict.fromkeys(coins) if c]
@@ -1824,246 +1850,31 @@ class Engine(threading.Thread):
         ch = t.get("signed_change_rate", 0.0) * 100
         return f"{'▲' if ch > 0 else '▼' if ch < 0 else ''}{abs(ch):.2f}%"
 
+    @staticmethod
+    def tg_pct(x, p):
+        return f"{(x / p - 1) * 100:+.1f}%" if x and p else "-"
+
     def tg_sim(self):
         g = self.cfg["grid"]
         return g["simulate"] or not self.api
 
-    def tg_pnl_text(self):
-        trades = [t for t in build_journal(self.db, self.tg_sim()) if t["side"] == "ask"]
-        today = now().date()
-        spans = [("오늘", today, today), ("어제", today - datetime.timedelta(days=1), today - datetime.timedelta(days=1)),
-                 ("최근 7일", today - datetime.timedelta(days=6), today), ("이번 달", today.replace(day=1), today)]
-        L = [f"💰 <b>자동매매 실현 수익</b> · {'모의' if self.tg_sim() else '실전'} (수수료 뺀 금액)", self.TG_LINE, "<b>【총괄】</b>"]
-        for label, a_, b_ in spans:
-            ts = [t for t in trades if a_.isoformat() <= t["date"] <= b_.isoformat()]
-            L.append(f"· {label}  <b>{sum(t['pnl'] or 0 for t in ts):+,.0f}원</b>  (익절 {sum(1 for t in ts if t.get('full'))}번)")
-        L.append(f"· 누적  <b>{sum(t['pnl'] or 0 for t in trades):+,.0f}원</b>  (익절 {sum(1 for t in trades if t.get('full'))}번)")
-        per = journal_summary(trades, "coin")
-        if per:
-            L += [self.TG_LINE, "<b>【코인별 누적】</b> 많이 번 순", ""]
-            for i, a in enumerate(sorted(per.values(), key=lambda a: -a["pnl"]), 1):
-                L.append(f"<b>{i}. {a['key']}</b>  {a['pnl']:+,.0f}원 · 익절 {a['cycles']}번 · 매도 {a['sells']}번")
-        return "\n".join(L)
+    def tg_head(self, icon, title):
+        return [f"{icon} <b>{title}</b>", f"{now():%m-%d %H:%M} 기준", self.TG_LINE]
 
-    def tg_month_text(self):
-        per = journal_summary([t for t in build_journal(self.db, self.tg_sim()) if t["side"] == "ask"], "month")
-        if not per:
-            return "📆 아직 자동매매 매도 기록이 없습니다."
-        lines = ["📆 월별 실현 수익 (최근 6개월)"]
-        for m in sorted(per)[-6:]:
-            a = per[m]
-            lines.append(f"{m}: {a['pnl']:+,.0f}원 · 익절 {a['cycles']}번 · 매도 {a['sells']}번")
-        return "\n".join(lines)
-
-    def tg_price_text(self):
-        coins = list(dict.fromkeys(fr.COINS + self.grid_tracked()))
-        tick = self.tg_tickers(coins)
-        lines = [f"💹 시세 {now():%m-%d %H:%M} (24시간 등락 순)"]
-        for c in sorted(tick, key=lambda c: -tick[c].get("signed_change_rate", 0)):
-            t = tick[c]
-            lines.append(f"{c} {fmtp(t['trade_price'])} {self.tg_chg(t)} · 거래대금 {t.get('acc_trade_price_24h', 0) / 1e8:,.0f}억")
-        return "\n".join(lines)
-
-    def tg_coin_text(self, coin):
-        coin = coin.upper().replace("KRW-", "")
-        tick = self.tg_tickers([coin]).get(coin)
-        if not tick:
-            return f"{coin}: 업비트 원화마켓에 없는 코인입니다."
-        p = tick["trade_price"]
-        lines = [f"🔎 {coin} {fmtp(p)} {self.tg_chg(tick)}",
-                 f"24시간 고가 {fmtp(tick.get('high_price'))} · 저가 {fmtp(tick.get('low_price'))} · 거래대금 {tick.get('acc_trade_price_24h', 0) / 1e8:,.0f}억"]
-        known = False
-        if coin in fr.COINS and self.cfg.get("levels", {}).get(coin):
-            known = True
-            lv, pg = self.cfg["levels"][coin], self.cfg["progress"][coin]
-            lines += ["", f"[피보나치] 매도 {pg['sell_done']}/{len(lv['sells'])} · 매수 {pg['buy_done']}/{len(lv['buys'])} 체결"]
-            for i, x in enumerate(lv["sells"]):
-                lines.append(f"  {i + 1}차 매도 {fmtp(x)} ({(x / p - 1) * 100:+.1f}%)" + (" ✅체결" if i < pg["sell_done"] else ""))
-            for i, x in enumerate(lv["buys"]):
-                lines.append(f"  {i + 1}차 매수 {fmtp(x)} ({(x / p - 1) * 100:+.1f}%)" + (" ✅체결" if i < pg["buy_done"] else ""))
-            lines.append(f"  매수 중단선 {fmtp(lv['stop'])} ({(lv['stop'] / p - 1) * 100:+.1f}%)")
-        row = next((r for r in self.grid_view() if r["coin"] == coin), None)
-        if row:
-            known = True
-            lines += ["", f"[자동매매] {row['status']}"]
-            if row["qty"]:
-                u = row["qty"] * p * (1 - FEE) + row.get("realized", 0.0) - row["cost"]
-                lines.append(f"  {row['buys']}회 매수 · 원가 {row['cost']:,.0f}원 · 평단 {fmtp(row['cost'] / row['qty'])}")
-                lines.append(f"  지금 손익 {u:+,.0f}원 ({u / row['cost'] * 100:+.1f}%)" + (" · 본전 매도함" if row.get("halved") else ""))
-                if row.get("next_buy"):
-                    lines.append(f"  다음 물타기 {fmtp(row['next_buy'])} ({(row['next_buy'] / p - 1) * 100:+.1f}%)"
-                                 + (f"에 {row['next_amt']:,.0f}원" if row.get("next_amt") else ""))
-                if row.get("breakeven"):
-                    lines.append(f"  본전 {fmtp(row['breakeven'])} ({(row['breakeven'] / p - 1) * 100:+.1f}%)")
-                if row.get("tp"):
-                    lines.append(f"  익절 {fmtp(row['tp'])} ({(row['tp'] / p - 1) * 100:+.1f}%) · 이번 판 목표 +{row['profit']:,.0f}원")
-            else:
-                lines.append("  보유 없음 (다음 사이클 대기)")
-            lines.append(f"  지금까지 익절 {row['cycles']}번 · 누적 {row['profit_total']:+,.0f}원")
-        if self.api:
-            try:
-                acc = next((a for a in self.api.call("GET", "/accounts") if a["currency"] == coin), None)
-                if acc:
-                    q = float(acc["balance"]) + float(acc["locked"])
-                    avg = float(acc.get("avg_buy_price") or 0)
-                    lines += ["", f"[업비트 계좌] {q:,.8g}개 · 평가 {q * p:,.0f}원"
-                              + (f" · 평단 {fmtp(avg)} ({(p / avg - 1) * 100:+.1f}%)" if avg else "")]
-            except Exception:  # noqa: BLE001
-                pass
-        if not known:
-            lines += ["", "FibTrader가 매매하지 않는 코인입니다 (시세만 보여 드림)."]
-        return "\n".join(lines)
-
-    def tg_balance_text(self):
+    def tg_accounts(self):
         if not self.api:
-            return "API 키가 없어서 잔고를 볼 수 없습니다."
-        acc = self.api.call("GET", "/accounts")
-        krw = next((float(a["balance"]) + float(a["locked"]) for a in acc if a["currency"] == "KRW"), 0.0)
-        krw_free = next((float(a["balance"]) for a in acc if a["currency"] == "KRW"), 0.0)
-        coins = {a["currency"]: a for a in acc if a["currency"] != "KRW" and float(a["balance"]) + float(a["locked"]) > 0}
-        tick = self.tg_tickers(list(coins))
-        rows = []
-        for c, a in coins.items():
-            if c not in tick:
-                continue
-            q = float(a["balance"]) + float(a["locked"])
-            p = tick[c]["trade_price"]
-            avg = float(a.get("avg_buy_price") or 0)
-            rows.append((q * p, c, q * avg, p, avg))
-        rows.sort(reverse=True)
-        val = sum(r[0] for r in rows)
-        base = sum(r[2] for r in rows)
-        lines = [f"🏦 업비트 잔고 {now():%m-%d %H:%M}",
-                 f"총자산 {krw + val:,.0f}원 = 원화 {krw:,.0f}원 + 코인 {val:,.0f}원",
-                 f"주문 가능 원화 {krw_free:,.0f}원",
-                 f"코인 평가손익 {val - base:+,.0f}원" + (f" ({(val / base - 1) * 100:+.1f}%)" if base else ""), ""]
-        for v, c, b, p, avg in rows[:15]:
-            if v < 1000:
-                continue
-            lines.append(f"{c} {v:,.0f}원" + (f" · {v - b:+,.0f}원 ({(p / avg - 1) * 100:+.1f}%)" if avg else ""))
-        if len(rows) > 15:
-            lines.append(f"… 외 {len(rows) - 15}개")
-        return "\n".join(lines)
-
-    def tg_orders_text(self):
-        if not self.api:
-            return "API 키가 없어서 주문을 볼 수 없습니다."
-        orders = self.api.open_all()
-        if not orders:
-            return "📋 업비트에 걸린 주문이 없습니다."
-        tick = self.tg_tickers([o["market"][4:] for o in orders if o["market"].startswith("KRW-")])
-        by = {}
-        for o in orders:
-            by.setdefault(o["market"][4:], []).append(o)
-        bid_sum = sum(float(o["price"] or 0) * float(o["remaining_volume"] or 0) for o in orders if o["side"] == "bid")
-        lines = [f"📋 걸린 주문 {len(orders)}건 · 매수에 묶인 돈 {bid_sum:,.0f}원"]
-        for c in sorted(by):
-            p = tick.get(c, {}).get("trade_price")
-            lines.append(f"{c}" + (f" (지금 {fmtp(p)})" if p else ""))
-            for o in sorted(by[c], key=lambda o: -float(o["price"] or 0)):
-                px, rem = float(o["price"] or 0), float(o["remaining_volume"] or 0)
-                lines.append(f"  {'매도' if o['side'] == 'ask' else '매수'} {fmtp(px)}" + (f" ({(px / p - 1) * 100:+.1f}%)" if p else "")
-                             + f" · {px * rem:,.0f}원")
-        return "\n".join(lines)
-
-    def tg_plan_text(self):
-        tick = self.tg_tickers(fr.COINS)
-        lines = ["📐 피보나치 플랜 (✅ 체결 · ▶ 다음)"]
-        for c in fr.COINS:
-            lv = self.cfg.get("levels", {}).get(c)
-            if not lv:
-                continue
-            pg = self.cfg["progress"][c]
-            p = tick.get(c, {}).get("trade_price") or self.prices.get(c)
-            lines += ["", f"{c} {fmtp(p)}" + (f" {self.tg_chg(tick[c])}" if c in tick else "") + f" · 레벨 기준 {lv.get('at', '-')}"]
-            for i, x in reversed(list(enumerate(lv["sells"]))):
-                mark = "✅" if i < pg["sell_done"] else "▶" if i == pg["sell_done"] else "  "
-                lines.append(f"{mark}{i + 1}차 매도 {fmtp(x)} ({(x / p - 1) * 100:+.1f}%)" if p else f"{mark}{i + 1}차 매도 {fmtp(x)}")
-            for i, x in enumerate(lv["buys"]):
-                mark = "✅" if i < pg["buy_done"] else "▶" if i == pg["buy_done"] else "  "
-                lines.append(f"{mark}{i + 1}차 매수 {fmtp(x)} ({(x / p - 1) * 100:+.1f}%)" if p else f"{mark}{i + 1}차 매수 {fmtp(x)}")
-            lines.append(f"  매수 중단선 {fmtp(lv['stop'])}" + (f" ({(lv['stop'] / p - 1) * 100:+.1f}%)" if p else ""))
-        return "\n".join(lines)
-
-    def tg_risk_text(self):
-        g = self.cfg["grid"]
-        rows = [r for r in self.grid_view() if r["qty"]]
-        cost = sum(r["cost"] for r in rows)
-        cap = self.grid_total_cap()
-        lines = [f"⚠️ 자동매매 위험 점검 {now():%m-%d %H:%M}",
-                 f"투입 원가 {cost:,.0f}원 / 전체 한도 {cap:,.0f}원 ({cost / cap * 100 if cap else 0:.0f}% 사용)",
-                 f"코인당 한도 {g['max_krw']:,.0f}원"]
-        up = sum(r["qty"] * (r["price"] or 0) * (1 - FEE) + r.get("realized", 0.0) - r["cost"] for r in rows)
-        lines.append(f"지금 평가손익 합계 {up:+,.0f}원")
-        if rows:
-            lines += ["", "많이 들어간 코인"]
-            for r in sorted(rows, key=lambda r: -r["cost"])[:5]:
-                u = r["qty"] * (r["price"] or 0) * (1 - FEE) + r.get("realized", 0.0) - r["cost"]
-                nb = f" · 다음 {fmtp(r['next_buy'])}({(r['next_buy'] / r['price'] - 1) * 100:+.1f}%)에 {r['next_amt']:,.0f}원" if r.get("next_buy") and r.get("next_amt") and r["price"] else ""
-                lines.append(f"  {r['coin']} {r['buys']}회 {r['cost'] / 1e4:,.1f}만 ({r['cost'] / g['max_krw'] * 100:.0f}%) · {u:+,.0f}원{nb}")
-        wide = int(g.get("wide_after", 0))
-        deep = [r for r in rows if wide and r["buys"] >= wide - 3]
-        if deep:
-            lines.append(f"물타기 {wide}회(간격 넓어짐) 가까운 코인: " + ", ".join(f"{r['coin']} {r['buys']}회" for r in deep))
-        blocked = [r for r in self.grid_view() if "중지" in r["status"] or "쉼" in r["status"]]
-        if blocked:
-            lines.append("새 매수 쉬는 코인: " + ", ".join(f"{r['coin']}({r['status']})" for r in blocked))
-        free = None
+            return {}
         try:
-            free = self.krw_free()
+            return {a["currency"]: a for a in self.api.call("GET", "/accounts")}
         except Exception:  # noqa: BLE001
-            pass
-        if free is not None:
-            lines += ["", f"주문 가능 원화(걸어 둔 매수 포함) {free:,.0f}원",
-                      f"  새 시작 멈춤선 {g.get('cash_floor_start', 0):,.0f}원 · 모든 매수 멈춤선 {g.get('cash_floor_all', 0):,.0f}원"]
-        if (self.btc_bear or (False,))[0]:
-            lines.append("비트코인 20일선 아래: 새 시작 쉼 (물타기·익절은 계속)")
-        return "\n".join(lines)
-
-    def tg_alerts_text(self):
-        rows = self.db.query("SELECT ts, title, msg FROM alerts WHERE kind NOT IN ('order', 'info') ORDER BY rowid DESC LIMIT 10")
-        if not rows:
-            return "🔔 최근 알림이 없습니다."
-        lines = ["🔔 최근 알림 10개 (새것부터)"]
-        for ts, title, msg in rows:
-            first = (msg or "").split("\n")[0]
-            lines.append(f"{ts[5:16]} <b>{ftg.esc(title)}</b>" + (f" — {ftg.esc(first[:60])}" if first else ""))
-        return "\n".join(lines)
-
-    def tg_check_text(self):
-        g = self.cfg["grid"]
-        last = getattr(self, "last_ok", 0)
-        ago = time.time() - last if last else None
-        ok = ago is not None and ago < 3 * max(self.cfg["every_sec"], 10) + 30
-        up = max(0.0, time.time() - getattr(self, "started", 0.0)) if getattr(self, "started", None) else None
-        lines = [f"🩺 FibTrader 점검 {now():%m-%d %H:%M}",
-                 f"{'✅ 정상 작동' if ok else '⚠️ 확인이 늦어지는 중'} · 마지막 확인 {f'{ago:.0f}초 전' if ago is not None else '아직 없음'}",
-                 f"켜진 지 {int(up // 3600)}시간 {int(up % 3600 // 60)}분" if up is not None else "켜진 시각 모름",
-                 f"업비트 API {'연결됨' if self.api else '키 없음 (주문 불가)'}",
-                 f"피보나치: {'반자동' if self.cfg['mode'] == 'semi' else '알림만'} · {'모의' if self.cfg['simulate'] else '실전'}",
-                 f"자동매매: {'꺼짐' if not g['enabled'] else '모의' if self.tg_sim() else '실전'} · 대상 {len(self.grid_coins())}개"]
-        if self.cfg.get("stopped"):
-            lines.append("⛔ 긴급 정지 상태입니다 (PC 화면에서 [재개]를 눌러야 풀림)")
-        if self.proposal:
-            lines.append("📝 PC 화면에 승인 대기 중인 주문 제안이 있습니다")
-        lines.append(f"텔레그램: {self.tg.status}")
-        return "\n".join(lines)
-
-    TG_LINE = "━━━━━━━━━━━━━━━━"
-
-    @staticmethod
-    def tg_icon(status):
-        return ("🟢" if status == "자동매매 중" else "🔴" if "중지" in status else "⚪" if "조회만" in status or "대기" in status
-                else "🟡")
+            return {}
 
     def tg_status_text(self):
-        """현황: 맨 위 총괄 → 피보나치 코인별 → 자동매매 코인별 (1. 2. 3. …)."""
+        """현황: 총괄 → 피보나치 코인별 → 자동매매 코인별."""
         g = self.cfg["grid"]
-        coins = list(dict.fromkeys(fr.COINS + self.grid_tracked()))
-        tick = self.tg_tickers(coins)
+        W, P = self.tg_won, self.tg_pct
+        tick = self.tg_tickers(list(dict.fromkeys(fr.COINS + self.grid_tracked())))
         price = lambda c: tick[c]["trade_price"] if c in tick else self.prices.get(c)  # noqa: E731
-        chg = lambda c: f" ({self.tg_chg(tick[c])})" if c in tick else ""  # noqa: E731
-        pct = lambda x, p: f"{(x / p - 1) * 100:+.1f}%" if x and p else "-"  # noqa: E731
         rows = self.grid_view()
         trades = build_journal(self.db, self.tg_sim())
         today = now().strftime("%Y-%m-%d")
@@ -2075,87 +1886,332 @@ class Engine(threading.Thread):
         upnl = sum(r["qty"] * (price(r["coin"]) or 0) * (1 - FEE) + r.get("realized", 0.0) - r["cost"] for r in rows if r["qty"])
         done = sum(r["profit_total"] + r.get("realized", 0.0) for r in rows)
         cap = self.grid_total_cap()
-        L = [f"📊 <b>FibTrader 현황</b> · {now():%m-%d %H:%M}", self.TG_LINE, "<b>【총괄】</b>",
-             f"💰 누적 실현 수익  <b>{done:+,.0f}원</b>  (익절 {sum(1 for t in sells if t.get('full'))}번)",
-             f"📅 오늘 실현 수익  <b>{sum(t['pnl'] or 0 for t in t_sells):+,.0f}원</b>  (익절 {sum(1 for t in t_sells if t.get('full'))}번)",
-             f"📈 지금 평가손익  <b>{upnl:+,.0f}원</b>" + (f"  ({upnl / cost * 100:+.1f}%)" if cost else ""),
-             f"🧾 자동매매 투입  {cost:,.0f}원 / 한도 {cap:,.0f}원 ({cost / cap * 100 if cap else 0:.0f}%)",
-             f"🛒 오늘  매수 {len(t_buys)}번 {sum(t['krw'] for t in t_buys):,.0f}원 · 매도 {len(t_sells)}번 {sum(t['krw'] for t in t_sells):,.0f}원",
-             f"📚 누적  매수 {len(buys)}번 {sum(t['krw'] for t in buys):,.0f}원 · 매도 {len(sells)}번 {sum(t['krw'] for t in sells):,.0f}원"]
-        acc = {}
-        if self.api:
+        L = self.tg_head("📊", "FibTrader 현황") + [
+            "<b>💰 총괄</b>",
+            f"누적 수익  <b>{W(done, True)}</b>",
+            f"오늘 수익  <b>{W(sum(t['pnl'] or 0 for t in t_sells), True)}</b>",
+            f"평가 손익  <b>{W(upnl, True)}</b>" + (f" ({upnl / cost * 100:+.1f}%)" if cost else ""),
+            f"익절 횟수  오늘 {sum(1 for t in t_sells if t.get('full'))} · 누적 {sum(1 for t in sells if t.get('full'))}",
+            f"오늘 거래  매수 {len(t_buys)} · 매도 {len(t_sells)}",
+            f"누적 거래  매수 {len(buys)} · 매도 {len(sells)}",
+            f"투입 금액  {W(cost)} / {W(cap)} ({cost / cap * 100 if cap else 0:.0f}%)"]
+        acc = self.tg_accounts()
+        if acc:
             try:
-                acc = {a["currency"]: a for a in self.api.call("GET", "/accounts")}
-                free = self.krw_free()
-                L.append(f"🏦 주문 가능 원화  {free:,.0f}원 (자동매매 걸어 둔 매수 포함)")
+                L.append(f"주문 가능  {W(self.krw_free())}")
             except Exception:  # noqa: BLE001
                 pass
         if (self.btc_bear or (None,))[0]:
-            L.append("⚠️ 비트코인 20일선 아래: 자동매매 새 시작 쉼 (물타기·익절은 계속)")
-        L += [self.TG_LINE, f"<b>【피보나치】</b> {'반자동' if self.cfg['mode'] == 'semi' else '알림만'} · {'모의' if self.cfg['simulate'] else '실전'}", ""]
+            L.append("⚠️ 비트코인 약세: 새 시작 쉼")
+        L += [self.TG_LINE, f"<b>📐 피보나치</b> · {'반자동' if self.cfg['mode'] == 'semi' else '알림만'}", ""]
         for i, c in enumerate(fr.COINS, 1):
             p = price(c)
             lv, pg = self.cfg.get("levels", {}).get(c, {}), self.cfg["progress"][c]
             sd, bd = pg["sell_done"], pg["buy_done"]
             sl, bl = lv.get("sells", []), lv.get("buys", [])
-            L.append(f"<b>{i}. {c}</b>  {fmtp(p) if p else '-'}{chg(c)}")
+            L.append(f"<b>{self.tg_n(i)} {c}</b>  {fmtp(p) if p else '-'}" + (f" {self.tg_chg(tick[c])}" if c in tick else ""))
             a = acc.get(c)
             if a and p:
                 q = float(a["balance"]) + float(a["locked"])
                 avg = float(a.get("avg_buy_price") or 0)
-                L.append(f"   · 보유  {q:,.8g}개 · 평가 {q * p:,.0f}원" + (f" ({pct(p, avg)})" if avg else ""))
-            L.append(f"   · 진행  매도 {sd}/{len(sl)} · 매수 {bd}/{len(bl)} 체결")
+                L.append(f" · 평가 {W(q * p)}" + (f" ({P(p, avg)})" if avg else ""))
+            L.append(f" · 진행 매도 {sd}/{len(sl)} · 매수 {bd}/{len(bl)}")
             if bd < len(bl):
-                L.append(f"   · 다음 매수  {bd + 1}차 {fmtp(bl[bd])} ({pct(bl[bd], p)})")
+                L.append(f" · {bd + 1}차 매수 {fmtp(bl[bd])} ({P(bl[bd], p)})")
             if sd < len(sl):
-                L.append(f"   · 다음 매도  {sd + 1}차 {fmtp(sl[sd])} ({pct(sl[sd], p)})")
+                L.append(f" · {sd + 1}차 매도 {fmtp(sl[sd])} ({P(sl[sd], p)})")
             if lv.get("stop"):
-                L.append(f"   · 매수 중단선  {fmtp(lv['stop'])} ({pct(lv['stop'], p)})")
+                L.append(f" · 중단선 {fmtp(lv['stop'])} ({P(lv['stop'], p)})")
             L.append("")
         state = "꺼짐" if not g["enabled"] else "모의" if self.tg_sim() else "실전"
         per = journal_summary(trades, "coin")
         held = sorted((r for r in rows if r["qty"]), key=lambda r: -r["cost"])
         idle = [r for r in rows if not r["qty"]]
-        L += [self.TG_LINE, f"<b>【자동매매 · {state}】</b> {len(rows)}개 (보유 {len(held)}개)", ""]
+        L += [self.TG_LINE, f"<b>🤖 자동매매</b> · {state} · {len(rows)}개", ""]
         for i, r in enumerate(held + idle, 1):
             c, p = r["coin"], price(r["coin"])
-            L.append(f"<b>{i}. {c}</b>  {fmtp(p) if p else '-'}{chg(c)}  {self.tg_icon(r['status'])} {r['status']}")
+            L.append(f"<b>{self.tg_n(i)} {c}</b>  {fmtp(p) if p else '-'}" + (f" {self.tg_chg(tick[c])}" if c in tick else ""))
+            L.append(f" {self.tg_icon(r['status'])} {r['status']}")
             if r["qty"] and p:
                 u = r["qty"] * p * (1 - FEE) + r.get("realized", 0.0) - r["cost"]
-                L.append(f"   · 보유  {r['buys']}회 매수 · 원가 {r['cost']:,.0f}원 · 평단 {fmtp(r['cost'] / r['qty'])}")
-                L.append(f"   · 지금 손익  <b>{u:+,.0f}원</b> ({u / r['cost'] * 100:+.1f}%)" + (" · 본전 매도함" if r.get("halved") else ""))
+                L.append(f" · 손익 <b>{W(u, True)}</b> ({u / r['cost'] * 100:+.1f}%)")
+                L.append(f" · {r['buys']}회 매수 · 원가 {W(r['cost'])}")
+                L.append(f" · 평단 {fmtp(r['cost'] / r['qty'])}" + (" · 본전 매도함" if r.get("halved") else ""))
                 if r.get("next_buy"):
-                    L.append(f"   · 다음 물타기  {fmtp(r['next_buy'])} ({pct(r['next_buy'], p)})"
-                             + (f"에 {r['next_amt']:,.0f}원" if r.get("next_amt") else ""))
+                    L.append(f" · 물타기 {fmtp(r['next_buy'])} ({P(r['next_buy'], p)})"
+                             + (f" {W(r['next_amt'])}" if r.get("next_amt") else ""))
                 if r.get("tp"):
-                    L.append(f"   · 익절 목표  {fmtp(r['tp'])} ({pct(r['tp'], p)}) → +{r['profit']:,.0f}원")
+                    L.append(f" · 익절 {fmtp(r['tp'])} ({P(r['tp'], p)}) {W(r['profit'], True)}")
             else:
-                L.append("   · 보유 없음 (다음 사이클 대기)")
+                L.append(" · 보유 없음 (다음 판 대기)")
             j = per.get(c, {})
-            L.append(f"   · 누적  익절 {r['cycles']}번 · 실현 {r['profit_total'] + r.get('realized', 0.0):+,.0f}원"
-                     f" · 매수 {j.get('buys', 0)}번 · 매도 {j.get('sells', 0)}번")
+            L.append(f" · 누적 {W(r['profit_total'] + r.get('realized', 0.0), True)} · 익절 {r['cycles']}번")
+            L.append(f" · 거래 매수 {j.get('buys', 0)} · 매도 {j.get('sells', 0)}")
             L.append("")
         return "\n".join(L).rstrip()
 
     def tg_day_text(self, date, label):
         """하루 요약: 총괄 → 거래한 코인별."""
+        W = self.tg_won
         trades = [t for t in build_journal(self.db, self.tg_sim()) if t["date"] == date]
         sells = [t for t in trades if t["side"] == "ask"]
         buys = [t for t in trades if t["side"] == "bid"]
-        L = [f"📅 <b>{label} 자동매매</b> · {date}", self.TG_LINE, "<b>【총괄】</b>",
-             f"💰 실현 수익  <b>{sum(t['pnl'] or 0.0 for t in sells):+,.0f}원</b>  (익절 {sum(1 for t in sells if t.get('full'))}번)",
-             f"🛒 매수 {len(buys)}번 {sum(t['krw'] for t in buys):,.0f}원 · 매도 {len(sells)}번 {sum(t['krw'] for t in sells):,.0f}원"]
+        L = [f"📅 <b>{label} 자동매매</b>", f"{date}", self.TG_LINE, "<b>💰 총괄</b>",
+             f"실현 수익  <b>{W(sum(t['pnl'] or 0.0 for t in sells), True)}</b>",
+             f"익절  {sum(1 for t in sells if t.get('full'))}번",
+             f"매수 {len(buys)}번 · {W(sum(t['krw'] for t in buys))}",
+             f"매도 {len(sells)}번 · {W(sum(t['krw'] for t in sells))}"]
         per = journal_summary(trades, "coin")
         if not per:
             return "\n".join(L + [self.TG_LINE, "거래 없음"])
-        L += [self.TG_LINE, "<b>【코인별】</b>", ""]
+        L += [self.TG_LINE, "<b>🪙 코인별</b>", ""]
         for i, a in enumerate(sorted(per.values(), key=lambda a: (-a["pnl"], -a["buy_krw"])), 1):
-            L.append(f"<b>{i}. {a['key']}</b>")
+            L.append(f"<b>{self.tg_n(i)} {a['key']}</b>" + (f"  {W(a['pnl'], True)}" if a["sells"] else ""))
             if a["sells"]:
-                L.append(f"   · 익절 {a['cycles']}번 · 실현 <b>{a['pnl']:+,.0f}원</b>")
-            L.append(f"   · 매수 {a['buys']}번 {a['buy_krw']:,.0f}원 · 매도 {a['sells']}번 {a['sell_krw']:,.0f}원")
+                L.append(f" · 익절 {a['cycles']}번 · 매도 {a['sells']}번")
+            L.append(f" · 매수 {a['buys']}번 {W(a['buy_krw'])}")
             L.append("")
         return "\n".join(L).rstrip()
+
+    def tg_pnl_text(self):
+        W = self.tg_won
+        trades = [t for t in build_journal(self.db, self.tg_sim()) if t["side"] == "ask"]
+        today = now().date()
+        spans = [("오늘", today, today), ("어제", today - datetime.timedelta(days=1), today - datetime.timedelta(days=1)),
+                 ("7일", today - datetime.timedelta(days=6), today), ("이번 달", today.replace(day=1), today)]
+        L = self.tg_head("💰", "자동매매 수익") + [f"<b>📈 총괄</b> · {'모의' if self.tg_sim() else '실전'}"]
+        for label, a_, b_ in spans:
+            ts = [t for t in trades if a_.isoformat() <= t["date"] <= b_.isoformat()]
+            L.append(f"{label}  <b>{W(sum(t['pnl'] or 0 for t in ts), True)}</b> · 익절 {sum(1 for t in ts if t.get('full'))}")
+        L.append(f"누적  <b>{W(sum(t['pnl'] or 0 for t in trades), True)}</b> · 익절 {sum(1 for t in trades if t.get('full'))}")
+        L.append("(수수료 뺀 금액)")
+        per = journal_summary(trades, "coin")
+        if per:
+            L += [self.TG_LINE, "<b>🪙 코인별 누적</b>", ""]
+            for i, a in enumerate(sorted(per.values(), key=lambda a: -a["pnl"]), 1):
+                L.append(f"<b>{self.tg_n(i)} {a['key']}</b>  {W(a['pnl'], True)}")
+                L.append(f" · 익절 {a['cycles']}번 · 매도 {a['sells']}번")
+        return "\n".join(L)
+
+    def tg_month_text(self):
+        W = self.tg_won
+        per = journal_summary([t for t in build_journal(self.db, self.tg_sim()) if t["side"] == "ask"], "month")
+        L = self.tg_head("📆", "월별 수익")
+        if not per:
+            return "\n".join(L + ["아직 매도 기록이 없습니다."])
+        for m in sorted(per)[-6:][::-1]:
+            a = per[m]
+            L.append(f"<b>{m[:4]}년 {int(m[5:])}월</b>  {W(a['pnl'], True)}")
+            L.append(f" · 익절 {a['cycles']}번 · 매도 {a['sells']}번")
+        return "\n".join(L)
+
+    def tg_price_text(self):
+        tick = self.tg_tickers(list(dict.fromkeys(fr.COINS + self.grid_tracked())))
+        L = self.tg_head("💹", "시세 (많이 오른 순)")
+        for i, c in enumerate(sorted(tick, key=lambda c: -tick[c].get("signed_change_rate", 0)), 1):
+            t = tick[c]
+            L.append(f"<b>{self.tg_n(i)} {c}</b>  {fmtp(t['trade_price'])}")
+            L.append(f" · {self.tg_chg(t)} · 거래 {self.tg_won(t.get('acc_trade_price_24h', 0))}")
+        return "\n".join(L)
+
+    def tg_coin_text(self, coin):
+        W, P = self.tg_won, self.tg_pct
+        coin = coin.upper().replace("KRW-", "")
+        tick = self.tg_tickers([coin]).get(coin)
+        if not tick:
+            return f"{coin}: 업비트 원화마켓에 없는 코인입니다."
+        p = tick["trade_price"]
+        L = self.tg_head("🔎", f"{coin}  {fmtp(p)} {self.tg_chg(tick)}") + [
+            f"고가  {fmtp(tick.get('high_price'))}", f"저가  {fmtp(tick.get('low_price'))}",
+            f"거래  {W(tick.get('acc_trade_price_24h', 0))}"]
+        known = False
+        if coin in fr.COINS and self.cfg.get("levels", {}).get(coin):
+            known = True
+            lv, pg = self.cfg["levels"][coin], self.cfg["progress"][coin]
+            L += [self.TG_LINE, f"<b>📐 피보나치</b> · 매도 {pg['sell_done']}/{len(lv['sells'])} · 매수 {pg['buy_done']}/{len(lv['buys'])}"]
+            for i, x in reversed(list(enumerate(lv["sells"]))):
+                L.append(f"{'✅' if i < pg['sell_done'] else '▫️'} {i + 1}차 매도 {fmtp(x)} ({P(x, p)})")
+            L.append(f"👉 지금 {fmtp(p)}")
+            for i, x in enumerate(lv["buys"]):
+                L.append(f"{'✅' if i < pg['buy_done'] else '▫️'} {i + 1}차 매수 {fmtp(x)} ({P(x, p)})")
+            L.append(f"⛔ 중단선 {fmtp(lv['stop'])} ({P(lv['stop'], p)})")
+        row = next((r for r in self.grid_view() if r["coin"] == coin), None)
+        if row:
+            known = True
+            L += [self.TG_LINE, "<b>🤖 자동매매</b>", f"{self.tg_icon(row['status'])} {row['status']}"]
+            if row["qty"]:
+                u = row["qty"] * p * (1 - FEE) + row.get("realized", 0.0) - row["cost"]
+                L.append(f"손익  <b>{W(u, True)}</b> ({u / row['cost'] * 100:+.1f}%)")
+                L.append(f"매수  {row['buys']}회 · 원가 {W(row['cost'])}")
+                L.append(f"평단  {fmtp(row['cost'] / row['qty'])}" + (" · 본전 매도함" if row.get("halved") else ""))
+                if row.get("next_buy"):
+                    L.append(f"물타기  {fmtp(row['next_buy'])} ({P(row['next_buy'], p)})")
+                    if row.get("next_amt"):
+                        L.append(f"  └ 금액 {W(row['next_amt'])}")
+                if row.get("breakeven"):
+                    L.append(f"본전  {fmtp(row['breakeven'])} ({P(row['breakeven'], p)})")
+                if row.get("tp"):
+                    L.append(f"익절  {fmtp(row['tp'])} ({P(row['tp'], p)})")
+                    L.append(f"  └ 목표 {W(row['profit'], True)}")
+            else:
+                L.append("보유 없음 (다음 판 대기)")
+            L.append(f"누적  {W(row['profit_total'], True)} · 익절 {row['cycles']}번")
+        a = self.tg_accounts().get(coin)
+        if a:
+            q = float(a["balance"]) + float(a["locked"])
+            avg = float(a.get("avg_buy_price") or 0)
+            L += [self.TG_LINE, "<b>🏦 업비트 계좌</b>", f"수량  {q:,.8g}개", f"평가  {W(q * p)}"]
+            if avg:
+                L.append(f"평단  {fmtp(avg)} ({P(p, avg)})")
+        if not known:
+            L += [self.TG_LINE, "FibTrader가 매매하지 않는 코인입니다."]
+        return "\n".join(L)
+
+    def tg_balance_text(self):
+        W, P = self.tg_won, self.tg_pct
+        if not self.api:
+            return "API 키가 없어서 잔고를 볼 수 없습니다."
+        acc = self.api.call("GET", "/accounts")
+        krw = next((float(a["balance"]) + float(a["locked"]) for a in acc if a["currency"] == "KRW"), 0.0)
+        krw_free = next((float(a["balance"]) for a in acc if a["currency"] == "KRW"), 0.0)
+        coins = {a["currency"]: a for a in acc if a["currency"] != "KRW" and float(a["balance"]) + float(a["locked"]) > 0}
+        tick = self.tg_tickers(list(coins))
+        rows = []
+        for c, a in coins.items():
+            if c in tick:
+                q = float(a["balance"]) + float(a["locked"])
+                avg = float(a.get("avg_buy_price") or 0)
+                rows.append((q * tick[c]["trade_price"], c, q * avg, tick[c]["trade_price"], avg))
+        rows = sorted((r for r in rows if r[0] >= 1000), reverse=True)
+        val, base = sum(r[0] for r in rows), sum(r[2] for r in rows)
+        L = self.tg_head("🏦", "업비트 잔고") + [
+            f"총자산  <b>{W(krw + val)}</b>", f"원화  {W(krw)}", f"주문 가능  {W(krw_free)}", f"코인  {W(val)}",
+            f"평가 손익  <b>{W(val - base, True)}</b>" + (f" ({(val / base - 1) * 100:+.1f}%)" if base else ""),
+            self.TG_LINE, "<b>🪙 코인별</b> (많은 순)", ""]
+        for i, (v, c, b, p, avg) in enumerate(rows[:20], 1):
+            L.append(f"<b>{self.tg_n(i)} {c}</b>  {W(v)}")
+            if avg:
+                L.append(f" · {W(v - b, True)} ({P(p, avg)})")
+        return "\n".join(L)
+
+    def tg_orders_text(self):
+        W, P = self.tg_won, self.tg_pct
+        if not self.api:
+            return "API 키가 없어서 주문을 볼 수 없습니다."
+        orders = self.api.open_all()
+        if not orders:
+            return "📋 업비트에 걸린 주문이 없습니다."
+        tick = self.tg_tickers([o["market"][4:] for o in orders if o["market"].startswith("KRW-")])
+        by = {}
+        for o in orders:
+            by.setdefault(o["market"][4:], []).append(o)
+        amt = lambda o: float(o["price"] or 0) * float(o["remaining_volume"] or 0)  # noqa: E731
+        L = self.tg_head("📋", "걸린 주문") + [
+            f"전체  {len(orders)}건", f"매수  {sum(1 for o in orders if o['side'] == 'bid')}건 · {W(sum(amt(o) for o in orders if o['side'] == 'bid'))}",
+            f"매도  {sum(1 for o in orders if o['side'] == 'ask')}건 · {W(sum(amt(o) for o in orders if o['side'] == 'ask'))}",
+            self.TG_LINE, ""]
+        for i, c in enumerate(sorted(by), 1):
+            p = tick.get(c, {}).get("trade_price")
+            L.append(f"<b>{self.tg_n(i)} {c}</b>" + (f"  지금 {fmtp(p)}" if p else ""))
+            for o in sorted(by[c], key=lambda o: -float(o["price"] or 0)):
+                px = float(o["price"] or 0)
+                L.append(f" {'🔵 매도' if o['side'] == 'ask' else '🔴 매수'} {fmtp(px)}" + (f" ({P(px, p)})" if p else "") + f" {W(amt(o))}")
+            L.append("")
+        return "\n".join(L).rstrip()
+
+    def tg_plan_text(self):
+        P = self.tg_pct
+        tick = self.tg_tickers(fr.COINS)
+        L = self.tg_head("📐", "피보나치 플랜") + ["✅ 체결 · 👉 지금 가격", ""]
+        for i, c in enumerate(fr.COINS, 1):
+            lv = self.cfg.get("levels", {}).get(c)
+            if not lv:
+                continue
+            pg = self.cfg["progress"][c]
+            p = tick.get(c, {}).get("trade_price") or self.prices.get(c)
+            L.append(f"<b>{self.tg_n(i)} {c}</b>" + (f"  {self.tg_chg(tick[c])}" if c in tick else ""))
+            for k, x in reversed(list(enumerate(lv["sells"]))):
+                L.append(f"{'✅' if k < pg['sell_done'] else '▫️'} {k + 1}차 매도 {fmtp(x)} ({P(x, p)})")
+            L.append(f"👉 지금 {fmtp(p)}")
+            for k, x in enumerate(lv["buys"]):
+                L.append(f"{'✅' if k < pg['buy_done'] else '▫️'} {k + 1}차 매수 {fmtp(x)} ({P(x, p)})")
+            L.append(f"⛔ 중단선 {fmtp(lv['stop'])} ({P(lv['stop'], p)})")
+            L.append(f"레벨 기준 {lv.get('at', '-')}")
+            L.append("")
+        return "\n".join(L).rstrip()
+
+    def tg_risk_text(self):
+        W, P = self.tg_won, self.tg_pct
+        g = self.cfg["grid"]
+        allrows = self.grid_view()
+        rows = [r for r in allrows if r["qty"]]
+        cost = sum(r["cost"] for r in rows)
+        cap = self.grid_total_cap()
+        up = sum(r["qty"] * (r["price"] or 0) * (1 - FEE) + r.get("realized", 0.0) - r["cost"] for r in rows)
+        L = self.tg_head("⚠️", "위험 점검") + [
+            "<b>📊 한도</b>", f"투입  {W(cost)} / {W(cap)}", f"사용  <b>{cost / cap * 100 if cap else 0:.0f}%</b>",
+            f"코인당 한도  {W(g['max_krw'])}", f"평가 손익  <b>{W(up, True)}</b>"]
+        if rows:
+            L += [self.TG_LINE, "<b>🪙 많이 들어간 코인</b>", ""]
+            for i, r in enumerate(sorted(rows, key=lambda r: -r["cost"])[:5], 1):
+                u = r["qty"] * (r["price"] or 0) * (1 - FEE) + r.get("realized", 0.0) - r["cost"]
+                L.append(f"<b>{self.tg_n(i)} {r['coin']}</b>  {r['buys']}회 · {W(r['cost'])}")
+                L.append(f" · 코인 한도의 {r['cost'] / g['max_krw'] * 100:.0f}% · {W(u, True)}")
+                if r.get("next_buy") and r["price"]:
+                    L.append(f" · 다음 {fmtp(r['next_buy'])} ({P(r['next_buy'], r['price'])})"
+                             + (f" {W(r['next_amt'])}" if r.get("next_amt") else ""))
+        wide = int(g.get("wide_after", 0))
+        deep = [r for r in rows if wide and r["buys"] >= wide - 3]
+        blocked = [r for r in allrows if "중지" in r["status"] or "쉼" in r["status"]]
+        if deep or blocked:
+            L += [self.TG_LINE, "<b>🚨 살펴볼 것</b>"]
+            for r in deep:
+                L.append(f" · {r['coin']} 물타기 {r['buys']}회 ({wide}회부터 간격 넓어짐)")
+            for r in blocked:
+                L.append(f" · {r['coin']} {r['status']}")
+        try:
+            free = self.krw_free()
+        except Exception:  # noqa: BLE001
+            free = None
+        if free is not None:
+            L += [self.TG_LINE, "<b>💵 현금</b>", f"주문 가능  {W(free)}",
+                  f"새 시작 멈춤  {W(g.get('cash_floor_start', 0))} 아래", f"모든 매수 멈춤  {W(g.get('cash_floor_all', 0))} 아래"]
+        if (self.btc_bear or (False,))[0]:
+            L.append("⚠️ 비트코인 약세: 새 시작 쉼")
+        return "\n".join(L)
+
+    def tg_alerts_text(self):
+        rows = self.db.query("SELECT ts, title, msg FROM alerts WHERE kind NOT IN ('order', 'info') ORDER BY rowid DESC LIMIT 10")
+        L = self.tg_head("🔔", "최근 알림 10개")
+        if not rows:
+            return "\n".join(L + ["최근 알림이 없습니다."])
+        for ts, title, msg in rows:
+            first = (msg or "").split("\n")[0]
+            L.append(f"<b>{ts[5:16]}</b>  {ftg.esc(title)}")
+            if first:
+                L.append(f" └ {ftg.esc(first[:45])}")
+            L.append("")
+        return "\n".join(L).rstrip()
+
+    def tg_check_text(self):
+        g = self.cfg["grid"]
+        last = getattr(self, "last_ok", 0)
+        ago = time.time() - last if last else None
+        ok = ago is not None and ago < 3 * max(self.cfg["every_sec"], 10) + 30
+        up = max(0.0, time.time() - getattr(self, "started", 0.0)) if getattr(self, "started", None) else None
+        L = self.tg_head("🩺", "프로그램 점검") + [
+            "✅ <b>정상 작동</b>" if ok else "⚠️ <b>확인이 늦어지는 중</b>",
+            f"마지막 확인  {f'{ago:.0f}초 전' if ago is not None else '아직 없음'}",
+            f"켜진 시간  {int(up // 3600)}시간 {int(up % 3600 // 60)}분" if up is not None else "켜진 시간  모름",
+            f"업비트 API  {'연결됨' if self.api else '키 없음'}",
+            f"피보나치  {'반자동' if self.cfg['mode'] == 'semi' else '알림만'} · {'모의' if self.cfg['simulate'] else '실전'}",
+            f"자동매매  {'꺼짐' if not g['enabled'] else '모의' if self.tg_sim() else '실전'} · {len(self.grid_coins())}개",
+            f"텔레그램  {self.tg.status}"]
+        if self.cfg.get("stopped"):
+            L += ["", "⛔ 긴급 정지 상태", "(PC에서 [재개]를 눌러야 풀림)"]
+        if self.proposal:
+            L += ["", "📝 PC에 승인 대기 주문 제안 있음"]
+        return "\n".join(L)
 
     def grid_refresh(self):
         """[조회] 버튼: 자동매매 대상·보유 코인 시세를 바로 받아 표를 새로 그린다 (주문은 안 함)."""

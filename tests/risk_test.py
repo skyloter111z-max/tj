@@ -923,7 +923,7 @@ lstep(e, ex, 340); lstep(e, ex, 329)
 fr.get = lambda path: [{"market": m, "trade_price": 330.0, "signed_change_rate": -0.02} for m in path.split("=")[1].split(",")] if "ticker" in path else orig_get(path)
 txt = e.tg_status_text(); day = e.tg_day_text(core.now().strftime("%Y-%m-%d"), "오늘")
 msgs = [e.tg.out.get_nowait()[1] for _ in range(e.tg.out.qsize())]
-ok("【총괄】" in txt and "【자동매매" in txt and "1. ADA</b>  330" in txt and "2회 매수" in txt and "매수 2번" in day and any("물타기" in m for m in msgs),
+ok("💰 총괄" in txt and "🤖 자동매매" in txt and "① ADA</b>  330" in txt and "2회 매수" in txt and "매수 2번" in day and any("물타기" in m for m in msgs),
    "G1d 현황·오늘 글 생성, 매수 알림은 텔레그램으로도 보냄")
 # G2 추가 조회 명령 11가지: 말 → 명령 연결, 코인 이름만 보내도 됨, 글이 오류 없이 만들어짐
 got = []
@@ -943,7 +943,7 @@ fr.get = no_zzz
 for c in got + ["status", "today", "coin:ZZZ"]:
     e.tg_command(c)
 outs = [e.tg.out.get_nowait()[1] for _ in range(e.tg.out.qsize())]
-ok(len(outs) == len(got) + 3 and not any("오류" in m for m in outs) and any("ADA" in m and "지금 손익" in m for m in outs)
+ok(len(outs) == len(got) + 3 and not any("오류" in m for m in outs) and any("ADA" in m and "손익" in m and "물타기" in m for m in outs)
    and any("걸린 주문" in m for m in outs) and any("정상 작동" in m or "확인이 늦어" in m for m in outs) and "없는 코인" in outs[-1],
    "G2b 11가지 조회 글이 오류 없이 만들어짐 (없는 코인은 안내)")
 fr.get = orig_get
