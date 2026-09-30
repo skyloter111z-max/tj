@@ -18,10 +18,30 @@ KST = datetime.timezone(datetime.timedelta(hours=9))
 LIMIT = 3900  # 텔레그램 한 메시지 최대 4096자 → 여유 두고 나눔
 
 HELP = ("FibTrader 조회 전용 봇입니다 (주문·설정 변경은 안 됩니다).\n"
-        "/status 또는 현황 : 피보나치·자동매매 현황\n"
-        "/today 또는 오늘 : 오늘 자동매매 익절·매수\n"
-        "/help : 이 안내\n"
+        "/status 현황 : 피보나치·자동매매 한눈에\n"
+        "/today 오늘 · /yesterday 어제 : 그날 익절·매수\n"
+        "/pnl 수익 : 오늘·어제·7일·이번 달·누적 실현 수익\n"
+        "/month 월별 : 최근 6개월 월별 수익\n"
+        "/coin XRP 또는 그냥 XRP : 코인 하나 자세히\n"
+        "/price 시세 : 보는 코인 전체 시세·등락률\n"
+        "/balance 잔고 : 업비트 잔고·평가손익\n"
+        "/orders 주문 : 업비트에 걸린 주문\n"
+        "/plan 플랜 : BTC·ETH·XRP 피보나치 레벨 전체\n"
+        "/risk 위험 : 자동매매 한도·깊게 물린 코인·현금\n"
+        "/alerts 알림 : 최근 알림 10개\n"
+        "/check 점검 : 프로그램이 잘 돌고 있는지\n"
+        "/help 도움 : 이 안내\n"
         "매매·체결·오류 알림은 자동으로 옵니다. 매일 09시에 어제 요약을 보냅니다.")
+
+# 받은 말 → 엔진 명령 (앞의 / 와 대소문자 무시)
+COMMANDS = {
+    "status": ("status", "현황", "상태"), "today": ("today", "오늘"), "yesterday": ("yesterday", "어제"),
+    "pnl": ("pnl", "수익", "손익"), "month": ("month", "월별", "이번달"), "coin": ("coin", "코인"),
+    "price": ("price", "시세", "가격"), "balance": ("balance", "잔고", "자산"), "orders": ("orders", "주문"),
+    "plan": ("plan", "플랜", "레벨"), "risk": ("risk", "위험", "한도"), "alerts": ("alerts", "알림"),
+    "check": ("check", "점검", "health"),
+}
+ALIAS = {w: name for name, words in COMMANDS.items() for w in words}
 
 
 def env(name):
@@ -153,11 +173,16 @@ class Telegram:
             return
         if chat != self.chat:
             return  # 주인 채팅이 아니면 무시 (답도 안 함)
-        cmd = text.split()[0].split("@")[0].lower()
-        if cmd in ("/status", "현황", "/현황", "상태"):
-            self.on_command("status")
-        elif cmd in ("/today", "오늘", "/오늘"):
-            self.on_command("today")
+        words = text.split()
+        word = words[0].split("@")[0].lstrip("/").lower()
+        arg = words[1].upper() if len(words) > 1 else ""
+        name = ALIAS.get(word)
+        if name == "coin" and not arg:
+            self.send("코인 이름을 같이 보내 주세요. 예: /coin XRP 또는 그냥 XRP")
+        elif name:
+            self.on_command(f"{name}:{arg}" if name == "coin" else name)  # 명령 이름만 넘김 (주문·설정 명령은 없음)
+        elif len(words) == 1 and not text.startswith("/") and 2 <= len(word) <= 10 and word.isascii() and word.isalnum() and not word.isdigit():
+            self.on_command(f"coin:{word.upper()}")  # 그냥 "XRP"라고 보내면 그 코인 자세히
         else:
             self.send(HELP)
 

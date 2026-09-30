@@ -925,6 +925,27 @@ txt = e.tg_status_text(); day = e.tg_day_text(core.now().strftime("%Y-%m-%d"), "
 msgs = [e.tg.out.get_nowait()[1] for _ in range(e.tg.out.qsize())]
 ok("[자동매매" in txt and "ADA 330" in txt and "2회" in txt and "매수 2번" in day and any("물타기" in m for m in msgs),
    "G1d 현황·오늘 글 생성, 매수 알림은 텔레그램으로도 보냄")
+# G2 추가 조회 명령 11가지: 말 → 명령 연결, 코인 이름만 보내도 됨, 글이 오류 없이 만들어짐
+got = []
+tg = ftg.Telegram(got.append, token="x", chat_id="111")
+for text in ("수익", "/month", "시세", "/balance", "주문", "플랜", "/risk", "알림", "점검", "어제", "xrp", "/coin ada", "/coin", "/sell", "매도 BTC"):
+    tg.handle({"chat": {"id": 111}, "text": text})
+sent = [tg.out.get_nowait()[1] for _ in range(tg.out.qsize())]
+ok(got == ["pnl", "month", "price", "balance", "orders", "plan", "risk", "alerts", "check", "yesterday", "coin:XRP", "coin:ADA"]
+   and len(sent) == 3 and "코인 이름" in sent[0] and all("조회 전용" in m for m in sent[1:]),
+   f"G2a 명령 연결 (주문·매도 같은 말은 안내만): {got}")
+e.tg.out = __import__("queue").Queue()
+fake_get = fr.get
+def no_zzz(path):  # 업비트는 없는 마켓이 섞이면 404로 거절한다
+    if "ZZZ" in path: raise RuntimeError("GET 실패 404")
+    return fake_get(path)
+fr.get = no_zzz
+for c in got + ["status", "today", "coin:ZZZ"]:
+    e.tg_command(c)
+outs = [e.tg.out.get_nowait()[1] for _ in range(e.tg.out.qsize())]
+ok(len(outs) == len(got) + 3 and not any("오류" in m for m in outs) and any("ADA" in m and "지금 손익" in m for m in outs)
+   and any("걸린 주문" in m for m in outs) and any("정상 작동" in m or "확인이 늦어" in m for m in outs) and "없는 코인" in outs[-1],
+   "G2b 11가지 조회 글이 오류 없이 만들어짐 (없는 코인은 안내)")
 fr.get = orig_get
 
 # T12 장부 3판 바로잡기: 새 설정(2.5만·1.1배·5%)으로 시작했는데 2판 이전에 1.5배·3%로 도장된 사이클(ADA)만 새 설정으로,
