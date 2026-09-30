@@ -266,9 +266,9 @@ class Candles(tk.Canvas):
     마우스를 올리면 십자선 + 그 봉의 시가·고가·저가·종가·등락률. 양봉 UP, 음봉 DOWN.
     zoom=True면 휠로 확대·축소, 끌어서 과거 보기, 두 번 클릭하면 최신으로. ma=(5, 20, …)면 이동평균선."""
     AXIS_W, TIME_H = 86, 18
-    # 바이비트 느낌 색 (상승 빨강 · 하락 초록 = 바이비트의 '빨강 상승' 설정)
+    # 바이비트 느낌 색 (차트 봉은 바이비트 기본처럼 상승 초록 · 하락 빨강)
     BG, GRID, TXT, BORDER = "#0B0E11", "#1A1E24", "#848E9C", "#1E2329"
-    CUP, CDOWN = "#F6465D", "#2EBD85"
+    CUP, CDOWN = "#2EBD85", "#F6465D"
     XH, TAGBG, TAGFG = "#5E6673", "#2B3139", "#EAECEF"
     MA_COLORS = {5: "#F0B90B", 10: "#F0B90B", 20: "#E45BB3", 60: "#9D7BF5", 120: "#3FA7E0"}
     MIN_VIEW = 15
