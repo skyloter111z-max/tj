@@ -20,7 +20,7 @@ KST = datetime.timezone(datetime.timedelta(hours=9))
 LIMIT = 3900  # 텔레그램 한 메시지 최대 4096자 → 여유 두고 나눔
 
 HELP = ("<b>FibTrader 조회 전용 봇</b> (주문·설정 변경은 안 됩니다)\n"
-        "아래 버튼을 누르거나 한글로 보내세요.\n\n"
+        "입력창 옆 버튼판 아이콘을 눌러 메뉴를 열거나, 한글로 보내세요.\n\n"
         "· <b>현황</b> : 총괄 + 코인별 한눈에\n"
         "· <b>오늘</b> / <b>어제</b> : 그날 익절·매수\n"
         "· <b>수익</b> : 오늘·어제·7일·이번 달·누적 수익\n"
@@ -36,10 +36,12 @@ HELP = ("<b>FibTrader 조회 전용 봇</b> (주문·설정 변경은 안 됩니
         "· <b>도움</b> : 이 안내\n\n"
         "매매·체결·오류 알림은 자동으로 옵니다. 매일 09시에 어제 요약을 보냅니다.")
 
-# 채팅창 아래 한글 버튼판 (누르면 그 글자가 그대로 보내짐)
+# 한글 버튼판 (누르면 그 글자가 그대로 보내짐). 평소엔 숨어 있고, 입력창 옆 버튼판 아이콘을 누르면 튀어나온다.
+# 버튼 하나를 누르면 다시 들어간다 (one_time_keyboard).
 KEYBOARD = json.dumps({"keyboard": [["현황", "오늘", "어제"], ["수익", "월별", "시세"], ["잔고", "주문", "플랜"],
                                     ["위험", "알림", "점검"], ["도움"]],
-                       "resize_keyboard": True, "is_persistent": True}, ensure_ascii=False)
+                       "resize_keyboard": True, "is_persistent": False, "one_time_keyboard": True,
+                       "input_field_placeholder": "버튼판 아이콘을 누르면 메뉴가 나옵니다"}, ensure_ascii=False)
 
 # 받은 말 → 엔진 명령 (앞의 / 와 대소문자 무시)
 COMMANDS = {
@@ -223,7 +225,7 @@ class Telegram:
         for fn in (self._sender, self._poller):
             threading.Thread(target=fn, daemon=True).start()
         if self.chat:
-            self.send("✅ <b>FibTrader가 켜졌습니다.</b>\n아래 버튼으로 현황·수익 등을 볼 수 있습니다.", keyboard=True)
+            self.send("✅ <b>FibTrader가 켜졌습니다.</b>\n입력창 옆 버튼판 아이콘을 누르면 메뉴가 나옵니다.", keyboard=True)
 
     def stop(self):
         self.stop_event.set()
