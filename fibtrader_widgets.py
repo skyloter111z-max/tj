@@ -272,13 +272,16 @@ class Candles(tk.Canvas):
     XH, TAGBG, TAGFG = "#5E6673", "#2B3139", "#EAECEF"
     MA_COLORS = {5: "#F0B90B", 10: "#F0B90B", 20: "#E45BB3", 60: "#9D7BF5", 120: "#3FA7E0"}
     MIN_VIEW = 15
+    RIGHT_PAD = 5       # 업비트처럼 처음 열 때 최신 봉 오른쪽에 비워 두는 칸 수 (확대 차트만)
+    MAX_BLANK = 0.7     # 오른쪽 빈칸은 화면 칸 수의 70%까지 (봉이 30%는 보이게)
 
     def __init__(self, parent, height=150, zoom=False, ma=(), view=None, on_need_older=None):
         super().__init__(parent, bg=self.BG, height=height, highlightthickness=1, highlightbackground=self.BORDER,
                          cursor="crosshair")
         self.data, self.lines, self.unit, self.geom = [], [], "", None
-        self.ma, self.default_view, self.on_need_older = tuple(ma), view, on_need_older
-        self.view_n, self.off = view, 0     # 보이는 봉 수 (None = 전부), 오른쪽 끝에서 가려진 봉 수 (0 = 최신이 오른쪽 끝)
+        self.ma, self.default_view, self.on_need_older, self.zoom = tuple(ma), view, on_need_older, zoom
+        # 보이는 칸 수 (None = 전부), 오른쪽 끝에서 가려진 봉 수 (0 = 최신이 오른쪽 끝, 음수 = 최신 오른쪽 빈칸 수)
+        self.view_n, self.off = view, self.home_off()
         self.mx, self.drag, self.loading = None, None, False
         self.bind("<Configure>", lambda e: self.draw())
         self.bind("<Motion>", self.hover)
@@ -296,7 +299,7 @@ class Candles(tk.Canvas):
         새 봉이 뒤에 붙으면, 과거를 보고 있던 화면은 그 자리에 머문다. 앞(과거)에 붙은 봉은 화면을 움직이지 않는다."""
         old = self.data
         if reset:
-            self.view_n, self.off, self.loading = self.default_view, 0, False
+            self.view_n, self.off, self.loading = self.default_view, self.home_off(), False
         elif old and candles and self.off > 0 and len(old[0]) >= 5 and len(candles[0]) >= 5:
             last_old = old[-1][4]
             newer = sum(1 for c in candles if c[4] > last_old)
@@ -304,20 +307,30 @@ class Candles(tk.Canvas):
         if len(candles) > len(old):
             self.loading = False
         self.data, self.lines, self.unit = candles, lines, unit
-        self.off = max(0, min(self.off, len(candles) - self.view_count()))
+        self.off = max(-self.max_blank(), min(self.off, len(candles) - self.view_count()))
         self.draw()
+
+    def home_off(self):
+        return -self.RIGHT_PAD if self.zoom and self.default_view else 0
+
+    def max_blank(self, vn=None):
+        """오른쪽(미래 쪽)으로 비울 수 있는 최대 칸 수. 작은 차트는 0."""
+        if not self.zoom or not self.view_n:
+            return 0
+        return int((vn or self.view_count()) * self.MAX_BLANK)
 
     def view_count(self):
         n = len(self.data)
         return max(1, min(self.view_n or n, n))
 
     def window(self):
+        """(시작, 끝) 칸 번호. 끝이 데이터 길이보다 크면 그만큼 오른쪽이 빈칸."""
         n, vn = len(self.data), self.view_count()
         end = n - self.off
         return max(0, end - vn), end
 
     def reset_view(self):
-        self.view_n, self.off = self.default_view, 0
+        self.view_n, self.off = self.default_view, self.home_off()
         self.draw()
 
     def wheel(self, steps):
@@ -332,7 +345,7 @@ class Candles(tk.Canvas):
         anchor = start + f * vn
         new_start = round(anchor - f * new)
         self.view_n = new
-        self.off = max(0, min(n - new, n - (new_start + new)))
+        self.off = max(-self.max_blank(new), min(n - new, n - (new_start + new)))
         if steps > 0 and vn >= n:
             self.need_older()
         self.draw()
@@ -346,7 +359,7 @@ class Candles(tk.Canvas):
             return
         slot = self.geom[1]
         n, vn = len(self.data), self.view_count()
-        self.off = max(0, min(n - vn, self.drag[1] + round((e.x - self.drag[0]) / max(slot, 1e-6))))
+        self.off = max(-self.max_blank(), min(n - vn, self.drag[1] + round((e.x - self.drag[0]) / max(slot, 1e-6))))
         if self.off >= n - vn:
             self.need_older()
         self.draw()
@@ -425,7 +438,7 @@ class Candles(tk.Canvas):
         lo, hi = lo - pad, hi + pad
         y = lambda v: top + (hi - v) / (hi - lo) * (pbot - top)  # noqa: E731
         n = len(vis)
-        slot = (px1 - 8) / n
+        slot = (px1 - 8) / (end - start)  # 오른쪽 빈칸까지 포함한 칸 수로 나눈다
         self.geom = (4, slot, top, pbot, lo, hi, px1, bot)
         # 오른쪽 가격 태그가 서로 겹치지 않게 위에서부터 차례로 내려 놓고, 아래로 넘치면 다시 위로 민다.
         # 현재가는 가격 + 남은 시간 두 줄이라 더 높다.
@@ -475,7 +488,7 @@ class Candles(tk.Canvas):
             vals_p = self.ma_values(p)
             self.ma_now[p] = vals_p
             segs, pts = [], []
-            for i in range(start, end):  # 보이는 가격 범위 밖으로 나가는 부분은 끊는다 (끝에 눌러 붙이면 가짜 선처럼 보임)
+            for i in range(start, min(end, len(self.data))):  # 보이는 가격 범위 밖으로 나가는 부분은 끊는다 (끝에 눌러 붙이면 가짜 선처럼 보임)
                 m = vals_p[i]
                 if m is None or not lo <= m <= hi:
                     segs.append(pts)
@@ -590,13 +603,16 @@ class Candles(tk.Canvas):
         start, end = self.window()
         j = min(end - start - 1, max(0, int((e.x - x0) / slot)))
         i = start + j
-        c = self.data[i]
         cx = x0 + slot * (j + 0.5)
         self.create_line(cx, 0, cx, bot, fill=self.XH, dash=(3, 3), tags="xh")
         self.create_line(0, e.y, px1, e.y, fill=self.XH, dash=(3, 3), tags="xh")
         if top <= e.y <= pbot:
             price = hi - (e.y - top) / (pbot - top) * (hi - lo)
             self.tag(px1, e.y, T.fmtp(price), self.TAGBG, fg=self.TAGFG, tags="xh")
+        if i >= len(self.data):  # 최신 봉 오른쪽 빈칸: 십자선·가격만, 정보 줄은 최신 봉
+            self.header(len(self.data) - 1)
+            return
+        c = self.data[i]
         if len(c) >= 5 and c[4]:
             t = c[4].replace("T", " ")
             self.tag(cx, bot + self.TIME_H / 2 + 1, t[5:16], self.TAGBG, fg=self.TAGFG, anchor="w", tags="xh")
