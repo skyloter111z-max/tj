@@ -305,7 +305,7 @@ function priceMatches(prices: number[] | undefined, amount: number): boolean {
 
 export type MaskedMatch = MerchantMatch & {
   /** 어떤 신호로 맞췄는지. 운영 중 사전 품질을 보는 데 쓴다 */
-  by: "prefix+price" | "price-only" | "prefix-only" | "none";
+  by: "declared+price" | "prefix+price" | "price-only" | "prefix-only" | "none";
 };
 
 /**
@@ -318,14 +318,33 @@ export type MaskedMatch = MerchantMatch & {
  * 접두와 금액이 함께 맞을 때만 확정하고, 하나만 맞거나 후보가 여럿이면
  * 미분류로 남긴다 — 틀린 이름을 보여주는 것이 모르는 것보다 나쁘다.
  */
-export function matchMaskedMerchant(masked: string, amount: number): MaskedMatch {
+export function matchMaskedMerchant(
+  masked: string,
+  amount: number,
+  /**
+   * 온보딩에서 사용자가 "쓰고 있다"고 고른 서비스 id.
+   *
+   * **필터가 아니라 힌트다.** 선언되지 않은 구독도 계속 찾는다 — 사용자가 잊은
+   * 구독을 찾아주는 것이 이 앱의 핵심 가치이므로, 선언 목록으로 걸러내면 안 된다.
+   * 후보가 여럿일 때 선언된 쪽을 택하는 데만 쓴다. Claude Pro와 Perplexity Pro는
+   * 둘 다 27,000원이라 선언 없이는 구분할 수 없다.
+   */
+  declared?: ReadonlySet<string>,
+): MaskedMatch {
   const prefix = revealedPrefix(masked).toUpperCase();
   const normalized = normalizeMerchant(masked);
 
-  const byPrefix = SERVICES.filter((s) =>
-    s.maskedPrefixes?.some((p) => p.toUpperCase() === prefix),
-  );
-  const byPrice = SERVICES.filter((s) => priceMatches(s.prices, amount));
+  const pool = SERVICES;
+  const byPrefix = pool.filter((s) => s.maskedPrefixes?.some((p) => p.toUpperCase() === prefix));
+  const byPrice = pool.filter((s) => priceMatches(s.prices, amount));
+
+  // 선언된 서비스가 후보에 있으면 그것으로 모호성을 푼다
+  if (declared && declared.size > 0) {
+    const declaredHits = byPrice.filter((s) => declared.has(s.id));
+    if (declaredHits.length === 1) {
+      return { service: declaredHits[0]!, normalized, by: "declared+price" };
+    }
+  }
 
   const both = byPrefix.filter((s) => byPrice.includes(s));
   if (both.length === 1) {

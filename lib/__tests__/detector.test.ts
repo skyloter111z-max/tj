@@ -325,3 +325,30 @@ describe("결제 주기 검증 — 사전이 오판을 거부한다", () => {
     expect(matchesYearlyPrice(disney, 13900)).toBe(false); // 월 가격
   });
 });
+
+describe("온보딩 선언 — 힌트이지 필터가 아니다", () => {
+  it("선언이 가격 중복을 푼다 (Claude Pro·Perplexity Pro 둘 다 27,000원)", () => {
+    // 선언 없이는 구분 불가
+    expect(matchMaskedMerchant("알수없는**", 27000).service).toBeNull();
+
+    // 선언하면 확정된다
+    const m = matchMaskedMerchant("알수없는**", 27000, new Set(["perplexity"]));
+    expect(m.service?.id).toBe("perplexity");
+    expect(m.by).toBe("declared+price");
+  });
+
+  it("선언한 것이 둘 다면 여전히 추측하지 않는다", () => {
+    const m = matchMaskedMerchant("알수없는**", 27000, new Set(["claude", "perplexity"]));
+    expect(m.service).toBeNull();
+  });
+
+  it("선언하지 않은 구독도 계속 찾는다 — 잊은 구독이 핵심 가치다", () => {
+    // 사용자는 넷플릭스만 선언했지만 스포티파이도 잡혀야 한다
+    const m = matchMaskedMerchant("스포**", 11990, new Set(["netflix"]));
+    expect(m.service?.id).toBe("spotify");
+  });
+
+  it("선언이 없어도 접두+가격이 맞으면 종전대로 확정한다", () => {
+    expect(matchMaskedMerchant("넷플**", 13500).service?.id).toBe("netflix");
+  });
+});
