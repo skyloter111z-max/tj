@@ -6,7 +6,12 @@ import {
   totalMonthly,
   type RawTransaction,
 } from "../detector";
-import { matchMerchant, normalizeMerchant } from "../merchants";
+import {
+  matchMaskedMerchant,
+  matchMerchant,
+  normalizeMerchant,
+  revealedPrefix,
+} from "../merchants";
 
 const TODAY = "2026-10-03";
 
@@ -213,5 +218,52 @@ describe("정규화가 서비스명의 숫자를 보존한다", () => {
     expect(sub!.service?.id).toBe("ms365");
     expect(sub!.displayName).toBe("Microsoft 365");
     expect(sub!.confidence).toBeGreaterThanOrEqual(0.6);
+  });
+});
+
+describe("마스킹된 가맹점명 식별 — 오픈뱅킹 카드청구상세 대응", () => {
+  it("드러난 접두를 뽑는다", () => {
+    expect(revealedPrefix("오픈**")).toBe("오픈");
+    expect(revealedPrefix("넷플***")).toBe("넷플");
+    expect(revealedPrefix("NETFLIX")).toBe("NETFLIX");
+  });
+
+  it("접두와 금액이 함께 맞으면 확정한다", () => {
+    const m = matchMaskedMerchant("넷플**", 13500);
+    expect(m.service?.id).toBe("netflix");
+    expect(m.by).toBe("prefix+price");
+  });
+
+  it("환율로 금액이 조금 흔들려도 맞춘다", () => {
+    expect(matchMaskedMerchant("오픈**", 28600).service?.id).toBe("chatgpt");
+  });
+
+  it("접두가 겹쳐도 가격 지문이 하나면 가른다", () => {
+    // 접두 "쿠팡"은 쿠팡와우·쿠팡플레이가 공유하지만,
+    // 쿠팡플레이는 와우에 포함돼 별도 청구되지 않으므로 가격 지문이 없다
+    const wow = matchMaskedMerchant("쿠팡**", 7890);
+    expect(wow.service?.id).toBe("coupangwow");
+    expect(wow.by).toBe("prefix+price");
+  });
+
+  it("접두와 가격이 모두 겹치는 두 서비스는 추측하지 않는다", () => {
+    // Claude Pro와 Perplexity Pro는 둘 다 27,000원이다.
+    // 접두가 안 맞으면 가격만으로 확정해서는 안 된다.
+    const m = matchMaskedMerchant("알수없는**", 27000);
+    expect(m.service).toBeNull();
+    expect(m.by).toBe("none");
+  });
+
+  it("접두만 맞고 금액이 전혀 다르면 미분류로 남긴다", () => {
+    // 틀린 이름을 보여주는 것이 모르는 것보다 나쁘다
+    const m = matchMaskedMerchant("넷플**", 999);
+    expect(m.service?.id).toBe("netflix");
+    expect(m.by).toBe("prefix-only");
+  });
+
+  it("아무 신호도 없으면 미분류", () => {
+    const m = matchMaskedMerchant("한식당**", 8500);
+    expect(m.service).toBeNull();
+    expect(m.by).toBe("none");
   });
 });
