@@ -7,10 +7,13 @@ import {
   type RawTransaction,
 } from "../detector";
 import {
+  findService,
+  matchesYearlyPrice,
   matchMaskedMerchant,
   matchMerchant,
   normalizeMerchant,
   revealedPrefix,
+  YEARLY_CAPABLE_SERVICES,
 } from "../merchants";
 
 const TODAY = "2026-10-03";
@@ -265,5 +268,60 @@ describe("마스킹된 가맹점명 식별 — 오픈뱅킹 카드청구상세 �
     const m = matchMaskedMerchant("한식당**", 8500);
     expect(m.service).toBeNull();
     expect(m.by).toBe("none");
+  });
+});
+
+describe("결제 주기 검증 — 사전이 오판을 거부한다", () => {
+  it("넷플릭스는 연간 결제가 없으므로 365일 간격을 연 구독으로 올리지 않는다", () => {
+    // 중간 달 데이터가 비었거나 서로 다른 결제다
+    const txs: RawTransaction[] = [
+      { merchantRaw: "NETFLIX.COM", amount: 17000, date: "2025-09-17" },
+      { merchantRaw: "NETFLIX.COM", amount: 17000, date: "2026-09-17" },
+    ];
+    expect(detectSubscriptions(txs, { today: TODAY })).toHaveLength(0);
+  });
+
+  it("ChatGPT Plus도 월 전용이다", () => {
+    const txs: RawTransaction[] = [
+      { merchantRaw: "PADDLE.NET* OPENAI", amount: 29000, date: "2025-08-11" },
+      { merchantRaw: "PADDLE.NET* OPENAI", amount: 29000, date: "2026-08-11" },
+    ];
+    expect(detectSubscriptions(txs, { today: TODAY })).toHaveLength(0);
+  });
+
+  it("디즈니+는 연간권이 있으므로 연 구독으로 올린다", () => {
+    const txs: RawTransaction[] = [
+      { merchantRaw: "디즈니플러스", amount: 99000, date: "2024-09-20" },
+      { merchantRaw: "디즈니플러스", amount: 99000, date: "2025-09-20" },
+      { merchantRaw: "디즈니플러스", amount: 99000, date: "2026-09-20" },
+    ];
+    const [sub] = detectSubscriptions(txs, { today: TODAY });
+    expect(sub?.service?.id).toBe("disneyplus");
+    expect(sub?.cycle).toBe("yearly");
+  });
+
+  it("사전에 없는 가맹점은 주기를 검증할 수 없으므로 통과시킨다", () => {
+    const txs: RawTransaction[] = [
+      { merchantRaw: "모르는연간서비스", amount: 50000, date: "2024-06-10" },
+      { merchantRaw: "모르는연간서비스", amount: 50000, date: "2025-06-10" },
+      { merchantRaw: "모르는연간서비스", amount: 50000, date: "2026-06-10" },
+    ];
+    const [sub] = detectSubscriptions(txs, { today: TODAY });
+    expect(sub?.cycle).toBe("yearly");
+    expect(sub?.service).toBeNull();
+  });
+
+  it("연 구독 탐색 대상은 연간권이 있는 서비스뿐이다", () => {
+    const ids = YEARLY_CAPABLE_SERVICES.map((s) => s.id);
+    expect(ids).toContain("disneyplus");
+    expect(ids).toContain("ms365");
+    expect(ids).not.toContain("netflix");
+    expect(ids).not.toContain("chatgpt");
+  });
+
+  it("연간권 가격 지문으로 연 구독 후보를 가른다", () => {
+    const disney = findService("disneyplus")!;
+    expect(matchesYearlyPrice(disney, 99000)).toBe(true);
+    expect(matchesYearlyPrice(disney, 13900)).toBe(false); // 월 가격
   });
 });

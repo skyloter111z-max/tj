@@ -7,7 +7,7 @@
  * 사용자에게 아무것도 묻지 않는다. 최초 인증 1회가 전부다.
  */
 
-import { matchMerchant, type ServiceDef } from "./merchants";
+import { matchMerchant, supportsCycle, type ServiceDef } from "./merchants";
 
 export type RawTransaction = {
   /** 카드 명세의 가맹점명 원문, 또는 계좌 거래내역의 통장인자내용 */
@@ -206,6 +206,13 @@ export function detectSubscriptions(
 
     const cycle = classifyCycle(intervals);
     if (!cycle) continue; // 규칙적인 주기가 없으면 구독이 아니다
+
+    // 사전이 오판을 거부한다. 넷플릭스를 365일 간격으로 두 번 봤다면
+    // 그것은 연 구독이 아니다 — 넷플릭스에는 연간 결제가 없다(2026 확인).
+    // 중간 달 데이터가 비었거나 서로 다른 결제인 것이므로 구독으로 올리지 않는다.
+    if (service && !supportsCycle(service, cycle === "weekly" ? "monthly" : cycle)) {
+      continue;
+    }
 
     const amounts = sorted.map((t) => t.amount);
     const confidence =

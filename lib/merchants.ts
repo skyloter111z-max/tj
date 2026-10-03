@@ -26,10 +26,20 @@ export type ServiceDef = {
    */
   maskedPrefixes?: string[];
   /**
-   * 알려진 가격 지점(원). 마스킹 환경의 1차 식별 신호다.
+   * 알려진 **월** 가격 지점(원). 마스킹 환경의 1차 식별 신호다.
    * 구독료는 상수라서 접두보다 판별력이 높다.
    */
   prices?: number[];
+  /**
+   * 이 서비스가 실제로 제공하는 결제 주기.
+   *
+   * 넷플릭스와 ChatGPT Plus는 **연간 결제가 없다**(2026 확인). 월 전용 서비스를
+   * 알고 있으면 ① 연 구독 탐색 대상에서 빼고 ② 365일 간격 관측을 연 구독으로
+   * 오판하지 않는다. 가장 흔한 두 구독이 여기 해당하므로 실익이 크다.
+   */
+  cycles: ("monthly" | "yearly")[];
+  /** 연간권 가격 지점(원). cycles에 "yearly"가 있을 때만 의미가 있다 */
+  yearlyPrices?: number[];
   /** 해지 페이지 딥링크 (spec/v5 §4-5) */
   cancelUrl?: string;
 };
@@ -83,6 +93,7 @@ export const SERVICES: ServiceDef[] = [
     cancelUrl: "https://www.netflix.com/cancelplan",
     maskedPrefixes: ["넷플", "NE"],
     prices: [7000, 13500, 17000],
+    cycles: ["monthly"],
   },
   {
     id: "disneyplus",
@@ -92,6 +103,8 @@ export const SERVICES: ServiceDef[] = [
     cancelUrl: "https://www.disneyplus.com/account/subscription",
     maskedPrefixes: ["디즈", "DI"],
     prices: [9900, 13900],
+    cycles: ["monthly", "yearly"],
+    yearlyPrices: [99000, 139000],
   },
   {
     id: "tving",
@@ -100,6 +113,8 @@ export const SERVICES: ServiceDef[] = [
     patterns: [/TVING/, /티빙/],
     maskedPrefixes: ["티빙", "TV"],
     prices: [5500, 9500, 13900, 17000],
+    cycles: ["monthly", "yearly"],
+    yearlyPrices: [83000, 94800, 118000, 130800, 148000, 183600],
   },
   {
     id: "wavve",
@@ -108,6 +123,8 @@ export const SERVICES: ServiceDef[] = [
     patterns: [/WAVVE/, /웨이브/],
     maskedPrefixes: ["웨이", "WA"],
     prices: [7900, 10900, 13900],
+    cycles: ["monthly", "yearly"],
+    yearlyPrices: [79000, 109000, 139000],
   },
   {
     id: "coupangplay",
@@ -117,6 +134,7 @@ export const SERVICES: ServiceDef[] = [
     // 와우 멤버십에 포함돼 별도 청구되지 않는다 → 가격 지문을 두지 않는다.
     // 쿠팡와우와 접두·가격이 모두 겹치면 둘을 가를 수 없다.
     maskedPrefixes: ["쿠팡", "CO"],
+    cycles: ["monthly"],
   },
   {
     id: "youtubepremium",
@@ -126,6 +144,8 @@ export const SERVICES: ServiceDef[] = [
     cancelUrl: "https://www.youtube.com/paid_memberships",
     maskedPrefixes: ["유튜", "GO", "YO"],
     prices: [14900, 23900],
+    cycles: ["monthly", "yearly"],
+    yearlyPrices: [163900],
   },
 
   // ── AI
@@ -137,6 +157,7 @@ export const SERVICES: ServiceDef[] = [
     cancelUrl: "https://chatgpt.com/#settings/Subscription",
     maskedPrefixes: ["오픈", "PA", "OP"],
     prices: [29000],
+    cycles: ["monthly"],
   },
   {
     id: "claude",
@@ -146,6 +167,8 @@ export const SERVICES: ServiceDef[] = [
     cancelUrl: "https://claude.ai/settings/billing",
     maskedPrefixes: ["앤트", "AN", "CL"],
     prices: [27000],
+    cycles: ["monthly", "yearly"],
+    yearlyPrices: [288000],
   },
   {
     id: "gemini",
@@ -155,6 +178,8 @@ export const SERVICES: ServiceDef[] = [
     cancelUrl: "https://one.google.com/settings",
     maskedPrefixes: ["구글", "GO"],
     prices: [2400, 11900, 29000],
+    cycles: ["monthly", "yearly"],
+    yearlyPrices: [289000],
   },
   {
     id: "perplexity",
@@ -163,18 +188,23 @@ export const SERVICES: ServiceDef[] = [
     patterns: [/PERPLEXITY/],
     maskedPrefixes: ["퍼플", "PE"],
     prices: [27000],
+    cycles: ["monthly", "yearly"],
+    yearlyPrices: [288000],
   },
   {
     id: "cursor",
     name: "Cursor",
     category: "ai",
     patterns: [/CURSOR(\s|$)/, /ANYSPHERE/],
+    cycles: ["monthly", "yearly"],
+    yearlyPrices: [230000],
   },
   {
     id: "midjourney",
     name: "Midjourney",
     category: "ai",
     patterns: [/MIDJOURNEY/],
+    cycles: ["monthly"],
   },
 
   // ── 음악
@@ -185,6 +215,7 @@ export const SERVICES: ServiceDef[] = [
     patterns: [/SPOTIFY/, /스포티파이/],
     maskedPrefixes: ["스포", "SP", "PA"],
     prices: [11990, 16350],
+    cycles: ["monthly"],
   },
   {
     id: "melon",
@@ -193,6 +224,7 @@ export const SERVICES: ServiceDef[] = [
     patterns: [/MELON/, /멜론/, /KAKAO\s?ENTERTAINMENT/],
     maskedPrefixes: ["멜론", "ME", "KA"],
     prices: [7900, 11400],
+    cycles: ["monthly"],
   },
 
   // ── 커머스·기타
@@ -203,6 +235,7 @@ export const SERVICES: ServiceDef[] = [
     patterns: [/COUPANG\s?WOW/, /쿠팡와우/, /와우멤버십/],
     maskedPrefixes: ["쿠팡", "CO"],
     prices: [7890],
+    cycles: ["monthly"],
   },
   {
     id: "naverplus",
@@ -211,6 +244,8 @@ export const SERVICES: ServiceDef[] = [
     patterns: [/NAVER\s?PLUS/, /네이버플러스/, /네이버\s?멤버십/],
     maskedPrefixes: ["네이", "NA"],
     prices: [3900, 4900],
+    cycles: ["monthly", "yearly"],
+    yearlyPrices: [46800],
   },
   {
     id: "icloud",
@@ -219,6 +254,7 @@ export const SERVICES: ServiceDef[] = [
     patterns: [/ICLOUD/, /APPLE\s?ONE/],
     maskedPrefixes: ["애플", "AP"],
     prices: [1100, 3300, 11100],
+    cycles: ["monthly"],
   },
   {
     id: "ms365",
@@ -227,6 +263,8 @@ export const SERVICES: ServiceDef[] = [
     patterns: [/MICROSOFT\s?365/, /MSFT\s?365/, /OFFICE\s?365/],
     maskedPrefixes: ["마이", "MI", "MS"],
     prices: [11900, 89000, 155000],
+    cycles: ["monthly", "yearly"],
+    yearlyPrices: [89000, 155000],
   },
 ];
 
@@ -304,4 +342,19 @@ export function matchMaskedMerchant(masked: string, amount: number): MaskedMatch
   }
 
   return { service: null, normalized, by: "none" };
+}
+
+/** 연간 결제를 제공하는 서비스만. 연 구독 탐색·질문의 대상 범위다. */
+export const YEARLY_CAPABLE_SERVICES: ServiceDef[] = SERVICES.filter((s) =>
+  s.cycles.includes("yearly"),
+);
+
+/** 이 서비스가 해당 주기로 결제될 수 있는가. 사전이 오판을 거부하는 장치다. */
+export function supportsCycle(service: ServiceDef, cycle: "monthly" | "yearly"): boolean {
+  return service.cycles.includes(cycle);
+}
+
+/** 연간권 가격 지문에 맞는가 */
+export function matchesYearlyPrice(service: ServiceDef, amount: number): boolean {
+  return (service.yearlyPrices ?? []).some((p) => Math.abs(p - amount) / p <= 0.05);
 }
