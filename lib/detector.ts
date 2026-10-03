@@ -7,7 +7,13 @@
  * 사용자에게 아무것도 묻지 않는다. 최초 인증 1회가 전부다.
  */
 
-import { matchMerchant, supportsCycle, type ServiceDef } from "./merchants";
+import {
+  matchMaskedMerchant,
+  matchMerchant,
+  normalizeMerchant,
+  supportsCycle,
+  type ServiceDef,
+} from "./merchants";
 
 export type RawTransaction = {
   /** 카드 명세의 가맹점명 원문, 또는 계좌 거래내역의 통장인자내용 */
@@ -156,6 +162,15 @@ export type DetectOptions = {
   knownKeys?: ReadonlySet<string>;
   /** 이 값 미만의 신뢰도는 결과에서 제외한다. */
   minConfidence?: number;
+  /**
+   * 입력이 마스킹된 가맹점명인가.
+   *
+   * 오픈뱅킹 `카드청구상세정보조회`는 가맹점명을 마스킹해서 준다("오픈**").
+   * true면 접두 + 금액 지문으로 식별한다(`matchMaskedMerchant`).
+   */
+  masked?: boolean;
+  /** 온보딩 선언 힌트. masked일 때 가격 중복을 푼다. 필터가 아니다 */
+  declared?: ReadonlySet<string>;
 };
 
 /** 구독을 식별하는 안정적인 키. 사전 매칭 전후로 바뀌지 않아야 한다. */
@@ -180,25 +195,39 @@ export function detectSubscriptions(
   const known = options.knownKeys ?? new Set<string>();
   const minConfidence = options.minConfidence ?? 0.4;
 
-  // 1. 정규화된 가맹점명으로 묶는다
-  const groups = new Map<string, { txs: RawTransaction[]; service: ServiceDef | null }>();
+  // 1. 가맹점명으로 묶는다.
+  //
+  //    마스킹 입력은 서비스 판정에 금액이 필요하므로(접두+가격) 먼저 문자열로 묶고
+  //    그룹 단위로 서비스를 해석한다. 거래마다 판정하면 같은 가맹점이 금액 차이로
+  //    다른 그룹으로 쪼개진다.
+  //    비마스킹 입력은 이름만으로 판정되므로 서비스 id로 묶어 "NETFLIX.COM"과
+  //    "넷플릭스"를 한 그룹으로 모은다.
+  const groups = new Map<string, RawTransaction[]>();
   for (const tx of transactions) {
-    const { service, normalized } = matchMerchant(tx.merchantRaw);
-    const key = service ? `svc:${service.id}` : `raw:${normalized}`;
-    const group = groups.get(key);
-    if (group) {
-      group.txs.push(tx);
+    let key: string;
+    if (options.masked) {
+      key = `raw:${normalizeMerchant(tx.merchantRaw)}`;
     } else {
-      groups.set(key, { txs: [tx], service });
+      const { service, normalized } = matchMerchant(tx.merchantRaw);
+      key = service ? `svc:${service.id}` : `raw:${normalized}`;
     }
+    const group = groups.get(key);
+    if (group) group.push(tx);
+    else groups.set(key, [tx]);
   }
 
   const results: DetectedSubscription[] = [];
 
-  for (const [key, { txs, service }] of groups) {
+  for (const [key, txs] of groups) {
     if (txs.length < 2) continue; // 1회 결제는 구독이 아니다
 
     const sorted = [...txs].sort((a, b) => a.date.localeCompare(b.date));
+
+    // 그룹 단위로 서비스를 해석한다. 마스킹 입력은 최근 금액을 지문으로 쓴다.
+    const last0 = sorted[sorted.length - 1]!;
+    const service: ServiceDef | null = options.masked
+      ? matchMaskedMerchant(last0.merchantRaw, last0.amount, options.declared).service
+      : matchMerchant(last0.merchantRaw).service;
     const intervals: number[] = [];
     for (let i = 1; i < sorted.length; i++) {
       intervals.push(daysBetween(sorted[i - 1]!.date, sorted[i]!.date));
@@ -228,8 +257,8 @@ export function detectSubscriptions(
 
     results.push({
       service,
-      displayName: service?.name ?? matchMerchant(last.merchantRaw).normalized,
-      merchantNormalized: matchMerchant(last.merchantRaw).normalized,
+      displayName: service?.name ?? normalizeMerchant(last.merchantRaw),
+      merchantNormalized: normalizeMerchant(last.merchantRaw),
       amount: last.amount,
       cycle,
       nextChargeDate: toISO(nextDate),
@@ -237,7 +266,9 @@ export function detectSubscriptions(
       occurrences: sorted.length,
       lastChargeDate: last.date,
       priceChange: detectPriceChange(sorted),
-      isNew: !known.has(key),
+      // 서비스가 해석됐으면 그 id로 키를 안정화한다 — 사전이 커지며 키가 바뀌면
+      // 멀쩡한 구독이 "신규"로 다시 뜬다.
+      isNew: !known.has(service ? `svc:${service.id}` : key),
     });
   }
 
