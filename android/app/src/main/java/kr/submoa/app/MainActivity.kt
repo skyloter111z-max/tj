@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.core.app.NotificationManagerCompat
@@ -33,12 +34,16 @@ class MainActivity : Activity() {
         web.addJavascriptInterface(Bridge(), "SubmoaBridge")
 
         // 브리지는 결제 알림을 내준다. 우리 웹 앱이 아닌 페이지는 이 WebView에서 열지 않는다.
+        val assetLoader = WebAssets.loader(assets)
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (request.url.host == allowedHost) return false
                 startActivity(Intent(Intent.ACTION_VIEW, request.url))
                 return true
             }
+
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+                assetLoader.shouldInterceptRequest(request.url)
         }
 
         web.loadUrl(BuildConfig.WEB_URL)
@@ -59,6 +64,9 @@ class MainActivity : Activity() {
 
     /** 웹에서 window.SubmoaBridge로 부른다. lib/card-alerts/bridge.ts와 짝이다 */
     inner class Bridge {
+        @JavascriptInterface
+        fun platform(): String = "android"
+
         @JavascriptInterface
         fun isAccessGranted(): Boolean =
             NotificationManagerCompat.getEnabledListenerPackages(this@MainActivity).contains(packageName)

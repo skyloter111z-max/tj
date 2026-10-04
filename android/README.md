@@ -13,22 +13,28 @@
 
 ## 실행
 
+웹 앱을 정적 파일로 뽑아 APK 안에 넣는다. 서버가 필요 없어서 실기기에 바로 깔 수 있다.
+
 ```bash
-# 1. 개발 PC에서 웹 앱
-npm run dev
-
-# 2. 에뮬레이터용 디버그 APK (기본 주소 http://10.0.2.2:3000/onboarding)
+npm run export                       # 저장소 루트: 웹 앱 → out/
 cd android
-ANDROID_HOME=~/Android/Sdk ./gradlew installDebug
+ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug
+# → app/build/outputs/apk/debug/app-debug.apk
+```
 
-# 실기기나 배포 주소로 빌드할 때
-./gradlew assembleRelease -Psubmoa.webUrl=https://배포주소/onboarding
+APK는 out/을 `https://appassets.androidplatform.net/`으로 서빙한다(WebAssets). 확장자 없는
+`/onboarding`은 `onboarding.html`로 찾는다.
+
+개발 중 `npm run dev`에 바로 붙이려면(에뮬레이터):
+
+```bash
+./gradlew installDebug -Psubmoa.webUrl=http://10.0.2.2:3000/onboarding
 ```
 
 ## 테스트
 
 ```bash
-./gradlew :app:testDebugUnitTest   # AlertFilter: 결제 알림은 통과, 일상 대화·광고는 차단
+./gradlew :app:testDebugUnitTest   # AlertFilter(결제 알림만 통과), WebAssets(경로 해석)
 ```
 
 ## 실기기에서 아직 확인하지 않은 것

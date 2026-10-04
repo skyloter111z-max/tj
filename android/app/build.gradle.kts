@@ -14,10 +14,11 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        // 웹 앱 주소. 기본값은 에뮬레이터에서 본 개발 PC의 `npm run dev`.
-        // 배포 주소로 빌드할 때: ./gradlew assembleRelease -Psubmoa.webUrl=https://...
+        // 기본값은 APK 안에 넣은 웹 앱(저장소 루트에서 `npm run export` → out/).
+        // 개발 PC의 `npm run dev`에 붙일 때(에뮬레이터):
+        //   ./gradlew installDebug -Psubmoa.webUrl=http://10.0.2.2:3000/onboarding
         val webUrl = (project.findProperty("submoa.webUrl") as String?)
-            ?: "http://10.0.2.2:3000/onboarding"
+            ?: "https://appassets.androidplatform.net/onboarding"
         buildConfigField("String", "WEB_URL", "\"$webUrl\"")
     }
 
@@ -44,9 +45,24 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/webassets"))
 }
+
+// 웹 앱 정적 파일을 assets/web/으로 복사한다. out/이 없으면 먼저 `npm run export`.
+val syncWebAssets by tasks.registering(Sync::class) {
+    from(rootProject.file("../out"))
+    into(layout.buildDirectory.dir("generated/webassets/web"))
+    doFirst {
+        if (!rootProject.file("../out/onboarding.html").exists()) {
+            logger.warn("out/이 없습니다. 저장소 루트에서 `npm run export`를 먼저 실행하세요. 웹 화면 없이 빌드됩니다.")
+        }
+    }
+}
+tasks.named("preBuild") { dependsOn(syncWebAssets) }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.webkit:webkit:1.12.1")
     testImplementation("junit:junit:4.13.2")
 }
