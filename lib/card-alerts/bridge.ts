@@ -24,6 +24,13 @@ export type NativeBridge = {
   openAccessSettings(): void;
   /** CapturedAlert[]의 JSON */
   getAlerts(): string;
+  /** 카톡 내보내기를 공유받은 원본. 꺼내는 순간 기기에서 지워진다 (android ImportStore) */
+  takePendingExport?(): string;
+  /** 원본에서 골라낸 카드 결제 알림만 저장한다 — AlertMessage[]의 JSON */
+  saveImportedAlerts?(json: string): void;
+  getImportedAlerts?(): string;
+  clearImported?(): void;
+  openKakaoTalk?(): void;
   /** 디버그 빌드 전용: 실제 결제 없이 모의 결제 알림을 폰에 띄워 알림 읽기 전체를 시험한다 */
   canSimulate?(): boolean;
   simulatePaymentAlert?(): void;
@@ -65,4 +72,21 @@ export function readCapturedAlerts(bridge: Pick<NativeBridge, "getAlerts">): Ale
   }
   if (!Array.isArray(parsed)) return [];
   return parsed.filter(isCaptured).map(({ body, postedAt }) => ({ body, receivedAt: kstDate(postedAt) }));
+}
+
+function isAlertMessage(x: unknown): x is AlertMessage {
+  if (typeof x !== "object" || x === null) return false;
+  const o = x as Record<string, unknown>;
+  return typeof o.body === "string" && typeof o.receivedAt === "string" && /^\d{4}-\d{2}-\d{2}$/.test(o.receivedAt);
+}
+
+/** 카톡 내보내기로 가져와 저장해 둔 카드 결제 알림 */
+export function readImportedAlerts(bridge: Pick<NativeBridge, "getImportedAlerts">): AlertMessage[] {
+  if (!bridge.getImportedAlerts) return [];
+  try {
+    const parsed: unknown = JSON.parse(bridge.getImportedAlerts());
+    return Array.isArray(parsed) ? parsed.filter(isAlertMessage) : [];
+  } catch {
+    return [];
+  }
 }

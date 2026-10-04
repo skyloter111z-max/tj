@@ -3,14 +3,18 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { ImportHistoryCard } from "@/components/ImportHistory";
 import { DeclaredWaiting, WatchingCard } from "@/components/Watching";
 import {
   bridgePlatform,
   kstDate,
   nativeBridge,
   readCapturedAlerts,
+  readImportedAlerts,
   RESUME_EVENT,
 } from "@/lib/card-alerts/bridge";
+import { exportSpan } from "@/lib/card-alerts/kakao-export";
+import { extractCardAlerts, type ImportResult } from "@/lib/card-alerts/import";
 import {
   daysUntilCharge,
   detectSubscriptions,
@@ -46,6 +50,12 @@ type HomeState =
       accessOff: boolean;
       /** 디버그 빌드: 모의 결제 알림 버튼을 보여 준다 */
       canSimulate: boolean;
+      /** 카톡 내보내기를 받을 수 있는 앱(안드로이드) */
+      canImport: boolean;
+      /** 지금까지 카톡에서 가져온 기간 */
+      importedSpan: { from: string; to: string } | null;
+      /** 방금 카톡에서 가져왔다 */
+      justImported: ImportResult | null;
     };
 
 function loadHome(): HomeState | "onboarding" {
@@ -54,11 +64,21 @@ function loadHome(): HomeState | "onboarding" {
     const subs = detectSubscriptions(SAMPLE_TRANSACTIONS, { today: SAMPLE_TODAY, knownKeys: KNOWN_KEYS });
     return { mode: "sample", today: SAMPLE_TODAY, subs: subs.filter((s) => s.active) };
   }
+  // 카톡에서 내보내기를 공유받았으면 원본에서 카드 결제 알림만 골라 저장한다. 원본은 앱이 이미 지웠다.
+  // 지난 내역을 가져왔으면 알림 접근을 아직 안 켰어도 결과부터 보여 준다(켜라는 안내는 홈에 뜬다).
+  let justImported: ImportResult | null = null;
+  const raw = bridge.takePendingExport?.() ?? "";
+  if (raw) {
+    justImported = extractCardAlerts(raw);
+    bridge.saveImportedAlerts?.(JSON.stringify(justImported.alerts));
+    writeJSON(STORAGE_KEYS.onboarded, true);
+  }
   if (!readJSON(STORAGE_KEYS.onboarded, false)) return "onboarding";
 
   const today = kstDate(Date.now());
+  const imported = readImportedAlerts(bridge);
   const { seen, ...home } = buildLiveHome(
-    readCapturedAlerts(bridge),
+    [imported, readCapturedAlerts(bridge)],
     today,
     readJSON<SeenMap>(STORAGE_KEYS.seen, {}),
   );
@@ -70,6 +90,9 @@ function loadHome(): HomeState | "onboarding" {
     declared: readJSON<string[]>(STORAGE_KEYS.declared, []),
     accessOff: bridgePlatform(bridge) === "android" && !bridge.isAccessGranted(),
     canSimulate: bridge.canSimulate?.() === true,
+    canImport: typeof bridge.openKakaoTalk === "function",
+    importedSpan: exportSpan(imported),
+    justImported,
   };
 }
 
@@ -107,6 +130,8 @@ export default function HomePage() {
         </Link>
       )}
 
+      {live && home.justImported && <ImportedBanner result={home.justImported} />}
+
       {live && home.accessOff && <AccessOffBanner />}
 
       {live && home.subs.length === 0 ? (
@@ -123,6 +148,14 @@ export default function HomePage() {
           해지한 것으로 보이는 구독 {home.ended}개는 합계에서 뺐습니다
         </p>
       )}
+
+      {live && home.importedSpan && !home.justImported && (
+        <p className="text-center text-xs text-zinc-500">
+          카톡에서 가져온 {formatSpan(home.importedSpan)} 결제 내역을 포함했습니다
+        </p>
+      )}
+
+      {live && home.canImport && !home.importedSpan && <ImportHistoryCard />}
 
       {live && <RecentPayments recent={home.recent} />}
 
@@ -247,6 +280,25 @@ function RecentPayments({ recent }: { recent: RawTransaction[] }) {
         </ul>
       )}
     </section>
+  );
+}
+
+const formatSpan = ({ from, to }: { from: string; to: string }) =>
+  `${from.slice(0, 7).replace("-", ".")} ~ ${to.slice(0, 7).replace("-", ".")}`;
+
+function ImportedBanner({ result }: { result: ImportResult }) {
+  if (result.alerts.length === 0) {
+    return (
+      <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-200/80">
+        공유하신 대화에서 카드 결제 알림을 찾지 못했어요. 카드사 알림방(예: 삼성카드)을 내보내 주세요.
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-xs text-emerald-200/90">
+      카톡에서 결제 {result.payments.toLocaleString("ko-KR")}건을 가져왔어요
+      {result.span && <span className="text-emerald-200/60"> · {formatSpan(result.span)}</span>}
+    </div>
   );
 }
 

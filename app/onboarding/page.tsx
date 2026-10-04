@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ServicePicker } from "@/components/ServicePicker";
+import { ImportHistoryCard } from "@/components/ImportHistory";
 import { DeclaredWaiting, WatchingCard } from "@/components/Watching";
 import {
   bridgePlatform,
@@ -359,7 +360,14 @@ function ResultStep({
   const surprises = subs.filter((s) => !s.service || !declared.has(s.service.id));
 
   if (collected && subs.length === 0) {
-    return <WatchingStep declared={declared} paymentCount={collected.transactions.length} ended={ended.length} />;
+    return (
+      <WatchingStep
+        declared={declared}
+        paymentCount={collected.transactions.length}
+        ended={ended.length}
+        canImport={typeof bridge?.openKakaoTalk === "function"}
+      />
+    );
   }
 
   return (
@@ -423,14 +431,17 @@ function WatchingStep({
   declared,
   paymentCount,
   ended,
+  canImport,
 }: {
   declared: ReadonlySet<string>;
   paymentCount: number;
   ended: number;
+  canImport: boolean;
 }) {
   return (
     <div className="space-y-6">
       <WatchingCard paymentCount={paymentCount} />
+      {canImport && <ImportHistoryCard />}
       <DeclaredWaiting declared={declared} />
       {ended > 0 && (
         <p className="text-center text-xs text-zinc-500">해지한 것으로 보이는 구독 {ended}개는 뺐습니다</p>

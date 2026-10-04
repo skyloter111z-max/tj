@@ -52,8 +52,35 @@ export type LiveHome = {
   seen: SeenMap;
 };
 
-export function buildLiveHome(messages: readonly AlertMessage[], today: string, seen: SeenMap): LiveHome {
-  const { transactions } = collectTransactions(messages);
+/**
+ * 여러 출처(카톡 내보내기, 알림 읽기)의 결제를 합친다.
+ *
+ * 내보내기 뒤에 온 결제는 양쪽에 다 있다. 같은 날·가맹점·금액·카드를 한 결제로 보되,
+ * 한 출처 안에서 같은 결제가 두 번 있으면(같은 날 같은 가게에서 두 번) 두 번으로 남긴다 —
+ * 출처별 개수 중 큰 쪽을 쓴다.
+ */
+export function mergeTransactions(sources: readonly (readonly RawTransaction[])[]): RawTransaction[] {
+  const best = new Map<string, RawTransaction[]>();
+  for (const source of sources) {
+    const groups = new Map<string, RawTransaction[]>();
+    for (const tx of source) {
+      const key = `${tx.date}|${tx.merchantRaw}|${tx.amount}|${tx.cardId ?? ""}`;
+      groups.set(key, [...(groups.get(key) ?? []), tx]);
+    }
+    for (const [key, txs] of groups) {
+      if (txs.length > (best.get(key)?.length ?? 0)) best.set(key, txs);
+    }
+  }
+  return [...best.values()].flat();
+}
+
+/** sources: 출처별 알림 목록 (카톡 내보내기, 알림 읽기) */
+export function buildLiveHome(
+  sources: readonly (readonly AlertMessage[])[],
+  today: string,
+  seen: SeenMap,
+): LiveHome {
+  const transactions = mergeTransactions(sources.map((messages) => collectTransactions(messages).transactions));
   const all = detectSubscriptions(transactions, { today, knownKeys: knownKeys(seen, today) });
   const recent = [...transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
   return {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildLiveHome, knownKeys, markSeen } from "../home";
+import { buildLiveHome, knownKeys, markSeen, mergeTransactions } from "../home";
 
 const online = (mmdd: string, merchant: string, amount: string, receivedAt: string) => ({
   body: `삼성카드 홍*동님 전자상거래이용\n${mmdd} 03:12 ${merchant} ${amount}원`,
@@ -25,18 +25,18 @@ describe("seen map", () => {
 
 describe("buildLiveHome", () => {
   it("결제 알림이 쌓이기 전에는 구독 없이 최근 결제만 보인다", () => {
-    const home = buildLiveHome([online("10/03", "테스트상점", "12,000", "2026-10-03")], "2026-10-04", {});
+    const home = buildLiveHome([[online("10/03", "테스트상점", "12,000", "2026-10-03")]], "2026-10-04", {});
     expect(home.subs).toEqual([]);
     expect(home.paymentCount).toBe(1);
     expect(home.recent[0]).toMatchObject({ merchantRaw: "테스트상점", amount: 12000 });
   });
 
   it("처음 찾은 구독은 새로 찾은 것으로, 일주일 뒤에는 아닌 것으로 본다", () => {
-    const first = buildLiveHome(WOW, "2026-09-12", {});
+    const first = buildLiveHome([WOW], "2026-09-12", {});
     expect(first.subs.map((s) => [s.service?.id, s.isNew])).toEqual([["coupangwow", true]]);
     expect(first.seen).toEqual({ "svc:coupangwow": "2026-09-12" });
 
-    const later = buildLiveHome(WOW, "2026-09-20", first.seen);
+    const later = buildLiveHome([WOW], "2026-09-20", first.seen);
     expect(later.subs[0]!.isNew).toBe(false);
   });
 
@@ -46,7 +46,7 @@ describe("buildLiveHome", () => {
       online("02/05", "앱구독서비", "9,900", "2026-02-05"),
       online("03/05", "앱구독서비", "9,900", "2026-03-05"),
     ];
-    const home = buildLiveHome([...old, ...WOW], "2026-10-04", {});
+    const home = buildLiveHome([[...old, ...WOW]], "2026-10-04", {});
     expect(home.subs.map((s) => s.service?.id)).toEqual(["coupangwow"]);
     expect(home.ended).toBe(1);
   });
@@ -55,8 +55,29 @@ describe("buildLiveHome", () => {
     const many = Array.from({ length: 7 }, (_, i) =>
       online(`09/${String(i + 1).padStart(2, "0")}`, `가게${i + 1}`, "1,000", `2026-09-0${i + 1}`),
     );
-    expect(buildLiveHome(many, "2026-10-04", {}).recent.map((t) => t.merchantRaw)).toEqual([
+    expect(buildLiveHome([many], "2026-10-04", {}).recent.map((t) => t.merchantRaw)).toEqual([
       "가게7", "가게6", "가게5", "가게4", "가게3",
     ]);
+  });
+});
+
+describe("mergeTransactions — 카톡 내보내기 + 알림 읽기", () => {
+  const tx = (date: string, merchantRaw: string, amount = 7890) => ({ merchantRaw, amount, date, cardId: "samsung" });
+
+  it("양쪽에 다 있는 결제는 한 번만 센다", () => {
+    const fromExport = [tx("2026-09-12", "쿠팡(와우멤"), tx("2026-10-01", "편의점", 4500)];
+    const fromNotifications = [tx("2026-10-01", "편의점", 4500), tx("2026-10-04", "카페", 5000)];
+    expect(mergeTransactions([fromExport, fromNotifications])).toHaveLength(3);
+  });
+
+  it("한 출처 안에서 같은 날 같은 결제가 두 번이면 두 번으로 남긴다", () => {
+    const twoCoffees = [tx("2026-10-04", "카페", 5000), tx("2026-10-04", "카페", 5000)];
+    expect(mergeTransactions([twoCoffees, [tx("2026-10-04", "카페", 5000)]])).toHaveLength(2);
+  });
+
+  it("내보내기와 알림이 겹쳐도 구독 판정이 같다", () => {
+    const home = buildLiveHome([WOW, [WOW[1]!]], "2026-09-13", {});
+    expect(home.paymentCount).toBe(2);
+    expect(home.subs.map((s) => s.service?.id)).toEqual(["coupangwow"]);
   });
 });

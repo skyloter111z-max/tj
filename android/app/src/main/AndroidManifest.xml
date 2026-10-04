@@ -5,6 +5,11 @@
     <!-- 디버그 빌드의 모의 결제 알림(SimulatedAlert)을 띄울 때만 요청한다 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- "카카오톡 열기" 버튼이 카톡을 띄우려면 Android 11+에서 패키지를 미리 밝혀야 한다 -->
+    <queries>
+        <package android:name="com.kakao.talk" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:label="@string/app_name"
@@ -15,10 +20,30 @@
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 카톡 "대화 내용 내보내기 → 텍스트만 보내기"의 공유 목록에 구독모아로 뜬다 -->
+        <activity
+            android:name=".ImportActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/zip" />
             </intent-filter>
         </activity>
 

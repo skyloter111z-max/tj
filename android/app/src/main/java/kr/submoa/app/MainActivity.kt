@@ -15,6 +15,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.core.app.NotificationManagerCompat
 
 /**
@@ -52,6 +53,15 @@ class MainActivity : Activity() {
         }
 
         web.loadUrl(BuildConfig.WEB_URL)
+    }
+
+    /** 카톡에서 내보내기를 공유받았다 — 홈을 다시 열면 홈이 원본을 꺼내 처리한다 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_IMPORTED, false) && ::web.isInitialized) {
+            web.loadUrl(BuildConfig.WEB_URL)
+        }
     }
 
     override fun onResume() {
@@ -112,6 +122,30 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun getAlerts(): String = AlertStore.get(this@MainActivity).toJson()
 
+        /** 공유받은 카톡 내보내기 원본. 꺼내는 순간 기기에서 지운다 */
+        @JavascriptInterface
+        fun takePendingExport(): String = ImportStore.takePending(this@MainActivity)
+
+        /** 웹이 원본에서 골라낸 카드 결제 알림만 저장한다 */
+        @JavascriptInterface
+        fun saveImportedAlerts(json: String) = ImportStore.addImported(this@MainActivity, json)
+
+        @JavascriptInterface
+        fun getImportedAlerts(): String = ImportStore.importedJson(this@MainActivity)
+
+        @JavascriptInterface
+        fun clearImported() {
+            ImportStore.clearImported(this@MainActivity)
+            runOnUiThread { dispatchResume() }
+        }
+
+        @JavascriptInterface
+        fun openKakaoTalk() = runOnUiThread {
+            val launch = packageManager.getLaunchIntentForPackage("com.kakao.talk")
+            if (launch != null) startActivity(launch)
+            else Toast.makeText(this@MainActivity, "카카오톡이 설치되어 있지 않아요", Toast.LENGTH_SHORT).show()
+        }
+
         /** 디버그 빌드에서만 웹에 모의 결제 버튼이 뜬다 */
         @JavascriptInterface
         fun canSimulate(): Boolean = BuildConfig.DEBUG
@@ -137,7 +171,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private companion object {
-        const val REQUEST_NOTIFY = 1
+    companion object {
+        const val EXTRA_IMPORTED = "kr.submoa.app.IMPORTED"
+        private const val REQUEST_NOTIFY = 1
     }
 }
