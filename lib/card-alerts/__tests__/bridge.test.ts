@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { kstDate, readCapturedAlerts } from "../bridge";
+import { bridgePlatform, kstDate, readCapturedAlerts } from "../bridge";
 import { collectTransactions } from "../parse";
 
 describe("kstDate", () => {
@@ -25,5 +25,13 @@ describe("readCapturedAlerts", () => {
     expect(readCapturedAlerts({ getAlerts: () => '{"body":"x"}' })).toEqual([]);
     const mixed = JSON.stringify([{ body, postedAt: 0 }, { body: 1, postedAt: 0 }, { body }]);
     expect(readCapturedAlerts({ getAlerts: () => mixed })).toHaveLength(1);
+  });
+});
+
+describe("bridgePlatform", () => {
+  it("아이폰 셸만 ios, 그 밖에는 android", () => {
+    expect(bridgePlatform({ platform: () => "ios" })).toBe("ios");
+    expect(bridgePlatform({ platform: () => "android" })).toBe("android");
+    expect(bridgePlatform({})).toBe("android");
   });
 });

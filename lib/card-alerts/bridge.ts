@@ -1,9 +1,12 @@
 /**
  * 안드로이드 앱(android/)이 WebView에 심는 `window.SubmoaBridge`와의 접점.
  *
- * 앱은 폰에 뜨는 알림 중 카드 결제 알림만 골라 폰 안에 쌓아 두고(AlertListenerService),
- * 웹은 그것을 받아 parse.ts → detector로 판정한다. 결제 알림은 서버로 가지 않는다.
- * 브라우저·아이폰에서는 브리지가 없다 — 아이폰은 다른 앱의 알림을 읽을 수 없다.
+ * 앱은 카드 결제 알림만 골라 폰 안에 쌓아 두고, 웹은 그것을 받아 parse.ts → detector로 판정한다.
+ * 결제 알림은 서버로 가지 않는다.
+ *
+ *   android  알림 접근 권한으로 카톡·문자·카드사 앱 알림을 읽는다 (android/)
+ *   ios      다른 앱 알림은 못 읽는다. 단축어 "메시지" 자동화가 문자를 넘겨준다 (ios/)
+ *   브라우저 브리지가 없다
  */
 
 import type { AlertMessage } from "./parse";
@@ -11,8 +14,13 @@ import type { AlertMessage } from "./parse";
 /** 앱이 저장한 알림 한 건 (AlertStore.toJson) */
 export type CapturedAlert = { body: string; postedAt: number };
 
+export type Platform = "android" | "ios";
+
 export type NativeBridge = {
+  platform?(): string;
+  /** android: 알림 접근이 켜져 있다 / ios: 단축어가 결제 문자를 한 번이라도 넘겼다 */
   isAccessGranted(): boolean;
+  /** android: 알림 접근 설정 화면 / ios: 단축어 앱 */
   openAccessSettings(): void;
   /** CapturedAlert[]의 JSON */
   getAlerts(): string;
@@ -20,6 +28,10 @@ export type NativeBridge = {
 
 /** 앱이 설정 화면에서 돌아올 때 쏘는 이벤트 (MainActivity.onResume) */
 export const RESUME_EVENT = "submoa:resume";
+
+export function bridgePlatform(bridge: Pick<NativeBridge, "platform">): Platform {
+  return bridge.platform?.() === "ios" ? "ios" : "android";
+}
 
 export function nativeBridge(): NativeBridge | null {
   if (typeof window === "undefined") return null;

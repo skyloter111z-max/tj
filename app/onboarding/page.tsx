@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ServicePicker } from "@/components/ServicePicker";
 import {
+  bridgePlatform,
   kstDate,
   nativeBridge,
   readCapturedAlerts,
@@ -173,6 +174,10 @@ function ConnectStep({
     return () => window.removeEventListener(RESUME_EVENT, check);
   }, [bridge, onGranted]);
 
+  if (bridge && bridgePlatform(bridge) === "ios") {
+    return <IosConnect bridge={bridge} onBack={onBack} onDone={onGranted} />;
+  }
+
   const granted = bridge?.isAccessGranted() ?? false;
 
   return (
@@ -184,50 +189,35 @@ function ConnectStep({
         </p>
       </div>
 
-      <ol className="space-y-3">
-        {[
-          ["1", "알림 접근 허용", "아래 버튼을 누르면 설정 화면이 열립니다"],
-          ["2", "구독모아 켜기", "목록에서 구독모아를 켜고 돌아오면 됩니다"],
-          ["3", "끝", "카톡·문자·카드사 앱으로 오는 결제 알림을 알아서 읽습니다"],
-        ].map(([n, title, desc]) => (
-          <li key={n} className="flex gap-3 rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
-            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-zinc-800 text-xs font-bold text-zinc-300">
-              {n}
-            </span>
-            <div>
-              <p className="font-medium text-zinc-100">{title}</p>
-              <p className="mt-0.5 text-xs text-zinc-500">{desc}</p>
-            </div>
-          </li>
-        ))}
-      </ol>
+      <Steps
+        items={[
+          ["알림 접근 허용", "아래 버튼을 누르면 설정 화면이 열립니다"],
+          ["구독모아 켜기", "목록에서 구독모아를 켜고 돌아오면 됩니다"],
+          ["끝", "카톡·문자·카드사 앱으로 오는 결제 알림을 알아서 읽습니다"],
+        ]}
+      />
 
-      <div className="space-y-2 rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-4">
-        <p className="text-sm font-semibold text-emerald-300">카드 결제 알림만 남깁니다</p>
-        <ul className="space-y-1 text-xs leading-relaxed text-zinc-400">
-          <li>· 친구와 나눈 대화 같은 다른 알림은 읽는 즉시 버립니다.</li>
-          <li>· 결제 알림도 이 폰 안에만 저장하고 서버로 보내지 않습니다.</li>
-          <li>· 카톡으로 카드 알림을 받으신다면 카톡 알림의 메시지 미리보기가 켜져 있어야 합니다.</li>
-          <li>· 허용한 뒤부터 오는 알림을 읽습니다. 첫 구독은 결제가 두 번 쌓이면 확인됩니다.</li>
-        </ul>
-      </div>
+      <PrivacyNote
+        lines={[
+          "친구와 나눈 대화 같은 다른 알림은 읽는 즉시 버립니다.",
+          "결제 알림도 이 폰 안에만 저장하고 서버로 보내지 않습니다.",
+          "카톡으로 카드 알림을 받으신다면 카톡 알림의 메시지 미리보기가 켜져 있어야 합니다.",
+          "허용한 뒤부터 오는 알림을 읽습니다. 첫 구독은 결제가 두 번 쌓이면 확인됩니다.",
+        ]}
+      />
 
       {bridge ? (
         <div className="space-y-2">
-          <button
-            type="button"
-            onClick={granted ? onGranted : () => bridge.openAccessSettings()}
-            className="w-full rounded-xl bg-sky-500 px-4 py-3.5 font-bold text-sky-950 transition hover:bg-sky-400"
-          >
+          <PrimaryButton onClick={granted ? onGranted : () => bridge.openAccessSettings()}>
             {granted ? "이미 허용했어요 · 계속" : "알림 접근 허용하기"}
-          </button>
+          </PrimaryButton>
           <BackButton onBack={onBack} />
         </div>
       ) : (
         <div className="space-y-2">
           <p className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 text-xs leading-relaxed text-zinc-400">
-            알림 읽기는 <span className="text-zinc-200">안드로이드 앱</span>에서 동작합니다. 아이폰은
-            다른 앱의 알림을 읽을 수 없습니다.
+            결제 알림 읽기는 <span className="text-zinc-200">구독모아 앱</span>에서 동작합니다. 안드로이드는
+            카톡·문자·카드사 앱 알림을, 아이폰은 카드 결제 문자를 읽습니다.
           </p>
           <button
             type="button"
@@ -240,6 +230,104 @@ function ConnectStep({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * 아이폰은 다른 앱 알림을 읽을 수 없다. 단축어 "메시지" 자동화가 카드 문자를 앱에 넘기도록
+ * 사용자가 한 번 만들어 둔다(ios/README.md). 앱은 자동화가 만들어졌는지 알 수 없으므로
+ * "설정을 마쳤어요"로 넘어간다.
+ */
+function IosConnect({
+  bridge,
+  onBack,
+  onDone,
+}: {
+  bridge: NativeBridge;
+  onBack: () => void;
+  onDone: () => void;
+}) {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-xl font-bold text-zinc-100">카드 결제 문자를 받게 해 주세요</h1>
+        <p className="mt-1.5 text-sm text-zinc-400">
+          단축어 자동화를 한 번 만들어 두면, 결제 문자가 올 때마다 저절로 구독을 찾습니다.
+        </p>
+      </div>
+
+      <Steps
+        items={[
+          ["단축어 앱 열기", "아래 버튼을 누르고 자동화 → ＋ → 메시지를 고릅니다"],
+          ["\"원\"이 들어간 문자", "메시지에 포함에 원을 넣고 즉시 실행을 고릅니다"],
+          ["구독모아 › 결제 알림 저장", "동작으로 추가하고 문자 내용에 단축어 입력을 넣으면 끝입니다"],
+        ]}
+      />
+
+      <PrivacyNote
+        lines={[
+          "카드 알림을 문자로 받으셔야 합니다. 아이폰은 카톡·카드사 앱 알림을 다른 앱이 읽을 수 없게 막아 둡니다.",
+          "카드 결제 문자만 저장하고, 다른 문자는 넘어오는 즉시 버립니다.",
+          "결제 문자도 이 폰 안에만 저장하고 서버로 보내지 않습니다.",
+          "설정한 뒤부터 오는 문자를 읽습니다. 첫 구독은 결제가 두 번 쌓이면 확인됩니다.",
+        ]}
+      />
+
+      <div className="space-y-2">
+        <PrimaryButton onClick={() => bridge.openAccessSettings()}>단축어 앱 열기</PrimaryButton>
+        <button
+          type="button"
+          onClick={onDone}
+          className="w-full rounded-xl bg-zinc-800 px-4 py-3.5 font-bold text-zinc-100 transition hover:bg-zinc-700"
+        >
+          설정을 마쳤어요
+        </button>
+        <BackButton onBack={onBack} />
+      </div>
+    </div>
+  );
+}
+
+function Steps({ items }: { items: [string, string][] }) {
+  return (
+    <ol className="space-y-3">
+      {items.map(([title, desc], i) => (
+        <li key={title} className="flex gap-3 rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-zinc-800 text-xs font-bold text-zinc-300">
+            {i + 1}
+          </span>
+          <div>
+            <p className="font-medium text-zinc-100">{title}</p>
+            <p className="mt-0.5 text-xs text-zinc-500">{desc}</p>
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function PrivacyNote({ lines }: { lines: string[] }) {
+  return (
+    <div className="space-y-2 rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-4">
+      <p className="text-sm font-semibold text-emerald-300">카드 결제 알림만 남깁니다</p>
+      <ul className="space-y-1 text-xs leading-relaxed text-zinc-400">
+        {lines.map((line) => (
+          <li key={line}>· {line}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function PrimaryButton({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full rounded-xl bg-sky-500 px-4 py-3.5 font-bold text-sky-950 transition hover:bg-sky-400"
+    >
+      {children}
+    </button>
   );
 }
 
