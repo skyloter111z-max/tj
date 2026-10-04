@@ -13,11 +13,15 @@
 import { detectSubscriptions, type DetectedSubscription, type RawTransaction } from "../detector";
 import { findService, matchMaskedMerchant, supportsCycle } from "../merchants";
 import { findSpikeMonths, isActiveCard, parseBillBasic, parseBillDetail, type MonthlyTotal } from "./parse";
-import type { BillBasicResponse, BillDetailResponse, Card, CardListResponse } from "./types";
+import { ownCardsOnly, type BillBasicResponse, type BillDetailResponse, type Card, type CardListResponse } from "./types";
 
 /** API 호출을 주입받는다 — 테스트에서 가짜 구현을 넣어 호출 수를 센다 */
 export type ScanDeps = {
-  fetchCardList(): Promise<CardListResponse>;
+  /**
+   * 카드목록조회. **카드사(`bankCodeStd`)별로 호출된다** — 이 API는 카드사를
+   * 지정해야 하므로, 보유 카드가 여러 카드사에 걸쳐 있으면 그만큼 호출이 늘어난다.
+   */
+  fetchCardList(args: { bankCodeStd: string; traceInfo?: string }): Promise<CardListResponse>;
   fetchBillBasic(args: {
     card: Card;
     fromMonth: string;
@@ -35,6 +39,14 @@ export type ScanDeps = {
 export type ScanOptions = {
   /** 오늘 (YYYY-MM-DD). 조회 범위 계산 기준 */
   today: string;
+  /**
+   * 조회할 카드사 코드 목록 (금융기관 공동코드).
+   *
+   * 카드목록조회가 카드사별 호출이므로 어느 카드사를 볼지 정해야 한다.
+   * 사용자가 오픈뱅킹 인증에서 고른 카드사만 넣는 것이 비용상 유리하다 —
+   * 참여 카드사를 전부 순회하면 그만큼 호출이 늘어난다(spec/v5 §1.5 C9).
+   */
+  cardIssuers: string[];
   /** 0단계에서 사용자가 선언한 서비스 id */
   declared?: ReadonlySet<string>;
   /** 2단계에서 카드별로 훑을 최근 개월 수 */
@@ -143,10 +155,21 @@ export async function runSignupScan(
   const allTx: RawTransaction[] = [];
   const allRefunds: RawTransaction[] = [];
 
-  // ── 1단계: 카드 목록 + 전 카드 13개월 총액 추이
-  const cardListRes = await deps.fetchCardList();
-  calls.cardList++;
-  budget.left--;
+  // ── 1단계: 카드사별 카드 목록 + 전 카드 13개월 총액 추이
+  const cards: Card[] = [];
+  for (const bankCodeStd of options.cardIssuers) {
+    let traceInfo: string | undefined;
+    for (;;) {
+      if (budget.left <= 0) break;
+      const res = await deps.fetchCardList({ bankCodeStd, traceInfo });
+      calls.cardList++;
+      budget.left--;
+      // 가족카드는 이용내역이 제공되지 않으므로 처음부터 제외한다
+      cards.push(...ownCardsOnly(res.card_list ?? []));
+      if (res.next_page_yn !== "Y" || !res.befor_inquiry_trace_info) break;
+      traceInfo = res.befor_inquiry_trace_info;
+    }
+  }
 
   const fromMonth = shiftMonth(today, -(trendMonths - 1));
   const toMonth = shiftMonth(today, 0);
@@ -154,7 +177,7 @@ export async function runSignupScan(
   type CardTrend = { card: Card; totals: MonthlyTotal[] };
   const trends: CardTrend[] = [];
 
-  for (const card of cardListRes.card_list ?? []) {
+  for (const card of cards) {
     const totals: MonthlyTotal[] = [];
     let traceInfo: string | undefined;
     for (;;) {

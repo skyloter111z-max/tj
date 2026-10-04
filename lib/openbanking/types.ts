@@ -29,6 +29,15 @@ export type Pagination = {
   befor_inquiry_trace_info: string;
 };
 
+/**
+ * 카드 구분.
+ * "1" 본인카드 / "2" 가족카드.
+ *
+ * 가족카드는 신용정보법에 따라 **이용내역이 제공되지 않는다**(카드청구상세 주2).
+ * 목록에는 나오지만 상세 조회를 해도 거래가 비어 오므로 스캔 대상에서 제외한다.
+ */
+export type CardMemberType = "1" | "2";
+
 export type Card = {
   /** 카드사 대표코드 (금융기관 공동코드) */
   bank_code_std: string;
@@ -36,14 +45,34 @@ export type Card = {
   member_bank_code: string;
   /** 카드 식별값 */
   card_id: string;
+  /** 마스킹된 카드번호 */
+  card_num_masked?: string;
+  /** 상품명 */
   card_name?: string;
+  card_member_type?: CardMemberType;
 };
 
-export type CardListResponse = ApiHeader & {
-  user_seq_no: string;
-  card_cnt?: string;
-  card_list: Card[];
-};
+/**
+ * 카드목록조회 응답.
+ *
+ * ⚠️ 이 API는 `bank_code_std`(카드사)를 지정해 호출한다. 즉 **카드사별로 따로 부른다.**
+ *    보유 카드가 여러 카드사에 흩어져 있으면 그만큼 호출이 늘어난다.
+ *    한 페이지 최대 20장, next_page_yn으로 순회.
+ *
+ * 권한: `scope=cardinfo` (계좌 조회의 inquiry와 별개).
+ * 계좌와 달리 **카드별 등록 절차가 없고** `user_seq_no`만으로 조회된다.
+ */
+export type CardListResponse = ApiHeader &
+  Pagination & {
+    user_seq_no: string;
+    card_cnt?: string;
+    card_list: Card[];
+  };
+
+/** 본인카드만. 가족카드는 이용내역이 오지 않으므로 스캔하지 않는다 */
+export function ownCardsOnly(cards: readonly Card[]): Card[] {
+  return cards.filter((c) => c.card_member_type !== "2");
+}
 
 /** 카드청구기본정보조회 — 월별 청구 총액. 가맹점명 없음 */
 export type BillBasicItem = {

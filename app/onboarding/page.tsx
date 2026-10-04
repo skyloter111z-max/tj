@@ -155,7 +155,7 @@ function ConnectStep({ onBack, onConnect }: { onBack: () => void; onConnect: () 
       <ol className="space-y-3">
         {[
           ["1", "휴대폰 본인인증", "오픈뱅킹 인증 화면으로 넘어갑니다"],
-          ["2", "ARS 동의", "전화를 받아 동의하면 끝입니다"],
+          ["2", "카드사 선택 · ARS 동의", "쓰시는 카드사를 고르고 전화로 동의하면 끝입니다"],
           ["3", "완료", "카드사 앱은 필요하지 않습니다"],
         ].map(([n, title, desc]) => (
           <li key={n} className="flex gap-3 rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
@@ -175,7 +175,8 @@ function ConnectStep({ onBack, onConnect }: { onBack: () => void; onConnect: () 
         <ul className="space-y-1 text-xs leading-relaxed text-zinc-400">
           <li>· 결제 내역을 보기만 합니다. 출금·이체 권한은 요청하지 않습니다.</li>
           <li>· 금융결제원 오픈뱅킹을 통해 조회하며, 비밀번호를 저장하지 않습니다.</li>
-          <li>· 가족카드 이용내역은 신용정보법에 따라 제공되지 않습니다.</li>
+          <li>· 가족카드 이용내역은 신용정보법에 따라 제공되지 않아 분석에서 빠집니다.</li>
+          <li>· 카드 조회 권한만 받습니다. 계좌는 연결하지 않습니다.</li>
         </ul>
       </div>
 
