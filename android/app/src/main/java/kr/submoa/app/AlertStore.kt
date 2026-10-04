@@ -41,6 +41,16 @@ class AlertStore private constructor(private val file: File) {
         if (alerts.size > MAX_ALERTS) compact()
     }
 
+    /** 본문이 조건에 맞는 알림을 지운다 (모의 알림 정리용) */
+    @Synchronized
+    fun removeIf(predicate: (String) -> Boolean) {
+        val keep = alerts.filterNot { (body, _) -> predicate(body) }
+        alerts.clear()
+        seen.clear()
+        file.writeText("")
+        keep.forEach { (body, postedAt) -> add(body, postedAt) }
+    }
+
     /** 오래된 것부터 버린다. 판정에는 최근 1~2년이면 충분하다 */
     private fun compact() {
         val keep = alerts.takeLast(MAX_ALERTS / 2)

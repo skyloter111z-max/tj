@@ -24,6 +24,10 @@ export type NativeBridge = {
   openAccessSettings(): void;
   /** CapturedAlert[]의 JSON */
   getAlerts(): string;
+  /** 디버그 빌드 전용: 실제 결제 없이 모의 결제 알림을 폰에 띄워 알림 읽기 전체를 시험한다 */
+  canSimulate?(): boolean;
+  simulatePaymentAlert?(): void;
+  clearSimulated?(): void;
 };
 
 /** 앱이 설정 화면에서 돌아올 때 쏘는 이벤트 (MainActivity.onResume) */

@@ -1,9 +1,11 @@
 package kr.submoa.app
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -22,6 +24,9 @@ import androidx.core.app.NotificationManagerCompat
 class MainActivity : Activity() {
     private lateinit var web: WebView
     private val allowedHost: String? = Uri.parse(BuildConfig.WEB_URL).host
+
+    /** 알림 권한을 묻는 동안 모의 알림 요청을 들고 있는다 */
+    private var pendingSimulate = false
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -52,9 +57,27 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         // 설정 화면에서 알림 접근을 켜고 돌아온 순간을 웹이 알 수 있게 한다
+        dispatchResume()
+    }
+
+    private fun dispatchResume() {
         if (::web.isInitialized) {
             web.evaluateJavascript("window.dispatchEvent(new Event('submoa:resume'))", null)
         }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_NOTIFY && pendingSimulate) {
+            pendingSimulate = false
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) postSimulated()
+        }
+    }
+
+    private fun postSimulated() {
+        if (!SimulatedAlert.post(this)) return
+        // 리스너가 받아 저장할 시간을 준 뒤 화면을 새로 읽게 한다
+        web.postDelayed({ dispatchResume() }, 1000)
     }
 
     @Deprecated("Deprecated in Java")
@@ -88,5 +111,33 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun getAlerts(): String = AlertStore.get(this@MainActivity).toJson()
+
+        /** 디버그 빌드에서만 웹에 모의 결제 버튼이 뜬다 */
+        @JavascriptInterface
+        fun canSimulate(): Boolean = BuildConfig.DEBUG
+
+        @JavascriptInterface
+        fun simulatePaymentAlert() = runOnUiThread {
+            if (!BuildConfig.DEBUG) return@runOnUiThread
+            val needsPermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            if (needsPermission) {
+                pendingSimulate = true
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFY)
+            } else {
+                postSimulated()
+            }
+        }
+
+        @JavascriptInterface
+        fun clearSimulated() {
+            if (!BuildConfig.DEBUG) return
+            AlertStore.get(this@MainActivity).removeIf { it.contains(SimulatedAlert.MERCHANT) }
+            runOnUiThread { dispatchResume() }
+        }
+    }
+
+    private companion object {
+        const val REQUEST_NOTIFY = 1
     }
 }

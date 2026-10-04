@@ -22,8 +22,10 @@ class AlertListenerService : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) = capture(sbn)
 
     private fun capture(sbn: StatusBarNotification) {
-        if (sbn.packageName == packageName) return
         val notification = sbn.notification
+        // 자기 알림은 읽지 않는다. 디버그 빌드의 모의 결제 알림만 예외다.
+        val simulated = BuildConfig.DEBUG && notification.channelId == SimulatedAlert.CHANNEL_ID
+        if (sbn.packageName == packageName && !simulated) return
         if (notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
 
         val extras = notification.extras

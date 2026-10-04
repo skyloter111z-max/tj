@@ -77,6 +77,12 @@ describe("parseCardAlert — 삼성카드", () => {
     expect(alert?.kind === "charge" && alert.installmentMonths).toBe(3);
   });
 
+  // android SimulatedAlertTest와 같은 문자열 — 앱이 띄우는 모의 알림을 웹이 그대로 읽어야 한다
+  it("앱의 모의 결제 알림도 같은 형식으로 읽는다", () => {
+    const alert = parseCardAlert("삼성1088승인 홍*동\n13,500원 일시불\n10/04 09:05 모의결제", "2026-10-04");
+    expect(alert).toMatchObject({ kind: "charge", transaction: { merchantRaw: "모의결제", amount: 13500, date: "2026-10-04" } });
+  });
+
   it("결제 알림이 아닌 메시지는 null", () => {
     expect(parseCardAlert("[삼성카드] 결제일 안내\n\n홍*동 회원님, 결제일은 14일입니다.", "2026-10-03")).toBeNull();
   });

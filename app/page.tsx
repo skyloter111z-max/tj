@@ -44,6 +44,8 @@ type HomeState =
       declared: string[];
       /** 안드로이드에서 알림 접근이 꺼졌다 — 새 결제를 못 읽는 중 */
       accessOff: boolean;
+      /** 디버그 빌드: 모의 결제 알림 버튼을 보여 준다 */
+      canSimulate: boolean;
     };
 
 function loadHome(): HomeState | "onboarding" {
@@ -67,6 +69,7 @@ function loadHome(): HomeState | "onboarding" {
     ...home,
     declared: readJSON<string[]>(STORAGE_KEYS.declared, []),
     accessOff: bridgePlatform(bridge) === "android" && !bridge.isAccessGranted(),
+    canSimulate: bridge.canSimulate?.() === true,
   };
 }
 
@@ -122,6 +125,8 @@ export default function HomePage() {
       )}
 
       {live && <RecentPayments recent={home.recent} />}
+
+      {live && home.canSimulate && <SimulatePanel />}
 
       {home.subs.length > 0 && (
         <Link
@@ -241,6 +246,40 @@ function RecentPayments({ recent }: { recent: RawTransaction[] }) {
           ))}
         </ul>
       )}
+    </section>
+  );
+}
+
+/**
+ * 테스트 빌드 전용. 앱이 삼성카드 카톡 알림과 같은 내용의 알림을 폰에 직접 띄우고,
+ * 그 알림이 알림 읽기 → 저장 → 이 화면까지 실제 경로로 들어온다. 결제는 일어나지 않는다.
+ */
+function SimulatePanel() {
+  return (
+    <section className="space-y-3 rounded-xl border border-dashed border-zinc-700 p-4">
+      <div>
+        <p className="text-xs font-semibold text-zinc-300">테스트</p>
+        <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+          삼성카드 카톡 알림과 같은 내용의 알림을 폰에 띄웁니다. 실제 결제는 일어나지 않습니다. 1초 뒤 위
+          &quot;최근 받은 결제 알림&quot;에 &quot;모의결제&quot;가 나타나면 성공입니다.
+        </p>
+      </div>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => nativeBridge()?.simulatePaymentAlert?.()}
+          className="flex-1 rounded-lg bg-zinc-800 px-3 py-2.5 text-sm font-semibold text-zinc-100 transition hover:bg-zinc-700"
+        >
+          모의 결제 알림 보내기
+        </button>
+        <button
+          type="button"
+          onClick={() => nativeBridge()?.clearSimulated?.()}
+          className="rounded-lg px-3 py-2.5 text-sm text-zinc-500 transition hover:text-zinc-300"
+        >
+          지우기
+        </button>
+      </div>
     </section>
   );
 }
