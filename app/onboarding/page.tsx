@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ServicePicker } from "@/components/ServicePicker";
 import { ImportHistoryCard } from "@/components/ImportHistory";
@@ -10,7 +11,6 @@ import {
   kstDate,
   nativeBridge,
   readCapturedAlerts,
-  RESUME_EVENT,
   type NativeBridge,
 } from "@/lib/card-alerts/bridge";
 import { collectTransactions } from "@/lib/card-alerts/parse";
@@ -157,71 +157,57 @@ function ConnectStep({
   onGranted: () => void;
   onPreview: () => void;
 }) {
-  // 설정 화면에서 토글을 켜고 돌아오면 앱이 RESUME_EVENT를 쏜다. 그때 다시 확인한다.
-  useEffect(() => {
-    if (!bridge) return;
-    const check = () => {
-      if (bridge.isAccessGranted()) onGranted();
-    };
-    window.addEventListener(RESUME_EVENT, check);
-    return () => window.removeEventListener(RESUME_EVENT, check);
-  }, [bridge, onGranted]);
-
   if (bridge && bridgePlatform(bridge) === "ios") {
     return <IosConnect bridge={bridge} onBack={onBack} onDone={onGranted} />;
   }
-
-  const granted = bridge?.isAccessGranted() ?? false;
+  if (bridge) return <AndroidImport onBack={onBack} />;
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-zinc-100">카드 결제 알림을 읽게 해 주세요</h1>
-        <p className="mt-1.5 text-sm text-zinc-400">
-          허용 한 번이면 끝입니다. 결제 알림이 올 때마다 저절로 구독을 찾습니다.
-        </p>
+        <h1 className="text-xl font-bold text-zinc-100">카톡 카드 알림방을 한 번만 공유해 주세요</h1>
+        <p className="mt-1.5 text-sm text-zinc-400">몇 년치 카드 결제를 한 번에 읽어 구독을 찾습니다.</p>
       </div>
+      <div className="space-y-2">
+        <p className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 text-xs leading-relaxed text-zinc-400">
+          카톡 공유는 <span className="text-zinc-200">구독모아 앱</span>에서 받습니다. 여기서는 샘플로 결과를
+          미리 볼 수 있어요.
+        </p>
+        <button
+          type="button"
+          onClick={onPreview}
+          className="w-full rounded-xl bg-zinc-800 px-4 py-3.5 font-bold text-zinc-100 transition hover:bg-zinc-700"
+        >
+          샘플로 미리보기
+        </button>
+        <BackButton onBack={onBack} />
+      </div>
+    </div>
+  );
+}
 
-      <Steps
-        items={[
-          ["알림 접근 허용", "아래 버튼을 누르면 설정 화면이 열립니다"],
-          ["구독모아 켜기", "목록에서 구독모아를 켜고 돌아오면 됩니다"],
-          ["끝", "카톡·문자·카드사 앱으로 오는 결제 알림을 알아서 읽습니다"],
-        ]}
-      />
-
-      <PrivacyNote
-        lines={[
-          "친구와 나눈 대화 같은 다른 알림은 읽는 즉시 버립니다.",
-          "결제 알림도 이 폰 안에만 저장하고 서버로 보내지 않습니다.",
-          "카톡으로 카드 알림을 받으신다면 카톡 알림의 메시지 미리보기가 켜져 있어야 합니다.",
-          "허용한 뒤부터 오는 알림을 읽습니다. 첫 구독은 결제가 두 번 쌓이면 확인됩니다.",
-        ]}
-      />
-
-      {bridge ? (
-        <div className="space-y-2">
-          <PrimaryButton onClick={granted ? onGranted : () => bridge.openAccessSettings()}>
-            {granted ? "이미 허용했어요 · 계속" : "알림 접근 허용하기"}
-          </PrimaryButton>
-          <BackButton onBack={onBack} />
-        </div>
-      ) : (
-        <div className="space-y-2">
-          <p className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 text-xs leading-relaxed text-zinc-400">
-            결제 알림 읽기는 <span className="text-zinc-200">구독모아 앱</span>에서 동작합니다. 안드로이드는
-            카톡·문자·카드사 앱 알림을, 아이폰은 카드 결제 문자를 읽습니다.
-          </p>
-          <button
-            type="button"
-            onClick={onPreview}
-            className="w-full rounded-xl bg-zinc-800 px-4 py-3.5 font-bold text-zinc-100 transition hover:bg-zinc-700"
-          >
-            샘플로 미리보기
-          </button>
-          <BackButton onBack={onBack} />
-        </div>
-      )}
+/**
+ * 안드로이드: 카톡 카드사 알림방을 한 번 공유하면 끝. 결제를 계속 지켜보지 않는다.
+ * 공유하면 앱이 홈으로 열리며 바로 결과가 나온다(ImportActivity → 홈). 여기서 기다릴 것은 없다.
+ */
+function AndroidImport({ onBack }: { onBack: () => void }) {
+  const router = useRouter();
+  return (
+    <div className="space-y-6">
+      <ImportHistoryCard />
+      <div className="space-y-1">
+        <button
+          type="button"
+          onClick={() => {
+            writeJSON(STORAGE_KEYS.onboarded, true);
+            router.push("/");
+          }}
+          className="w-full py-2 text-sm text-zinc-500 transition hover:text-zinc-300"
+        >
+          나중에 할게요
+        </button>
+        <BackButton onBack={onBack} />
+      </div>
     </div>
   );
 }

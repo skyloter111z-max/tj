@@ -81,3 +81,21 @@ describe("mergeTransactions — 카톡 내보내기 + 알림 읽기", () => {
     expect(home.subs.map((s) => s.service?.id)).toEqual(["coupangwow"]);
   });
 });
+
+describe("처음 가져온 내역은 기준선", () => {
+  it("처음 공유한 내역의 구독은 새로 찾은 것으로 띄우지 않는다", () => {
+    const first = buildLiveHome([WOW], "2026-09-13", {}, { baseline: true });
+    expect(first.subs[0]!.isNew).toBe(false);
+  });
+
+  it("다음에 다시 공유했을 때 처음 나타난 구독만 새로 찾은 것이다", () => {
+    const first = buildLiveHome([WOW], "2026-09-13", {}, { baseline: true });
+    const NEW_APP = [
+      online("09/20", "새앱구독서", "4,900", "2026-09-20"),
+      online("10/20", "새앱구독서", "4,900", "2026-10-20"),
+      online("11/20", "새앱구독서", "4,900", "2026-11-20"),
+    ];
+    const later = buildLiveHome([[...WOW, ...NEW_APP]], "2026-11-21", first.seen);
+    expect(later.subs.filter((s) => s.isNew).map((s) => s.displayName)).toEqual(["새앱구독서"]);
+  });
+});

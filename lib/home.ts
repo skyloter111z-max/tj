@@ -21,6 +21,9 @@ export type SeenMap = Record<string, string>;
 /** 처음 찾은 뒤 이 기간 동안 "새로 찾은 구독"으로 띄운다 */
 export const NEW_FOR_DAYS = 7;
 
+/** 기준선으로 기록한 구독의 "처음 찾은 날" — 다시는 새로 찾은 것으로 뜨지 않는다 */
+const BASELINE_DATE = "1970-01-01";
+
 const DAY_MS = 86_400_000;
 
 function daysBetween(from: string, to: string): number {
@@ -74,20 +77,28 @@ export function mergeTransactions(sources: readonly (readonly RawTransaction[])[
   return [...best.values()].flat();
 }
 
-/** sources: 출처별 알림 목록 (카톡 내보내기, 알림 읽기) */
+/**
+ * sources: 출처별 알림 목록 (카톡 내보내기, 알림 읽기)
+ *
+ * baseline: 처음 가져온 내역이다. 몇 년치를 한꺼번에 읽으면 모든 구독이 "처음 본 것"이라
+ * 전부 새로 찾은 구독으로 뜬다. 처음 가져온 것은 기준선으로 삼고, 그 뒤에 다시 가져왔을 때
+ * 처음 나타난 구독만 새로 찾은 것으로 띄운다.
+ */
 export function buildLiveHome(
   sources: readonly (readonly AlertMessage[])[],
   today: string,
   seen: SeenMap,
+  options: { baseline?: boolean } = {},
 ): LiveHome {
   const transactions = mergeTransactions(sources.map((messages) => collectTransactions(messages).transactions));
   const all = detectSubscriptions(transactions, { today, knownKeys: knownKeys(seen, today) });
+  if (options.baseline) for (const sub of all) sub.isNew = false;
   const recent = [...transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
   return {
     subs: all.filter((s) => s.active),
     ended: all.filter((s) => !s.active).length,
     recent,
     paymentCount: transactions.length,
-    seen: markSeen(seen, all.map(subscriptionKey), today),
+    seen: markSeen(seen, all.map(subscriptionKey), options.baseline ? BASELINE_DATE : today),
   };
 }

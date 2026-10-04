@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ImportHistoryCard } from "@/components/ImportHistory";
+import { ImportHistoryCard, ReimportLine } from "@/components/ImportHistory";
 import { DeclaredWaiting, WatchingCard } from "@/components/Watching";
 import {
   bridgePlatform,
@@ -13,8 +13,8 @@ import {
   readImportedAlerts,
   RESUME_EVENT,
 } from "@/lib/card-alerts/bridge";
-import { exportSpan } from "@/lib/card-alerts/kakao-export";
 import { extractCardAlerts, type ImportResult } from "@/lib/card-alerts/import";
+import { exportSpan } from "@/lib/card-alerts/kakao-export";
 import {
   daysUntilCharge,
   detectSubscriptions,
@@ -32,9 +32,13 @@ const SAMPLE_TODAY = "2026-10-03";
 
 const CYCLE_LABEL = { weekly: "주", monthly: "월", yearly: "연" } as const;
 
+const formatSpan = ({ from, to }: { from: string; to: string }) =>
+  `${from.slice(0, 7).replace("-", ".")} ~ ${to.slice(0, 7).replace("-", ".")}`;
+
 /**
- * sample: 브라우저. 앱이 아니라 결제 알림이 없으니 샘플 거래로 엔진을 돌린다.
- * live:   안드로이드·아이폰 앱. 브리지로 받은 실제 결제 알림으로 판정한다.
+ * sample: 브라우저. 결제 데이터가 없으니 샘플 거래로 엔진을 돌린다.
+ * live:   앱. 안드로이드는 카톡 카드 알림방을 한 번 공유해 가져온 내역으로,
+ *         아이폰은 단축어가 넘겨준 결제 문자로 판정한다.
  */
 type HomeState =
   | { mode: "sample"; today: string; subs: DetectedSubscription[] }
@@ -46,11 +50,7 @@ type HomeState =
       recent: RawTransaction[];
       paymentCount: number;
       declared: string[];
-      /** 안드로이드에서 알림 접근이 꺼졌다 — 새 결제를 못 읽는 중 */
-      accessOff: boolean;
-      /** 디버그 빌드: 모의 결제 알림 버튼을 보여 준다 */
-      canSimulate: boolean;
-      /** 카톡 내보내기를 받을 수 있는 앱(안드로이드) */
+      /** 카톡 공유를 받을 수 있는 앱(안드로이드) */
       canImport: boolean;
       /** 지금까지 카톡에서 가져온 기간 */
       importedSpan: { from: string; to: string } | null;
@@ -64,8 +64,9 @@ function loadHome(): HomeState | "onboarding" {
     const subs = detectSubscriptions(SAMPLE_TRANSACTIONS, { today: SAMPLE_TODAY, knownKeys: KNOWN_KEYS });
     return { mode: "sample", today: SAMPLE_TODAY, subs: subs.filter((s) => s.active) };
   }
-  // 카톡에서 내보내기를 공유받았으면 원본에서 카드 결제 알림만 골라 저장한다. 원본은 앱이 이미 지웠다.
-  // 지난 내역을 가져왔으면 알림 접근을 아직 안 켰어도 결과부터 보여 준다(켜라는 안내는 홈에 뜬다).
+
+  // 카톡에서 공유받은 원본이 있으면 카드 결제 알림만 골라 저장한다. 원본은 앱이 이미 지웠다.
+  // 처음 깐 사람이 바로 공유해도 온보딩 없이 결과부터 보여 준다.
   let justImported: ImportResult | null = null;
   const raw = bridge.takePendingExport?.() ?? "";
   if (raw) {
@@ -77,20 +78,18 @@ function loadHome(): HomeState | "onboarding" {
 
   const today = kstDate(Date.now());
   const imported = readImportedAlerts(bridge);
-  const { seen, ...home } = buildLiveHome(
-    [imported, readCapturedAlerts(bridge)],
-    today,
-    readJSON<SeenMap>(STORAGE_KEYS.seen, {}),
-  );
+  const seenBefore = readJSON<SeenMap>(STORAGE_KEYS.seen, {});
+  const { seen, ...home } = buildLiveHome([imported, readCapturedAlerts(bridge)], today, seenBefore, {
+    // 처음 가져온 몇 년치는 기준선이다 — 전부 "새로 찾은 구독"으로 띄우지 않는다
+    baseline: justImported !== null && Object.keys(seenBefore).length === 0,
+  });
   writeJSON(STORAGE_KEYS.seen, seen);
   return {
     mode: "live",
     today,
     ...home,
     declared: readJSON<string[]>(STORAGE_KEYS.declared, []),
-    accessOff: bridgePlatform(bridge) === "android" && !bridge.isAccessGranted(),
-    canSimulate: bridge.canSimulate?.() === true,
-    canImport: typeof bridge.openKakaoTalk === "function",
+    canImport: bridgePlatform(bridge) === "android" && typeof bridge.openKakaoTalk === "function",
     importedSpan: exportSpan(imported),
     justImported,
   };
@@ -100,8 +99,7 @@ export default function HomePage() {
   const router = useRouter();
   const [home, setHome] = useState<HomeState | null>(null);
 
-  // 브리지는 앱 WebView에서만 생긴다. 마운트 뒤에 읽고, 앱이 다시 앞으로 올 때마다 새로 읽는다
-  // — 결제하고 돌아오면 방금 온 알림이 바로 보여야 한다.
+  // 브리지는 앱 WebView에서만 생긴다. 마운트 뒤에 읽고, 앱이 다시 앞으로 올 때마다 새로 읽는다.
   useEffect(() => {
     const load = () => {
       const next = loadHome();
@@ -117,62 +115,88 @@ export default function HomePage() {
     return <div className="h-32 animate-pulse rounded-2xl bg-zinc-900/60" aria-label="불러오는 중" />;
   }
 
-  const live = home.mode === "live";
-
-  return (
-    <div className="space-y-6">
-      {home.mode === "sample" && (
+  if (home.mode === "sample") {
+    return (
+      <div className="space-y-6">
         <Link
           href="/onboarding"
           className="block rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-3 text-xs text-zinc-400 transition hover:text-zinc-200"
         >
-          샘플 결제 내역으로 보여드리는 화면입니다. 구독모아 앱에서는 실제 결제 알림으로 찾습니다 →
+          샘플 결제 내역으로 보여드리는 화면입니다. 구독모아 앱에서는 실제 카드 결제로 찾습니다 →
         </Link>
-      )}
+        <Subscriptions subs={home.subs} today={home.today} live={false} />
+        <PartyLink subs={home.subs} />
+      </div>
+    );
+  }
 
-      {live && home.justImported && <ImportedBanner result={home.justImported} />}
+  const hasData = home.paymentCount > 0;
 
-      {live && home.accessOff && <AccessOffBanner />}
+  return (
+    <div className="space-y-6">
+      {home.justImported && <ImportedBanner result={home.justImported} />}
 
-      {live && home.subs.length === 0 ? (
+      {home.subs.length > 0 ? (
+        <Subscriptions subs={home.subs} today={home.today} live />
+      ) : home.canImport && !home.importedSpan ? (
+        <ImportHistoryCard />
+      ) : home.importedSpan ? (
+        <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 text-center">
+          <p className="font-semibold text-zinc-200">가져온 결제에서 정기결제를 찾지 못했어요</p>
+          <p className="mt-1 text-xs text-zinc-500">
+            다른 카드를 쓰신다면 그 카드사 알림방도 공유해 주세요.
+          </p>
+        </div>
+      ) : (
         <>
           <WatchingCard paymentCount={home.paymentCount} />
           <DeclaredWaiting declared={home.declared} />
         </>
-      ) : (
-        <Subscriptions subs={home.subs} today={home.today} live={live} />
       )}
 
-      {live && home.ended > 0 && (
+      {home.importedSpan && !home.justImported && <ReimportLine span={formatSpan(home.importedSpan)} />}
+
+      {home.ended > 0 && (
         <p className="text-center text-xs text-zinc-500">
           해지한 것으로 보이는 구독 {home.ended}개는 합계에서 뺐습니다
         </p>
       )}
 
-      {live && home.importedSpan && !home.justImported && (
-        <p className="text-center text-xs text-zinc-500">
-          카톡에서 가져온 {formatSpan(home.importedSpan)} 결제 내역을 포함했습니다
-        </p>
-      )}
+      {hasData && <RecentPayments recent={home.recent} />}
 
-      {live && home.canImport && !home.importedSpan && <ImportHistoryCard />}
-
-      {live && <RecentPayments recent={home.recent} />}
-
-      {live && home.canSimulate && <SimulatePanel />}
-
-      {home.subs.length > 0 && (
-        <Link
-          href="/party"
-          className="block rounded-2xl border border-sky-500/30 bg-sky-500/5 p-5 transition hover:bg-sky-500/10"
-        >
-          <p className="font-semibold text-sky-300">같이 쓸 사람 찾기</p>
-          <p className="mt-1 text-sm text-zinc-400">
-            쓰고 있는 구독을 N빵하면 매월 {won(Math.round(totalMonthly(home.subs) * 0.6))}까지 줄일 수 있습니다.
-          </p>
-        </Link>
-      )}
+      <PartyLink subs={home.subs} />
     </div>
+  );
+}
+
+function ImportedBanner({ result }: { result: ImportResult }) {
+  if (result.alerts.length === 0) {
+    return (
+      <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-200/80">
+        공유하신 대화에서 카드 결제 알림을 찾지 못했어요. 카드사 알림방(예: 삼성카드)을 내보내 주세요.
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-xs text-emerald-200/90">
+      카톡에서 결제 {result.payments.toLocaleString("ko-KR")}건을 가져왔어요
+      {result.span && <span className="text-emerald-200/60"> · {formatSpan(result.span)}</span>}
+    </div>
+  );
+}
+
+function PartyLink({ subs }: { subs: DetectedSubscription[] }) {
+  if (subs.length === 0) return null;
+  return (
+    <Link
+      href="/party"
+      className="block rounded-2xl border border-sky-500/30 bg-sky-500/5 p-5 transition hover:bg-sky-500/10"
+    >
+      <p className="font-semibold text-sky-300">같이 쓸 사람 찾기</p>
+      <p className="mt-1 text-sm text-zinc-400">
+        쓰고 있는 구독을 N빵하면 매월 {won(Math.round(totalMonthly(subs) * 0.6))}까지 줄일 수 있습니다.
+      </p>
+    </Link>
   );
 }
 
@@ -257,14 +281,14 @@ function Subscriptions({ subs, today, live }: { subs: DetectedSubscription[]; to
   );
 }
 
-/** 결제하고 앱을 열면 여기서 바로 보인다 — 알림 읽기가 동작한다는 확인이다 */
+/** 가져온 결제 중 최근 것 — 무엇을 읽었는지 사용자가 바로 확인한다 */
 function RecentPayments({ recent }: { recent: RawTransaction[] }) {
   return (
     <section className="space-y-3">
-      <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">최근 받은 결제 알림</h2>
+      <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">최근 결제</h2>
       {recent.length === 0 ? (
         <p className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-3 text-sm text-zinc-500">
-          아직 받은 결제 알림이 없어요. 카드로 결제하면 여기에 바로 나타납니다.
+          아직 읽은 결제가 없어요.
         </p>
       ) : (
         <ul className="divide-y divide-zinc-800 rounded-xl border border-zinc-800 bg-zinc-900/40">
@@ -280,73 +304,5 @@ function RecentPayments({ recent }: { recent: RawTransaction[] }) {
         </ul>
       )}
     </section>
-  );
-}
-
-const formatSpan = ({ from, to }: { from: string; to: string }) =>
-  `${from.slice(0, 7).replace("-", ".")} ~ ${to.slice(0, 7).replace("-", ".")}`;
-
-function ImportedBanner({ result }: { result: ImportResult }) {
-  if (result.alerts.length === 0) {
-    return (
-      <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-200/80">
-        공유하신 대화에서 카드 결제 알림을 찾지 못했어요. 카드사 알림방(예: 삼성카드)을 내보내 주세요.
-      </div>
-    );
-  }
-  return (
-    <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-xs text-emerald-200/90">
-      카톡에서 결제 {result.payments.toLocaleString("ko-KR")}건을 가져왔어요
-      {result.span && <span className="text-emerald-200/60"> · {formatSpan(result.span)}</span>}
-    </div>
-  );
-}
-
-/**
- * 테스트 빌드 전용. 앱이 삼성카드 카톡 알림과 같은 내용의 알림을 폰에 직접 띄우고,
- * 그 알림이 알림 읽기 → 저장 → 이 화면까지 실제 경로로 들어온다. 결제는 일어나지 않는다.
- */
-function SimulatePanel() {
-  return (
-    <section className="space-y-3 rounded-xl border border-dashed border-zinc-700 p-4">
-      <div>
-        <p className="text-xs font-semibold text-zinc-300">테스트</p>
-        <p className="mt-1 text-xs leading-relaxed text-zinc-500">
-          삼성카드 카톡 알림과 같은 내용의 알림을 폰에 띄웁니다. 실제 결제는 일어나지 않습니다. 1초 뒤 위
-          &quot;최근 받은 결제 알림&quot;에 &quot;모의결제&quot;가 나타나면 성공입니다.
-        </p>
-      </div>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => nativeBridge()?.simulatePaymentAlert?.()}
-          className="flex-1 rounded-lg bg-zinc-800 px-3 py-2.5 text-sm font-semibold text-zinc-100 transition hover:bg-zinc-700"
-        >
-          모의 결제 알림 보내기
-        </button>
-        <button
-          type="button"
-          onClick={() => nativeBridge()?.clearSimulated?.()}
-          className="rounded-lg px-3 py-2.5 text-sm text-zinc-500 transition hover:text-zinc-300"
-        >
-          지우기
-        </button>
-      </div>
-    </section>
-  );
-}
-
-function AccessOffBanner() {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">
-      <p className="text-xs text-amber-200/80">알림 접근이 꺼져 있어서 새 결제를 읽지 못하고 있어요.</p>
-      <button
-        type="button"
-        onClick={() => nativeBridge()?.openAccessSettings()}
-        className="shrink-0 rounded-lg bg-amber-400 px-3 py-1.5 text-xs font-bold text-amber-950"
-      >
-        다시 켜기
-      </button>
-    </div>
   );
 }
