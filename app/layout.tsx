@@ -23,6 +23,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/party" className="hover:text-zinc-200">
                 파티 찾기
               </Link>
+              <Link href="/onboarding" className="hover:text-zinc-200">
+                시작하기
+              </Link>
             </div>
           </nav>
         </header>
