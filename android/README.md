@@ -36,7 +36,14 @@ APK는 out/을 `https://appassets.androidplatform.net/`으로 서빙한다(WebAs
 
 ```bash
 ./gradlew :app:testDebugUnitTest   # AlertFilter(결제 알림만 통과), WebAssets(경로 해석)
+
+# APK에 웹 앱 CSS·JS가 다 들어갔는지 (저장소 루트에서)
+node scripts/verify-apk-assets.mjs android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+aapt는 기본값으로 `_`로 시작하는 폴더를 APK에서 뺀다. Next의 CSS·JS는 전부 `_next/`에 있어서,
+기본값이면 HTML만 들어가 화면이 깨지고 버튼이 눌리지 않는다. `ignoreAssetsPattern`으로 막아 두었고,
+빌드는 성공해도 이 문제가 생길 수 있으니 APK를 만든 뒤 위 확인을 돌린다.
 
 ## 실기기에서 아직 확인하지 않은 것
 

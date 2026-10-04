@@ -48,6 +48,13 @@ android {
     }
 
     sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/webassets"))
+
+    androidResources {
+        // 기본 규칙(aapt)은 `_`로 시작하는 폴더를 APK에서 뺀다. Next의 CSS·JS가 전부 `_next/`에 있어서,
+        // 기본값이면 HTML만 들어가고 화면이 깨지고 버튼이 안 눌린다. 기본값에서 `<dir>_*`만 지운 규칙이다.
+        // 확인: node ../scripts/verify-apk-assets.mjs app/build/outputs/apk/debug/app-debug.apk
+        ignoreAssetsPattern = "!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~"
+    }
 }
 
 // 웹 앱 정적 파일을 assets/web/으로 복사한다. out/이 없으면 먼저 `npm run export`.
