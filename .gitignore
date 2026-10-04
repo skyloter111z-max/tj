@@ -5,3 +5,11 @@ out/
 next-env.d.ts
 .env*.local
 .DS_Store
+
+# Android
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
