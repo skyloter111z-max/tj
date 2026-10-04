@@ -4,7 +4,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AutoCaptureOffer } from "@/components/AutoCapture";
+import { SubscriptionDetail } from "@/components/SubscriptionDetail";
 import { ImportHistoryCard, ReimportLine } from "@/components/ImportHistory";
+import { MoreSources } from "@/components/MoreSources";
 import { DeclaredWaiting, WatchingCard } from "@/components/Watching";
 import {
   bridgePlatform,
@@ -106,6 +108,7 @@ export default function HomePage() {
   const router = useRouter();
   const [home, setHome] = useState<HomeState | null>(null);
   const [autoCaptureHidden, setAutoCaptureHidden] = useState(false);
+  const [selected, setSelected] = useState<DetectedSubscription | null>(null);
 
   // 브리지는 앱 WebView에서만 생긴다. 마운트 뒤에 읽고, 앱이 다시 앞으로 올 때마다 새로 읽는다.
   useEffect(() => {
@@ -132,8 +135,9 @@ export default function HomePage() {
         >
           샘플 결제 내역으로 보여드리는 화면입니다. 구독모아 앱에서는 실제 카드 결제로 찾습니다 →
         </Link>
-        <Subscriptions subs={home.subs} today={home.today} live={false} />
+        <Subscriptions subs={home.subs} today={home.today} live={false} onOpen={setSelected} />
         <PartyLink subs={home.subs} />
+        {selected && <SubscriptionDetail sub={selected} onClose={() => setSelected(null)} />}
       </div>
     );
   }
@@ -149,7 +153,7 @@ export default function HomePage() {
       )}
 
       {home.subs.length > 0 ? (
-        <Subscriptions subs={home.subs} today={home.today} live />
+        <Subscriptions subs={home.subs} today={home.today} live onOpen={setSelected} />
       ) : home.canImport && !home.importedSpan ? (
         <ImportHistoryCard />
       ) : home.importedSpan ? (
@@ -176,7 +180,11 @@ export default function HomePage() {
 
       {hasData && <RecentPayments recent={home.recent} />}
 
+      {home.importedSpan !== null && <MoreSources />}
+
       <PartyLink subs={home.subs} />
+
+      {selected && <SubscriptionDetail sub={selected} onClose={() => setSelected(null)} />}
     </div>
   );
 }
@@ -212,7 +220,17 @@ function PartyLink({ subs }: { subs: DetectedSubscription[] }) {
   );
 }
 
-function Subscriptions({ subs, today, live }: { subs: DetectedSubscription[]; today: string; live: boolean }) {
+function Subscriptions({
+  subs,
+  today,
+  live,
+  onOpen,
+}: {
+  subs: DetectedSubscription[];
+  today: string;
+  live: boolean;
+  onOpen: (s: DetectedSubscription) => void;
+}) {
   const monthly = totalMonthly(subs);
   const newSubs = subs.filter((s) => s.isNew);
   const upcoming = [...subs].sort((a, b) => daysUntilCharge(a, today) - daysUntilCharge(b, today));
@@ -255,9 +273,11 @@ function Subscriptions({ subs, today, live }: { subs: DetectedSubscription[]; to
         {upcoming.map((s) => {
           const d = daysUntilCharge(s, today);
           return (
-            <div
+            <button
+              type="button"
               key={s.merchantNormalized}
-              className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-3"
+              onClick={() => onOpen(s)}
+              className="flex w-full items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-3 text-left transition hover:bg-zinc-900/80"
             >
               <div className="min-w-0">
                 <p className="truncate font-medium text-zinc-100">{s.displayName}</p>
@@ -285,7 +305,7 @@ function Subscriptions({ subs, today, live }: { subs: DetectedSubscription[]; to
                   {d < 0 ? "결제 확인 중" : `D-${d}`}
                 </p>
               </div>
-            </div>
+            </button>
           );
         })}
       </section>

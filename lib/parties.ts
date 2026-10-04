@@ -120,6 +120,12 @@ export const DEMO_PARTIES: Party[] = [
   },
 ];
 
+/** 서비스 id로 모집 중인 파티 하나를 찾는다. 같이 쓰기 버튼에 쓴다 */
+export function partyForService(serviceId: string): Party | undefined {
+  return DEMO_PARTIES.find((p) => p.serviceId === serviceId && !isFull(p)) ??
+    DEMO_PARTIES.find((p) => p.serviceId === serviceId);
+}
+
 export function findParty(id: string): Party | undefined {
   return DEMO_PARTIES.find((p) => p.id === id);
 }

@@ -46,6 +46,10 @@ export type DetectedSubscription = {
   confidence: number;
   occurrences: number;
   lastChargeDate: string;
+  /** 가져온 내역에서 처음 결제한 날 YYYY-MM-DD */
+  firstChargeDate: string;
+  /** 가져온 내역 전체에서 이 구독에 쓴 총액 */
+  totalPaid: number;
   priceChange: PriceChange | null;
   /** 이번 배치에서 처음 등장한 구독 (spec/v5 §4-4 신규 구독 알림) */
   isNew: boolean;
@@ -273,6 +277,8 @@ export function detectSubscriptions(
       confidence: Math.round(confidence * 100) / 100,
       occurrences: sorted.length,
       lastChargeDate: last.date,
+      firstChargeDate: sorted[0]!.date,
+      totalPaid: sorted.reduce((sum, t) => sum + t.amount, 0),
       priceChange: detectPriceChange(sorted),
       // 서비스가 해석됐으면 그 id로 키를 안정화한다 — 사전이 커지며 키가 바뀌면
       // 멀쩡한 구독이 "신규"로 다시 뜬다.

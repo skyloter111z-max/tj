@@ -109,6 +109,7 @@ export const SERVICES: ServiceDef[] = [
   {
     id: "tving",
     name: "티빙",
+    cancelUrl: "https://www.tving.com/mypage/subscription",
     category: "ott",
     patterns: [/TVING/, /티빙/],
     maskedPrefixes: ["티빙", "TV"],
@@ -119,6 +120,7 @@ export const SERVICES: ServiceDef[] = [
   {
     id: "wavve",
     name: "웨이브",
+    cancelUrl: "https://www.wavve.com/user/voucher",
     category: "ott",
     patterns: [/WAVVE/, /웨이브/],
     maskedPrefixes: ["웨이", "WA"],
@@ -129,6 +131,7 @@ export const SERVICES: ServiceDef[] = [
   {
     id: "coupangplay",
     name: "쿠팡플레이",
+    cancelUrl: "https://www.coupang.com/np/myCoupang/wowManagement",
     category: "ott",
     patterns: [/COUPANG\s?PLAY/, /쿠팡플레이/],
     // 와우 멤버십에 포함돼 별도 청구되지 않는다 → 가격 지문을 두지 않는다.
@@ -184,6 +187,7 @@ export const SERVICES: ServiceDef[] = [
   {
     id: "perplexity",
     name: "Perplexity",
+    cancelUrl: "https://www.perplexity.ai/settings/account",
     category: "ai",
     patterns: [/PERPLEXITY/],
     maskedPrefixes: ["퍼플", "PE"],
@@ -194,6 +198,7 @@ export const SERVICES: ServiceDef[] = [
   {
     id: "cursor",
     name: "Cursor",
+    cancelUrl: "https://www.midjourney.com/account",
     category: "ai",
     patterns: [/CURSOR(\s|$)/, /ANYSPHERE/],
     cycles: ["monthly", "yearly"],
@@ -202,6 +207,7 @@ export const SERVICES: ServiceDef[] = [
   {
     id: "midjourney",
     name: "Midjourney",
+    cancelUrl: "https://www.spotify.com/account/subscription/",
     category: "ai",
     patterns: [/MIDJOURNEY/],
     cycles: ["monthly"],
@@ -211,6 +217,7 @@ export const SERVICES: ServiceDef[] = [
   {
     id: "spotify",
     name: "스포티파이",
+    cancelUrl: "https://www.spotify.com/account/subscription/",
     category: "music",
     patterns: [/SPOTIFY/, /스포티파이/],
     maskedPrefixes: ["스포", "SP", "PA"],
@@ -220,6 +227,7 @@ export const SERVICES: ServiceDef[] = [
   {
     id: "melon",
     name: "멜론",
+    cancelUrl: "https://www.coupang.com/np/myCoupang/wowManagement",
     category: "music",
     patterns: [/MELON/, /멜론/, /KAKAO\s?ENTERTAINMENT/],
     maskedPrefixes: ["멜론", "ME", "KA"],
@@ -231,6 +239,7 @@ export const SERVICES: ServiceDef[] = [
   {
     id: "coupangwow",
     name: "쿠팡 와우",
+    cancelUrl: "https://nid.naver.com/membership/myMembership",
     category: "commerce",
     // 전자상거래 알림은 가맹점명을 6자 안팎에서 자른다: "쿠팡(와우멤"
     patterns: [/COUPANG\s?WOW/, /쿠팡\s?\(?와우/, /와우멤버십/],
@@ -241,6 +250,7 @@ export const SERVICES: ServiceDef[] = [
   {
     id: "naverplus",
     name: "네이버플러스",
+    cancelUrl: "https://support.apple.com/ko-kr/HT202039",
     category: "commerce",
     patterns: [/NAVER\s?PLUS/, /네이버플러스/, /네이버\s?멤버십/],
     maskedPrefixes: ["네이", "NA"],
@@ -251,6 +261,7 @@ export const SERVICES: ServiceDef[] = [
   {
     id: "icloud",
     name: "iCloud+",
+    cancelUrl: "https://support.apple.com/ko-kr/HT202039",
     category: "cloud",
     patterns: [/ICLOUD/, /APPLE\s?ONE/],
     maskedPrefixes: ["애플", "AP"],
@@ -260,6 +271,7 @@ export const SERVICES: ServiceDef[] = [
   {
     id: "ms365",
     name: "Microsoft 365",
+    cancelUrl: "https://account.microsoft.com/services",
     category: "cloud",
     patterns: [/MICROSOFT\s?365/, /MSFT\s?365/, /OFFICE\s?365/],
     maskedPrefixes: ["마이", "MI", "MS"],
