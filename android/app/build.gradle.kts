@@ -14,11 +14,12 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        // 기본값은 APK 안에 넣은 웹 앱(저장소 루트에서 `npm run export` → out/).
+        // 기본값은 APK 안에 넣은 웹 앱(저장소 루트에서 `npm run export` → out/)의 홈.
+        // 홈은 설정을 마치지 않은 사용자를 온보딩으로 보낸다.
         // 개발 PC의 `npm run dev`에 붙일 때(에뮬레이터):
-        //   ./gradlew installDebug -Psubmoa.webUrl=http://10.0.2.2:3000/onboarding
+        //   ./gradlew installDebug -Psubmoa.webUrl=http://10.0.2.2:3000/
         val webUrl = (project.findProperty("submoa.webUrl") as String?)
-            ?: "https://appassets.androidplatform.net/onboarding"
+            ?: "https://appassets.androidplatform.net/"
         buildConfigField("String", "WEB_URL", "\"$webUrl\"")
     }
 

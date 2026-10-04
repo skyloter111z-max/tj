@@ -6,7 +6,8 @@ import Foundation
 /// Next 정적 내보내기는 `/onboarding`을 `onboarding.html`로, `/`를 `index.html`로 만든다.
 public enum WebAssets {
     public static let scheme = "submoa"
-    public static let startURL = URL(string: "submoa://app/onboarding")!
+    /// 홈. 단축어 설정을 마치지 않았으면 웹이 온보딩으로 보낸다
+    public static let startURL = URL(string: "submoa://app/")!
 
     /// 요청 경로 → 번들 web/ 아래에서 찾아볼 파일 후보 (순서대로)
     public static func candidates(_ path: String) -> [String] {

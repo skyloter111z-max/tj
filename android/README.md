@@ -23,12 +23,13 @@ ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug
 ```
 
 APK는 out/을 `https://appassets.androidplatform.net/`으로 서빙한다(WebAssets). 확장자 없는
-`/onboarding`은 `onboarding.html`로 찾는다.
+`/onboarding`은 `onboarding.html`로 찾는다. 앱은 홈(`/`)으로 열리고, 알림 읽기 설정을 마치지 않았으면
+홈이 온보딩으로 보낸다.
 
 개발 중 `npm run dev`에 바로 붙이려면(에뮬레이터):
 
 ```bash
-./gradlew installDebug -Psubmoa.webUrl=http://10.0.2.2:3000/onboarding
+./gradlew installDebug -Psubmoa.webUrl=http://10.0.2.2:3000/
 ```
 
 ## 테스트

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ServicePicker } from "@/components/ServicePicker";
+import { DeclaredWaiting, WatchingCard } from "@/components/Watching";
 import {
   bridgePlatform,
   kstDate,
@@ -13,13 +14,12 @@ import {
 } from "@/lib/card-alerts/bridge";
 import { collectTransactions } from "@/lib/card-alerts/parse";
 import { detectSubscriptions, monthlyEquivalent, totalMonthly } from "@/lib/detector";
-import { findService } from "@/lib/merchants";
 import { iconFor } from "@/lib/service-icons";
 import { SAMPLE_TRANSACTIONS } from "@/lib/sample-data";
+import { readJSON, STORAGE_KEYS, writeJSON } from "@/lib/storage";
 
 const won = (n: number) => `${n.toLocaleString("ko-KR")}원`;
 const SAMPLE_TODAY = "2026-10-04";
-const STORAGE_KEY = "submoa.declared";
 
 type Step = "services" | "connect" | "result";
 
@@ -34,22 +34,14 @@ export default function OnboardingPage() {
   const [bridge, setBridge] = useState<NativeBridge | null>(null);
   useEffect(() => setBridge(nativeBridge()), []);
 
-  // 선택은 브라우저에만 남는다. 저장이 막힌 환경(시크릿 모드 등)에서도 동작해야 한다.
+  // 선택은 기기에만 남는다. 저장이 막힌 환경(시크릿 모드 등)에서도 동작해야 한다.
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setSelected(new Set(JSON.parse(raw) as string[]));
-    } catch {
-      // 저장소를 못 읽어도 온보딩은 진행된다
-    }
+    setSelected(new Set(readJSON<string[]>(STORAGE_KEYS.declared, [])));
   }, []);
 
   function persist(next: Set<string>) {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify([...next]));
-    } catch {
-      // 무시 — 선언은 힌트일 뿐이라 없어도 스캔은 된다
-    }
+    // 선언은 힌트일 뿐이라 저장이 안 돼도 판정은 된다
+    writeJSON(STORAGE_KEYS.declared, [...next]);
   }
 
   function toggle(id: string) {
@@ -353,6 +345,10 @@ function ResultStep({
   bridge: NativeBridge | null;
 }) {
   const live = mode === "live" && bridge !== null;
+  // 앱에서 알림 읽기까지 마쳤다 — 다음부터 앱은 온보딩 대신 홈으로 연다
+  useEffect(() => {
+    if (live) writeJSON(STORAGE_KEYS.onboarded, true);
+  }, [live]);
   const collected = live ? collectTransactions(readCapturedAlerts(bridge)) : null;
   const all = collected
     ? detectSubscriptions(collected.transactions, { today: kstDate(Date.now()) })
@@ -419,6 +415,10 @@ function ResultStep({
  * 알림 읽기를 막 허용한 직후. 과거 내역이 없으니 구독이 아직 확인되지 않았다.
  * 고른 구독을 "다음 결제 때 확인"으로 보여 주고, 지금까지 모은 결제 알림 수로 동작 중임을 알린다.
  */
+/**
+ * 알림 읽기를 막 허용한 직후. 과거 내역이 없으니 구독이 아직 확인되지 않았다.
+ * 고른 구독을 "다음 결제 때 확인"으로 보여 주고, 지금까지 모은 결제 알림 수로 동작 중임을 알린다.
+ */
 function WatchingStep({
   declared,
   paymentCount,
@@ -428,43 +428,13 @@ function WatchingStep({
   paymentCount: number;
   ended: number;
 }) {
-  const waiting = [...declared].map((id) => findService(id)).filter((s) => s !== undefined);
-
   return (
     <div className="space-y-6">
-      <div className="rounded-2xl border border-sky-500/30 bg-sky-500/5 p-6 text-center">
-        <p className="text-3xl" aria-hidden>
-          👀
-        </p>
-        <h1 className="mt-2 text-lg font-bold text-zinc-100">결제 알림을 지켜보고 있어요</h1>
-        <p className="mt-1 text-sm text-zinc-400">
-          지금까지 받은 카드 결제 알림 <span className="font-semibold text-zinc-200">{paymentCount}건</span>
-        </p>
-        <p className="mt-2 text-xs text-zinc-500">같은 곳에서 결제가 두 번 쌓이면 구독으로 확인합니다.</p>
-      </div>
-
-      {waiting.length > 0 && (
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5">
-          <h2 className="text-sm font-bold text-zinc-200">고르신 구독</h2>
-          <p className="mt-1 text-xs text-zinc-500">다음 결제 알림이 오면 금액과 결제일을 확인해 드려요.</p>
-          <ul className="mt-3 space-y-2">
-            {waiting.map((s) => (
-              <li key={s.id} className="flex items-center justify-between text-sm">
-                <span className="flex items-center gap-2 text-zinc-200">
-                  <span aria-hidden>{iconFor(s.id)}</span>
-                  {s.name}
-                </span>
-                <span className="text-xs text-zinc-500">결제 대기</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
+      <WatchingCard paymentCount={paymentCount} />
+      <DeclaredWaiting declared={declared} />
       {ended > 0 && (
         <p className="text-center text-xs text-zinc-500">해지한 것으로 보이는 구독 {ended}개는 뺐습니다</p>
       )}
-
       <StartLink />
     </div>
   );
