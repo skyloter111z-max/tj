@@ -9,6 +9,8 @@ export const STORAGE_KEYS = {
   onboarded: "submoa.onboarded",
   /** 구독 키 → 처음 찾은 날짜 (lib/home.ts) */
   seen: "submoa.seen",
+  /** 자동 기록(알림 권한) 제안을 사용자가 닫았는가 */
+  autoCaptureDismissed: "submoa.autocapture.dismissed",
 } as const;
 
 export function readJSON<T>(key: string, fallback: T): T {

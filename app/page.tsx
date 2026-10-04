@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { AutoCaptureOffer } from "@/components/AutoCapture";
 import { ImportHistoryCard, ReimportLine } from "@/components/ImportHistory";
 import { DeclaredWaiting, WatchingCard } from "@/components/Watching";
 import {
@@ -56,6 +57,8 @@ type HomeState =
       importedSpan: { from: string; to: string } | null;
       /** 방금 카톡에서 가져왔다 */
       justImported: ImportResult | null;
+      /** 안드로이드에서 알림 자동 수집이 아직 꺼져 있다 */
+      autoCaptureOff: boolean;
     };
 
 function loadHome(): HomeState | "onboarding" {
@@ -92,12 +95,17 @@ function loadHome(): HomeState | "onboarding" {
     canImport: bridgePlatform(bridge) === "android" && typeof bridge.openKakaoTalk === "function",
     importedSpan: exportSpan(imported),
     justImported,
+    autoCaptureOff:
+      bridgePlatform(bridge) === "android" &&
+      !bridge.isAccessGranted() &&
+      !readJSON(STORAGE_KEYS.autoCaptureDismissed, false),
   };
 }
 
 export default function HomePage() {
   const router = useRouter();
   const [home, setHome] = useState<HomeState | null>(null);
+  const [autoCaptureHidden, setAutoCaptureHidden] = useState(false);
 
   // 브리지는 앱 WebView에서만 생긴다. 마운트 뒤에 읽고, 앱이 다시 앞으로 올 때마다 새로 읽는다.
   useEffect(() => {
@@ -135,6 +143,10 @@ export default function HomePage() {
   return (
     <div className="space-y-6">
       {home.justImported && <ImportedBanner result={home.justImported} />}
+
+      {home.autoCaptureOff && !autoCaptureHidden && (home.importedSpan !== null || home.paymentCount > 0) && (
+        <AutoCaptureOffer onDismiss={() => setAutoCaptureHidden(true)} />
+      )}
 
       {home.subs.length > 0 ? (
         <Subscriptions subs={home.subs} today={home.today} live />
