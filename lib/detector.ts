@@ -49,9 +49,17 @@ export type DetectedSubscription = {
   priceChange: PriceChange | null;
   /** 이번 배치에서 처음 등장한 구독 (spec/v5 §4-4 신규 구독 알림) */
   isNew: boolean;
+  /**
+   * 마지막 결제 뒤로 주기의 1.5배가 지나도록 다음 결제가 없으면 끝난 구독이다.
+   * 카톡 알림방 내보내기처럼 몇 년치를 한 번에 읽으면 해지한 구독이 섞여 들어온다.
+   */
+  active: boolean;
 };
 
 const DAY_MS = 86_400_000;
+
+/** 다음 결제 없이 이만큼(주기 대비 배수) 지나면 해지된 것으로 본다 */
+const ENDED_AFTER_CYCLES = 1.5;
 
 /** 주기별 허용 간격(일). 결제일이 주말·공휴일로 밀리는 것을 흡수한다. */
 const CYCLE_WINDOWS: Record<Cycle, { min: number; max: number; nominal: number }> = {
@@ -269,6 +277,7 @@ export function detectSubscriptions(
       // 서비스가 해석됐으면 그 id로 키를 안정화한다 — 사전이 커지며 키가 바뀌면
       // 멀쩡한 구독이 "신규"로 다시 뜬다.
       isNew: !known.has(service ? `svc:${service.id}` : key),
+      active: daysBetween(last.date, today) <= CYCLE_WINDOWS[cycle].nominal * ENDED_AFTER_CYCLES,
     });
   }
 
@@ -288,8 +297,9 @@ export function monthlyEquivalent(sub: DetectedSubscription): number {
   }
 }
 
+/** 지금 나가고 있는 돈. 끝난 구독은 더하지 않는다 */
 export function totalMonthly(subs: readonly DetectedSubscription[]): number {
-  return subs.reduce((sum, s) => sum + monthlyEquivalent(s), 0);
+  return subs.reduce((sum, s) => (s.active ? sum + monthlyEquivalent(s) : sum), 0);
 }
 
 /** D-Day. 음수면 이미 지났다. */

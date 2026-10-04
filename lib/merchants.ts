@@ -232,7 +232,8 @@ export const SERVICES: ServiceDef[] = [
     id: "coupangwow",
     name: "쿠팡 와우",
     category: "commerce",
-    patterns: [/COUPANG\s?WOW/, /쿠팡와우/, /와우멤버십/],
+    // 전자상거래 알림은 가맹점명을 6자 안팎에서 자른다: "쿠팡(와우멤"
+    patterns: [/COUPANG\s?WOW/, /쿠팡\s?\(?와우/, /와우멤버십/],
     maskedPrefixes: ["쿠팡", "CO"],
     prices: [7890],
     cycles: ["monthly"],
