@@ -28,7 +28,10 @@
             </intent-filter>
         </activity>
 
-        <!-- 카톡 "대화 내용 내보내기 → 텍스트만 보내기"의 공유 목록에 구독모아로 뜬다 -->
+        <!-- 카톡 "대화 내용 내보내기 → 텍스트만 보내기"의 공유 목록에 구독모아로 뜬다.
+             카톡은 .txt를 text/plain이 아니라 일반 형식(octet-stream 등)으로 보내서,
+             공유 목록에 뜨려면 형식을 넓게 받아야 한다. 받은 뒤 KakaoExport.looksLikeExport로
+             실제 카톡 내보내기인지 검사해 아니면 토스트로 거절하므로, 넓은 필터가 안전하다. -->
         <activity
             android:name=".ImportActivity"
             android:exported="true"
@@ -38,12 +41,11 @@
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
                 <data android:mimeType="text/*" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/zip" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
 
