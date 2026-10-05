@@ -104,31 +104,60 @@ class MainActivity : Activity() {
         if (requestCode == REQUEST_CAPTURE && resultCode == RESULT_OK && data != null) {
             ScreenCaptureService.start(this, resultCode, data, pendingCaptureQueue)
             // 첫 화면은 (포그라운드 권한이 있는) 액티비티가 연다. 나머지는 서비스가 순서대로 연다.
-            firstUrl(pendingCaptureQueue)?.let { openCaptureTarget(it) }
+            val first = runCatching { JSONArray(pendingCaptureQueue).optJSONObject(0) }.getOrNull()
+            if (first != null) CaptureApps.open(this, first.optString("id"), first.optString("url"), newTask = false)
         }
         // '다른 앱 위에 표시' 설정에서 돌아왔다 — 허용됐든 아니든 캡처는 진행한다
         if (requestCode == REQUEST_OVERLAY) proceedToConsent()
     }
 
-    /** 큐 JSON에서 첫 화면 주소를 꺼낸다 */
-    private fun firstUrl(queueJson: String): String? =
-        runCatching { JSONArray(queueJson).optJSONObject(0)?.optString("url")?.takeIf { it.isNotBlank() } }
-            .getOrNull()
-
-    /** 큐에 화면이 2개 이상인가 — 그때만 자동 전환(오버레이 권한)이 필요하다 */
-    private fun isMultiScreen(queueJson: String): Boolean =
-        runCatching { JSONArray(queueJson).length() > 1 }.getOrDefault(false)
+    /**
+     * 큐에서 이 폰에 앱이 없는 서비스를 뺀다(브라우저로 열면 로그인 화면뿐이라 읽을 게 없다).
+     * 남은 큐와, 빠진 서비스 이름들을 돌려준다.
+     */
+    private fun dropMissingApps(queueJson: String): Pair<JSONArray, List<String>> {
+        val arr = runCatching { JSONArray(queueJson) }.getOrDefault(JSONArray())
+        val kept = JSONArray()
+        val skipped = mutableListOf<String>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.optString("id")
+            val url = o.optString("url")
+            if (url.isBlank()) continue
+            if (CaptureApps.modeFor(this, id, url) == CaptureApps.Mode.SKIP) skipped += o.optString("name").ifBlank { id }
+            else kept.put(o)
+        }
+        return kept to skipped
+    }
 
     /**
-     * 화면 캡처 자동 읽기 시작. 큐([{id,url}])의 화면들을 한 번의 동의로 차례로 읽는다.
+     * 떠 있는 안내창이 필요한가: 화면이 여럿이면(자동 전환), 또는 서비스 앱 안에서 읽어야 하면
+     * ('읽기'·'건너뛰기' 버튼). 구글플레이 한 장만 읽을 때는 필요 없다.
+     */
+    private fun needsOverlay(queue: JSONArray): Boolean {
+        if (queue.length() > 1) return true
+        val o = queue.optJSONObject(0) ?: return false
+        return CaptureApps.modeFor(this, o.optString("id"), o.optString("url")) == CaptureApps.Mode.GUIDED
+    }
+
+    /**
+     * 화면 캡처 자동 읽기 시작. 큐([{id,url,name}])의 화면들을 한 번의 동의로 차례로 읽는다.
      *
-     * 화면이 2개 이상이면 '다른 앱 위에 표시'(오버레이) 권한이 있어야 앱이 다음 화면으로 자동 전환할 수
-     * 있다(안드로이드 백그라운드 실행 제한을 이 권한이 풀어 준다). 없으면 설정 화면으로 보내 받아 둔다.
+     * 안내창이 필요하면 '다른 앱 위에 표시'(오버레이) 권한을 먼저 받는다 — 이 권한이 있어야 앱이 다음
+     * 화면으로 자동 전환할 수 있다(안드로이드 백그라운드 실행 제한을 이 권한이 풀어 준다).
      */
     private fun beginCapture(queueJson: String) = runOnUiThread {
-        pendingCaptureQueue = queueJson
-        if (isMultiScreen(queueJson) && !Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, "여러 구독을 자동으로 넘기며 읽으려면 '다른 앱 위에 표시'를 켜 주세요", Toast.LENGTH_LONG).show()
+        val (queue, skipped) = dropMissingApps(queueJson)
+        if (skipped.isNotEmpty()) {
+            Toast.makeText(this, "${skipped.joinToString("·")}: 이 폰에 앱이 없어 건너뛰어요", Toast.LENGTH_LONG).show()
+        }
+        if (queue.length() == 0) {
+            Toast.makeText(this, "읽을 수 있는 서비스 앱이 이 폰에 없어요", Toast.LENGTH_LONG).show()
+            return@runOnUiThread
+        }
+        pendingCaptureQueue = queue.toString()
+        if (needsOverlay(queue) && !Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "구독 화면을 자동으로 넘기며 읽으려면 '다른 앱 위에 표시'를 켜 주세요", Toast.LENGTH_LONG).show()
             val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
             runCatching { startActivityForResult(intent, REQUEST_OVERLAY) }
                 .onFailure { proceedToConsent() }
@@ -149,22 +178,6 @@ class MainActivity : Activity() {
     private fun launchCaptureConsent() {
         val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         runCatching { startActivityForResult(mpm.createScreenCaptureIntent(), REQUEST_CAPTURE) }
-    }
-
-    /**
-     * 읽을 구독 화면을 연다. 구글플레이 구독 주소는 크롬에서 빈(흰) 페이지로 열릴 때가 있어
-     * 플레이 스토어 앱(com.android.vending)으로 직접 보낸다. 그 밖의 주소(각 OTT 계정 페이지)는
-     * 기본 처리에 맡겨 해당 OTT 앱이나 브라우저가 열게 한다.
-     */
-    private fun openCaptureTarget(rawUrl: String) {
-        val url = Uri.parse(rawUrl)
-        if (url.host?.contains("play.google.com") == true) {
-            val toPlay = Intent(Intent.ACTION_VIEW, url).setPackage("com.android.vending")
-            if (toPlay.resolveActivity(packageManager) != null) {
-                runCatching { startActivity(toPlay) }.onSuccess { return }
-            }
-        }
-        runCatching { startActivity(Intent(Intent.ACTION_VIEW, url)) }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -236,7 +249,7 @@ class MainActivity : Activity() {
          * 구글플레이 구독 화면을 자동으로 읽기 시작한다. (화면 하나짜리 큐)
          */
         @JavascriptInterface
-        fun startStoreCapture() = beginCapture("""[{"id":"","url":"$PLAY_SUBS_URL"}]""")
+        fun startStoreCapture() = beginCapture("""[{"id":"","url":"$PLAY_SUBS_URL","name":"구글플레이 정기결제"}]""")
 
         /**
          * 여러 화면([{id,url}]의 JSON)을 한 번의 동의로 차례로 열어 읽는다.

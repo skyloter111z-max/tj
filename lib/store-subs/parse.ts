@@ -10,7 +10,7 @@
  */
 
 import type { DetectedSubscription } from "../detector";
-import { matchMerchant, type ServiceDef } from "../merchants";
+import { findService, matchMerchant, type ServiceDef } from "../merchants";
 
 export type StoreSubscription = {
   service: ServiceDef;
@@ -81,14 +81,22 @@ const BILLING_HINT = /결제|요금|구독|멤버십|플랜|요금제|renew|bill
  * (2) "결제 예정" 같은 결제 맥락에 붙은 금액을 고른다. 결제 맥락이 없고 금액이 여럿이면
  * 섣불리 찍지 않는다(틀린 금액을 보여 주느니 "못 찾음"이 낫다).
  */
-export function parseStoreScreenshotFor(ocrText: string, targetId: string): StoreSubscription | null {
+export function parseStoreScreenshotFor(
+  ocrText: string,
+  targetId: string,
+  opts: { trusted?: boolean } = {},
+): StoreSubscription | null {
   const lines = ocrText
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
 
-  // 이 화면에 그 서비스가 보이는가 (로고가 아니라 글자로)
-  const service = lines.map((l) => matchMerchant(l).service).find((s) => s?.id === targetId);
+  // 이 화면에 그 서비스가 보이는가 (로고가 아니라 글자로).
+  // 그 서비스 앱 안에서 읽은 화면(trusted)은 이름이 안 나오는 게 보통이라 확인하지 않는다 —
+  // 사용자가 그 앱의 구독 화면까지 이동했고, 앱이 "구독 상태" 신호를 보고 읽은 것이다.
+  const service = opts.trusted
+    ? findService(targetId)
+    : lines.map((l) => matchMerchant(l).service).find((s) => s?.id === targetId);
   if (!service) return null;
 
   // 결제 맥락(결제 예정 등)에 붙은 금액을 먼저 찾는다 — 가장 믿을 만한 "결제액"이다

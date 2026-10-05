@@ -29,12 +29,16 @@ object StoreStore {
         return f.readText().also { f.delete() }
     }
 
-    /** 읽은 화면 하나를 쌓는다. id는 그 화면이 어느 서비스였는지(없으면 ""). */
+    /**
+     * 읽은 화면 하나를 쌓는다. id는 그 화면이 어느 서비스였는지(없으면 "").
+     * trusted: 그 서비스 앱 안에서 읽은 화면이다 — 앱 안 화면엔 서비스 이름이 안 나오는 경우가 많아,
+     * 웹이 이름 확인 없이 그 서비스로 해석하도록 표시한다.
+     */
     @Synchronized
-    fun appendPendingOcr(context: Context, id: String, text: String) {
+    fun appendPendingOcr(context: Context, id: String, text: String, trusted: Boolean = false) {
         val f = pendingOcr(context)
         val arr = runCatching { JSONArray(if (f.exists()) f.readText() else "[]") }.getOrDefault(JSONArray())
-        arr.put(JSONObject().put("id", id).put("text", text))
+        arr.put(JSONObject().put("id", id).put("text", text).put("trusted", trusted))
         f.writeText(arr.toString())
     }
 

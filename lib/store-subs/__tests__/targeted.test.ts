@@ -36,3 +36,26 @@ describe("특정 OTT 화면 타깃 읽기", () => {
     expect(parseStoreScreenshotFor("다음 결제 ₩17,000", "netflix")).toBeNull();
   });
 });
+
+// 티빙 앱 안 '마이 > 이용권' 화면: 앱 안이라 "티빙"이라는 글자가 화면에 없다
+const TVING_IN_APP = `이용권
+광고형 스탠다드
+월 5,500원
+다음 결제일 2026.11.03
+결제 수단 삼성카드`;
+
+describe("서비스 앱 안에서 읽은 화면(trusted)", () => {
+  it("이름이 화면에 없어도 그 서비스로 읽는다", () => {
+    const sub = parseStoreScreenshotFor(TVING_IN_APP, "tving", { trusted: true });
+    expect([sub?.service.id, sub?.amount, sub?.cycle]).toEqual(["tving", 5500, "monthly"]);
+  });
+
+  it("trusted가 아니면 이름 없는 화면은 여전히 거른다", () => {
+    expect(parseStoreScreenshotFor(TVING_IN_APP, "tving")).toBeNull();
+  });
+
+  it("trusted라도 금액이 애매하면(결제 맥락 없이 여럿) 찍지 않는다", () => {
+    const picker = "이용권 구매\n광고형 스탠다드 5,500원\n스탠다드 13,900원";
+    expect(parseStoreScreenshotFor(picker, "tving", { trusted: true })).toBeNull();
+  });
+});

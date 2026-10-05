@@ -56,15 +56,20 @@ export function defaultSelection(): Set<string> {
   return keys;
 }
 
-/** 고른 대상으로 캡처 큐를 만든다. 같은 주소(예: 유튜브 프리미엄과 구글플레이 전체)는 한 번만 연다 */
-export function buildQueue(selectedKeys: ReadonlySet<string>): { id: string; url: string }[] {
-  const out: { id: string; url: string }[] = [];
+export type QueueItem = { id: string; url: string; name: string };
+
+/**
+ * 고른 대상으로 캡처 큐를 만든다. 같은 주소(예: 유튜브 프리미엄과 구글플레이 전체)는 한 번만 연다.
+ * name은 읽는 동안 떠 있는 안내창에 보인다.
+ */
+export function buildQueue(selectedKeys: ReadonlySet<string>): QueueItem[] {
+  const out: QueueItem[] = [];
   const seenUrl = new Set<string>();
   for (const g of captureGroups()) {
     for (const t of g.targets) {
       if (!selectedKeys.has(t.key) || seenUrl.has(t.url)) continue;
       seenUrl.add(t.url);
-      out.push({ id: t.id, url: t.url });
+      out.push({ id: t.id, url: t.url, name: t.name });
     }
   }
   return out;

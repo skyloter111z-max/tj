@@ -39,8 +39,11 @@ export type OcrIngest = {
   readText: boolean;
 };
 
-/** 읽은 화면 한 장: 글자와, 어느 서비스 화면이었는지(없으면 ""). 네이티브 StoreStore와 짝 */
-type OcrScreen = { id: string; text: string };
+/**
+ * 읽은 화면 한 장: 글자와, 어느 서비스 화면이었는지(없으면 ""). 네이티브 StoreStore와 짝.
+ * trusted: 그 서비스 앱 안에서 읽었다 — 화면에 서비스 이름이 없어도 그 서비스로 해석한다.
+ */
+type OcrScreen = { id: string; text: string; trusted?: boolean };
 
 function parseScreens(raw: string): OcrScreen[] {
   const trimmed = raw.trim();
@@ -51,7 +54,7 @@ function parseScreens(raw: string): OcrScreen[] {
     if (Array.isArray(parsed)) {
       return parsed
         .filter((r): r is OcrScreen => typeof r === "object" && r !== null && typeof (r as OcrScreen).text === "string")
-        .map((r) => ({ id: typeof r.id === "string" ? r.id : "", text: r.text }));
+        .map((r) => ({ id: typeof r.id === "string" ? r.id : "", text: r.text, trusted: r.trusted === true }));
     }
   } catch {
     // JSON이 아니면 글자 하나로 본다
@@ -82,7 +85,7 @@ export function ingestPendingOcr(
     for (const s of parseStoreScreenshot(screen.text)) add(s);
     // 이 화면이 특정 OTT 것이면, 일반 해석이 놓쳤을 때 그 하나만 노려 다시 본다
     if (screen.id && !found.some((s) => s.service.id === screen.id)) {
-      const one = parseStoreScreenshotFor(screen.text, screen.id);
+      const one = parseStoreScreenshotFor(screen.text, screen.id, { trusted: screen.trusted });
       if (one) add(one);
     }
   }

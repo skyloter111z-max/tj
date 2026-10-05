@@ -54,6 +54,12 @@ describe("ingestPendingOcr: 여러 화면 읽기", () => {
     expect(out).toEqual({ found: [], readText: true });
   });
 
+  it("앱 안에서 읽은 화면(trusted)은 이름 없이도 그 서비스로 잡는다", () => {
+    const tving = "이용권\n광고형 스탠다드\n월 5,500원\n다음 결제일 2026.11.03";
+    const out = ingestPendingOcr(fakeBridge(JSON.stringify([{ id: "tving", text: tving, trusted: true }])));
+    expect(out.found.map((s) => [s.service.id, s.amount])).toEqual([["tving", 5500]]);
+  });
+
   it("옛 형식(글자 하나)도 일반 해석으로 받는다", () => {
     const out = ingestPendingOcr(fakeBridge(PLAY));
     expect(out.found.map((s) => s.service.id)).toEqual(["youtubepremium"]);

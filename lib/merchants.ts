@@ -106,7 +106,8 @@ export const SERVICES: ServiceDef[] = [
     name: "디즈니+",
     category: "ott",
     patterns: [/DISNEY\s?\+?/, /DISNEYPLUS/, /디즈니/],
-    cancelUrl: "https://www.disneyplus.com/account/subscription",
+    // 예전 /account/subscription은 여기로 넘어간다(2026-10 확인)
+    cancelUrl: "https://www.disneyplus.com/commerce/subscription",
     maskedPrefixes: ["디즈", "DI"],
     prices: [9900, 13900],
     cycles: ["monthly", "yearly"],
@@ -115,7 +116,8 @@ export const SERVICES: ServiceDef[] = [
   {
     id: "tving",
     name: "티빙",
-    cancelUrl: "https://www.tving.com/mypage/subscription",
+    // 예전 /mypage/subscription은 404다. 마이티빙 > 이용권 (2026-10 확인)
+    cancelUrl: "https://www.tving.com/my/ticket",
     category: "ott",
     patterns: [/TVING/, /티빙/],
     maskedPrefixes: ["티빙", "TV"],

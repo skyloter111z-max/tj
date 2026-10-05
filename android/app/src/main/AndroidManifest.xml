@@ -14,6 +14,18 @@
     <!-- "카카오톡 열기" 버튼이 카톡을 띄우려면 Android 11+에서 패키지를 미리 밝혀야 한다 -->
     <queries>
         <package android:name="com.kakao.talk" />
+        <!-- 구독 화면을 브라우저(로그인 안 됨)가 아니라 로그인돼 있는 각 서비스 앱으로 열려고,
+             앱이 깔려 있는지 확인한다 (CaptureApps) -->
+        <package android:name="com.android.vending" />
+        <package android:name="com.netflix.mediaclient" />
+        <package android:name="com.disney.disneyplus" />
+        <package android:name="net.cj.cjhv.gs.tving" />
+        <package android:name="kr.co.captv.pooqV2" />
+        <package android:name="com.coupang.mobile" />
+        <package android:name="com.openai.chatgpt" />
+        <package android:name="com.anthropic.claude" />
+        <package android:name="com.google.android.apps.subscriptions.red" />
+        <package android:name="ai.perplexity.app.android" />
     </queries>
 
     <application
