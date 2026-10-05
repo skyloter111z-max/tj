@@ -99,8 +99,10 @@ export function CapturePicker({
         </p>
       )}
       <p className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs leading-relaxed text-zinc-400">
-        각 서비스에 <span className="text-zinc-200">로그인돼 있어야</span> 금액이 보여요. 안 돼 있으면 그
-        화면은 건너뜁니다. 카드로 낸 구독은 카톡 가져오기로 더 정확히 잡을 수 있어요.
+        여러 개를 고르면 자동으로 다음 화면으로 넘어가기 위해 <span className="text-zinc-200">&apos;다른 앱
+        위에 표시&apos;</span> 권한을 한 번 켜야 해요. 각 서비스에 <span className="text-zinc-200">로그인돼
+        있어야</span> 금액이 보이고, 안 돼 있으면 그 화면은 건너뜁니다. 카드로 낸 구독은 카톡 가져오기로 더
+        정확히 잡을 수 있어요.
       </p>
     </section>
   );

@@ -13,6 +13,7 @@ import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
+import android.graphics.Color
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
@@ -20,8 +21,13 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.Settings
 import android.util.DisplayMetrics
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
+import android.widget.TextView
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
@@ -50,6 +56,7 @@ class ScreenCaptureService : Service() {
     private var gotAny = false
     private var finished = false
     private var stepDone = false
+    private var overlay: TextView? = null
 
     private val stepRunnable = Runnable { captureCurrent() }
     private val stepTimeout = Runnable { onStep(null) }
@@ -71,6 +78,8 @@ class ScreenCaptureService : Service() {
                 } else {
                     startForeground(NOTIF_ID, buildNotification())
                 }
+                // 오버레이(떠 있는 작은 안내창)가 있어야 안드로이드가 앱의 자동 화면 전환을 허용한다.
+                showOverlay()
                 // 첫 화면은 액티비티가 이미 열었다. 뜰 시간을 준 뒤 순서대로 읽어 나간다.
                 if (queue.isEmpty()) finishToApp(false) else scheduleStep()
             }
@@ -101,6 +110,7 @@ class ScreenCaptureService : Service() {
     /** 지금 화면을 한 장 잡는다. 프레임이 오거나(또는 못 오면 시간초과) onStep으로 모인다. */
     private fun captureCurrent() {
         stepDone = false
+        updateOverlay()
         main.postDelayed(stepTimeout, STEP_TIMEOUT_MS)
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val d = data ?: return onStep(null)
@@ -191,6 +201,43 @@ class ScreenCaptureService : Service() {
         reader = null
     }
 
+    /**
+     * 떠 있는 작은 안내창. 사용자에게 진행 상황을 보여 주고, 동시에 "보이는 창"이 되어
+     * 안드로이드가 앱의 자동 화면 전환을 허용하게 한다(SYSTEM_ALERT_WINDOW 예외).
+     */
+    private fun showOverlay() {
+        if (overlay != null || !Settings.canDrawOverlays(this)) return
+        val pad = (12 * resources.displayMetrics.density).toInt()
+        val view = TextView(this).apply {
+            setBackgroundColor(Color.parseColor("#E60EA5E9"))
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setPadding(pad, pad / 2, pad, pad / 2)
+            text = "구독 화면을 읽는 중…"
+        }
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            android.graphics.PixelFormat.TRANSLUCENT,
+        ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = (48 * resources.displayMetrics.density).toInt() }
+        runCatching { (getSystemService(WINDOW_SERVICE) as WindowManager).addView(view, lp) }
+            .onSuccess { overlay = view }
+    }
+
+    private fun updateOverlay() {
+        val total = queue.size
+        val n = (index + 1).coerceAtMost(total)
+        overlay?.text = if (total > 1) "구독 화면을 읽는 중… ($n/$total)" else "구독 화면을 읽는 중…"
+    }
+
+    private fun removeOverlay() {
+        val view = overlay ?: return
+        overlay = null
+        runCatching { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(view) }
+    }
+
     private fun toBitmap(image: android.media.Image, width: Int): Bitmap {
         val plane = image.planes[0]
         val pixelStride = plane.pixelStride
@@ -243,6 +290,7 @@ class ScreenCaptureService : Service() {
     private fun stop() {
         main.removeCallbacks(stepRunnable)
         main.removeCallbacks(stepTimeout)
+        removeOverlay()
         releaseCapture()
         projection?.stop()
         projection = null

@@ -89,6 +89,8 @@ class MainActivity : Activity() {
             // 첫 화면은 (포그라운드 권한이 있는) 액티비티가 연다. 나머지는 서비스가 순서대로 연다.
             firstUrl(pendingCaptureQueue)?.let { openCaptureTarget(it) }
         }
+        // '다른 앱 위에 표시' 설정에서 돌아왔다 — 허용됐든 아니든 캡처는 진행한다
+        if (requestCode == REQUEST_OVERLAY) proceedToConsent()
     }
 
     /** 큐 JSON에서 첫 화면 주소를 꺼낸다 */
@@ -96,13 +98,30 @@ class MainActivity : Activity() {
         runCatching { JSONArray(queueJson).optJSONObject(0)?.optString("url")?.takeIf { it.isNotBlank() } }
             .getOrNull()
 
+    /** 큐에 화면이 2개 이상인가 — 그때만 자동 전환(오버레이 권한)이 필요하다 */
+    private fun isMultiScreen(queueJson: String): Boolean =
+        runCatching { JSONArray(queueJson).length() > 1 }.getOrDefault(false)
+
     /**
      * 화면 캡처 자동 읽기 시작. 큐([{id,url}])의 화면들을 한 번의 동의로 차례로 읽는다.
-     * 먼저 알림 권한을 받아 둔다 — 캡처 뒤 앱으로 돌아오는 자동 전환이 기기(OEM)에 따라 막힐 수 있어서,
-     * 그때 "눌러서 확인" 알림이 보여야 결과로 들어올 수 있다. 권한을 거부해도 캡처 자체는 진행한다.
+     *
+     * 화면이 2개 이상이면 '다른 앱 위에 표시'(오버레이) 권한이 있어야 앱이 다음 화면으로 자동 전환할 수
+     * 있다(안드로이드 백그라운드 실행 제한을 이 권한이 풀어 준다). 없으면 설정 화면으로 보내 받아 둔다.
      */
     private fun beginCapture(queueJson: String) = runOnUiThread {
         pendingCaptureQueue = queueJson
+        if (isMultiScreen(queueJson) && !Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "여러 구독을 자동으로 넘기며 읽으려면 '다른 앱 위에 표시'를 켜 주세요", Toast.LENGTH_LONG).show()
+            val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+            runCatching { startActivityForResult(intent, REQUEST_OVERLAY) }
+                .onFailure { proceedToConsent() }
+            return@runOnUiThread
+        }
+        proceedToConsent()
+    }
+
+    /** 알림 권한을 받아 둔 뒤(캡처 뒤 '눌러서 확인' 알림이 보이도록) 화면 캡처 동의를 띄운다 */
+    private fun proceedToConsent() {
         val needsNotify = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         if (needsNotify) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFY_CAPTURE)
@@ -261,6 +280,7 @@ class MainActivity : Activity() {
         private const val REQUEST_NOTIFY = 1
         private const val REQUEST_CAPTURE = 2
         private const val REQUEST_NOTIFY_CAPTURE = 3
+        private const val REQUEST_OVERLAY = 4
         private const val PLAY_SUBS_URL = "https://play.google.com/store/account/subscriptions"
     }
 }
