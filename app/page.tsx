@@ -7,6 +7,7 @@ import { AutoCaptureOffer } from "@/components/AutoCapture";
 import { SubscriptionDetail } from "@/components/SubscriptionDetail";
 import { ImportHistoryCard, ReimportLine } from "@/components/ImportHistory";
 import { MoreSources } from "@/components/MoreSources";
+import { OttOverview } from "@/components/OttOverview";
 import { DeclaredWaiting, WatchingCard } from "@/components/Watching";
 import {
   bridgePlatform,
@@ -244,6 +245,8 @@ function Subscriptions({
           구독 {subs.length}개 · 연 {won(monthly * 12)}
         </p>
       </section>
+
+      {live && <OttOverview subs={subs} onOpen={onOpen} />}
 
       {newSubs.length > 0 && (
         <section className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-5">

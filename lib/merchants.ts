@@ -143,7 +143,8 @@ export const SERVICES: ServiceDef[] = [
     id: "youtubepremium",
     name: "유튜브 프리미엄",
     category: "ott",
-    patterns: [/YOUTUBE\s?PREMIUM/, /YOUTUBEPREMIUM/, /유튜브\s?프리미엄/],
+    // 전자상거래 알림은 6자로 잘려 "유튜브 프리"로 온다. 유튜브 결제는 유튜브로 본다
+    patterns: [/YOUTUBE/, /유튜브/],
     cancelUrl: "https://www.youtube.com/paid_memberships",
     maskedPrefixes: ["유튜", "GO", "YO"],
     prices: [14900, 23900],
