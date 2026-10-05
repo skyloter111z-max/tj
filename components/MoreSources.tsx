@@ -57,9 +57,9 @@ export function MoreSources() {
       </div>
       <p className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs leading-relaxed text-zinc-400">
         넷플릭스·유튜브처럼 <span className="text-zinc-200">앱스토어로 결제</span>한 구독은 카드에 서비스명이
-        안 찍혀요. <span className="text-zinc-200">자동으로 읽기</span>를 누르면 화면 캡처 동의 한 번으로, 구독
-        화면을 열고 &apos;화면 읽기&apos;만 누르면 글자를 읽어 추가합니다. 스토어 화면을 직접 캡처해
-        구독모아로 공유해도 됩니다.
+        안 찍혀요. <span className="text-zinc-200">자동으로 읽기</span>를 누르면 화면 캡처 동의 한 번으로 구독
+        화면을 열고, <span className="text-zinc-200">몇 초 뒤 알아서 읽어</span> 추가합니다. 스토어 화면을 직접
+        캡처해 구독모아로 공유해도 됩니다.
       </p>
     </section>
   );

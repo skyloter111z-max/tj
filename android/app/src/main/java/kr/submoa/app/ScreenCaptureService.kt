@@ -36,6 +36,7 @@ class ScreenCaptureService : Service() {
     private var projection: MediaProjection? = null
     private var resultCode = 0
     private var data: Intent? = null
+    private var captured = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -53,14 +54,18 @@ class ScreenCaptureService : Service() {
                 } else {
                     startForeground(NOTIF_ID, buildNotification())
                 }
+                // 스토어 화면이 뜰 시간을 준 뒤 알아서 한 장 읽는다. 버튼을 찾을 필요가 없다.
+                Handler(Looper.getMainLooper()).postDelayed({ capture() }, AUTO_CAPTURE_DELAY_MS)
             }
-            ACTION_CAPTURE -> capture()
+            ACTION_CAPTURE -> { captured = false; capture() }
             ACTION_STOP -> stop()
         }
         return START_NOT_STICKY
     }
 
     private fun capture() {
+        if (captured) return
+        captured = true
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val d = data ?: return stop()
         val proj = projection ?: mpm.getMediaProjection(resultCode, d).also {
@@ -152,9 +157,9 @@ class ScreenCaptureService : Service() {
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setContentTitle("스토어 구독 화면을 열어 주세요")
-            .setContentText("구독 목록이 보이면 눌러서 읽기")
-            .addAction(Notification.Action.Builder(null, "화면 읽기", action(ACTION_CAPTURE)).build())
+            .setContentTitle("구독 화면을 읽는 중…")
+            .setContentText("잠시 후 자동으로 읽어요. 스크롤이 필요하면 눌러서 다시 읽기")
+            .addAction(Notification.Action.Builder(null, "지금 읽기", action(ACTION_CAPTURE)).build())
             .addAction(Notification.Action.Builder(null, "취소", action(ACTION_STOP)).build())
             .setOngoing(true)
             .build()
@@ -168,6 +173,7 @@ class ScreenCaptureService : Service() {
         const val ACTION_STOP = "kr.submoa.app.CAPTURE_STOP"
         const val EXTRA_CODE = "code"
         const val EXTRA_DATA = "data"
+        private const val AUTO_CAPTURE_DELAY_MS = 3500L
 
         fun start(context: Context, resultCode: Int, data: Intent) {
             val intent = Intent(context, ScreenCaptureService::class.java)
