@@ -66,6 +66,8 @@ type HomeState =
       autoCaptureOff: boolean;
       /** 방금 스토어 스크린샷에서 찾은 구독 수 (0이면 배너 안 띄움) */
       justOcr: number;
+      /** 화면은 읽었는데 아는 구독을 못 찾았다 — 다시 시도 안내를 띄운다 */
+      ocrReadNothing: boolean;
     };
 
 function loadHome(): HomeState | "onboarding" {
@@ -96,7 +98,7 @@ function loadHome(): HomeState | "onboarding" {
   writeJSON(STORAGE_KEYS.seen, seen);
 
   // 스토어 스크린샷 OCR: 공유받은 글자가 있으면 파싱·저장하고, 저장된 스토어 구독을 합친다
-  const justOcrSubs = ingestPendingOcr(bridge);
+  const ocr = ingestPendingOcr(bridge);
   const storeSubs = readStoreSubs(bridge);
   const subsWithStore = mergeStoreSubs(home.subs, storeSubs, today);
   return {
@@ -112,7 +114,8 @@ function loadHome(): HomeState | "onboarding" {
       bridgePlatform(bridge) === "android" &&
       !bridge.isAccessGranted() &&
       !readJSON(STORAGE_KEYS.autoCaptureDismissed, false),
-    justOcr: justOcrSubs.length,
+    justOcr: ocr.found.length,
+    ocrReadNothing: ocr.readText && ocr.found.length === 0,
   };
 }
 
@@ -163,6 +166,12 @@ export default function HomePage() {
       {home.justOcr > 0 && (
         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-xs text-emerald-200/90">
           스크린샷에서 구독 {home.justOcr}개를 찾았어요
+        </div>
+      )}
+
+      {home.justOcr === 0 && home.ocrReadNothing && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-200/90">
+          화면은 읽었지만 아는 구독을 못 찾았어요. 구독 화면이 다 보이게 한 뒤 다시 시도해 주세요.
         </div>
       )}
 

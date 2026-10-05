@@ -86,6 +86,12 @@ class MainActivity : Activity() {
         }
     }
 
+    /** 화면 캡처 동의 창을 띄운다. 동의하면 onActivityResult에서 서비스가 뜨고 스토어 페이지가 열린다 */
+    private fun launchCaptureConsent() {
+        val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        runCatching { startActivityForResult(mpm.createScreenCaptureIntent(), REQUEST_CAPTURE) }
+    }
+
     /**
      * 구글플레이 구독 화면으로 보낸다. 그냥 https 링크는 크롬에서 빈(흰) 웹페이지로 열릴 때가 있어,
      * 플레이 스토어 앱(com.android.vending)으로 직접 보낸다. 플레이 앱이 없으면 기본 처리로 넘긴다.
@@ -105,6 +111,8 @@ class MainActivity : Activity() {
             pendingSimulate = false
             if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) postSimulated()
         }
+        // 알림 권한 결과와 무관하게 캡처는 진행한다 (허용되면 "눌러서 확인" 알림이 보인다)
+        if (requestCode == REQUEST_NOTIFY_CAPTURE) launchCaptureConsent()
     }
 
     private fun postSimulated() {
@@ -162,11 +170,17 @@ class MainActivity : Activity() {
             runOnUiThread { dispatchResume() }
         }
 
-        /** 화면 캡처 자동 읽기 시작: 캡처 동의를 받고, 동의하면 서비스가 뜨고 스토어 페이지가 열린다 */
+        /**
+         * 화면 캡처 자동 읽기 시작. 먼저 알림 권한을 받아 둔다 — 캡처 뒤 앱으로 돌아오는 자동 전환이
+         * 기기(OEM)에 따라 막힐 수 있어서, 그때 "눌러서 확인" 알림이 보여야 결과로 들어올 수 있다.
+         * 권한을 거부해도 캡처 자체는 진행한다(자동 전환이 되는 기기면 그대로 동작).
+         */
         @JavascriptInterface
         fun startStoreCapture() = runOnUiThread {
-            val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            runCatching { startActivityForResult(mpm.createScreenCaptureIntent(), REQUEST_CAPTURE) }
+            val needsNotify = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            if (needsNotify) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFY_CAPTURE)
+            else launchCaptureConsent()
         }
 
         @JavascriptInterface
@@ -220,5 +234,6 @@ class MainActivity : Activity() {
         const val EXTRA_IMPORTED = "kr.submoa.app.IMPORTED"
         private const val REQUEST_NOTIFY = 1
         private const val REQUEST_CAPTURE = 2
+        private const val REQUEST_NOTIFY_CAPTURE = 3
     }
 }
