@@ -31,6 +31,8 @@ export type NativeBridge = {
   getImportedAlerts?(): string;
   clearImported?(): void;
   openKakaoTalk?(): void;
+  /** 화면 캡처로 스토어 구독 화면을 자동으로 읽기 시작한다 (android, MediaProjection) */
+  startStoreCapture?(): void;
   /** 스토어 구독 스크린샷을 OCR한 글자. 꺼내는 순간 지워진다 (android) */
   takePendingOcrText?(): string;
   /** 웹이 OCR 글자에서 뽑은 스토어 구독 [{id, amount, cycle}]의 JSON을 저장한다 */

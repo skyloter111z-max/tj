@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.media.projection.MediaProjectionManager
 import android.provider.Settings
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
@@ -76,6 +77,18 @@ class MainActivity : Activity() {
         }
     }
 
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CAPTURE && resultCode == RESULT_OK && data != null) {
+            ScreenCaptureService.start(this, resultCode, data)
+            // 사용자가 스토어 구독 화면으로 가도록 구글플레이 구독 페이지를 연다
+            runCatching {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/account/subscriptions")))
+            }
+        }
+    }
+
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_NOTIFY && pendingSimulate) {
@@ -139,6 +152,13 @@ class MainActivity : Activity() {
             runOnUiThread { dispatchResume() }
         }
 
+        /** 화면 캡처 자동 읽기 시작: 캡처 동의를 받고, 동의하면 서비스가 뜨고 스토어 페이지가 열린다 */
+        @JavascriptInterface
+        fun startStoreCapture() = runOnUiThread {
+            val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            runCatching { startActivityForResult(mpm.createScreenCaptureIntent(), REQUEST_CAPTURE) }
+        }
+
         @JavascriptInterface
         fun takePendingOcrText(): String = StoreStore.takePendingOcr(this@MainActivity)
 
@@ -189,5 +209,6 @@ class MainActivity : Activity() {
     companion object {
         const val EXTRA_IMPORTED = "kr.submoa.app.IMPORTED"
         private const val REQUEST_NOTIFY = 1
+        private const val REQUEST_CAPTURE = 2
     }
 }

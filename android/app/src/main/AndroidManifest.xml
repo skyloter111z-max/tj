@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 디버그 빌드의 모의 결제 알림(SimulatedAlert)을 띄울 때만 요청한다 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 스토어 구독 화면 자동 캡처 (MediaProjection). 사용자가 1회 동의해야 동작한다 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <!-- "카카오톡 열기" 버튼이 카톡을 띄우려면 Android 11+에서 패키지를 미리 밝혀야 한다 -->
     <queries>
@@ -55,6 +58,12 @@
                 <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
+
+        <!-- 화면 캡처로 스토어 구독 화면을 읽는 포그라운드 서비스 -->
+        <service
+            android:name=".ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
         <!-- 사용자가 설정 > 알림 접근에서 직접 켜야 동작한다. 앱이 스스로 켤 수 없다 -->
         <service

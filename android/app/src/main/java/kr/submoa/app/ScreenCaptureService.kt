@@ -1,0 +1,181 @@
+package kr.submoa.app
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.PixelFormat
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
+import android.media.ImageReader
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.util.DisplayMetrics
+import android.view.WindowManager
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
+
+/**
+ * 화면 캡처로 스토어 구독 화면을 읽는다 (MediaProjection).
+ *
+ * 사용자가 화면 캡처를 1회 동의하면, 스토어 구독 화면이 보일 때 알림의 "화면 읽기"를 눌러
+ * 그 순간 화면을 한 장 잡아 ML Kit로 글자를 뽑는다. 접근성 매크로가 아니라 화면 녹화 앱이 쓰는
+ * 공식 API다. 잡은 글자는 StoreStore에 넣고, 웹이 parseStoreScreenshot으로 해석한다.
+ */
+class ScreenCaptureService : Service() {
+    private var projection: MediaProjection? = null
+    private var resultCode = 0
+    private var data: Intent? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START -> {
+                resultCode = intent.getIntExtra(EXTRA_CODE, 0)
+                data = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(EXTRA_DATA, Intent::class.java)
+                } else {
+                    @Suppress("DEPRECATION") intent.getParcelableExtra(EXTRA_DATA)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+                } else {
+                    startForeground(NOTIF_ID, buildNotification())
+                }
+            }
+            ACTION_CAPTURE -> capture()
+            ACTION_STOP -> stop()
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun capture() {
+        val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        val d = data ?: return stop()
+        val proj = projection ?: mpm.getMediaProjection(resultCode, d).also {
+            projection = it
+            it.registerCallback(object : MediaProjection.Callback() {}, Handler(Looper.getMainLooper()))
+        }
+
+        val metrics = screenMetrics()
+        val reader = ImageReader.newInstance(metrics.width, metrics.height, PixelFormat.RGBA_8888, 2)
+        var display: VirtualDisplay? = null
+        display = proj.createVirtualDisplay(
+            "submoa-capture",
+            metrics.width,
+            metrics.height,
+            metrics.density,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            reader.surface,
+            null,
+            Handler(Looper.getMainLooper()),
+        )
+
+        reader.setOnImageAvailableListener({ r ->
+            val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
+            val bitmap = runCatching { toBitmap(image, metrics.width) }.getOrNull()
+            image.close()
+            r.setOnImageAvailableListener(null, null)
+            display?.release()
+            reader.close()
+            if (bitmap == null) return@setOnImageAvailableListener stop()
+            recognize(bitmap)
+        }, Handler(Looper.getMainLooper()))
+    }
+
+    private fun toBitmap(image: android.media.Image, width: Int): Bitmap {
+        val plane = image.planes[0]
+        val pixelStride = plane.pixelStride
+        val rowStride = plane.rowStride
+        val rowPadding = rowStride - pixelStride * width
+        val bmp = Bitmap.createBitmap(width + rowPadding / pixelStride, image.height, Bitmap.Config.ARGB_8888)
+        bmp.copyPixelsFromBuffer(plane.buffer)
+        return if (rowPadding == 0) bmp else Bitmap.createBitmap(bmp, 0, 0, width, image.height)
+    }
+
+    private fun recognize(bitmap: Bitmap) {
+        TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+            .process(InputImage.fromBitmap(bitmap, 0))
+            .addOnSuccessListener { result ->
+                val text = result.text
+                if (text.isNotBlank()) StoreStore.savePendingOcr(this, text)
+                finishToApp()
+            }
+            .addOnFailureListener { finishToApp() }
+    }
+
+    /** 결과를 가지고 앱 홈으로 돌아간다. 홈이 OCR 글자를 꺼내 해석한다 */
+    private fun finishToApp() {
+        startActivity(
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
+        )
+        stop()
+    }
+
+    private fun stop() {
+        projection?.stop()
+        projection = null
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private data class Metrics(val width: Int, val height: Int, val density: Int)
+
+    private fun screenMetrics(): Metrics {
+        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val dm = DisplayMetrics()
+        @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(dm)
+        return Metrics(dm.widthPixels, dm.heightPixels, dm.densityDpi)
+    }
+
+    private fun action(name: String): PendingIntent {
+        val intent = Intent(this, ScreenCaptureService::class.java).setAction(name)
+        return PendingIntent.getService(this, name.hashCode(), intent, PendingIntent.FLAG_IMMUTABLE)
+    }
+
+    private fun buildNotification(): Notification {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "구독 화면 읽기", NotificationManager.IMPORTANCE_HIGH),
+        )
+        return Notification.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .setContentTitle("스토어 구독 화면을 열어 주세요")
+            .setContentText("구독 목록이 보이면 눌러서 읽기")
+            .addAction(Notification.Action.Builder(null, "화면 읽기", action(ACTION_CAPTURE)).build())
+            .addAction(Notification.Action.Builder(null, "취소", action(ACTION_STOP)).build())
+            .setOngoing(true)
+            .build()
+    }
+
+    companion object {
+        private const val CHANNEL_ID = "screen-capture"
+        private const val NOTIF_ID = 42
+        const val ACTION_START = "kr.submoa.app.CAPTURE_START"
+        const val ACTION_CAPTURE = "kr.submoa.app.CAPTURE_NOW"
+        const val ACTION_STOP = "kr.submoa.app.CAPTURE_STOP"
+        const val EXTRA_CODE = "code"
+        const val EXTRA_DATA = "data"
+
+        fun start(context: Context, resultCode: Int, data: Intent) {
+            val intent = Intent(context, ScreenCaptureService::class.java)
+                .setAction(ACTION_START)
+                .putExtra(EXTRA_CODE, resultCode)
+                .putExtra(EXTRA_DATA, data)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+            else context.startService(intent)
+        }
+    }
+}
