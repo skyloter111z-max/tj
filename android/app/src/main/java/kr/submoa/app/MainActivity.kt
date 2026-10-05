@@ -18,6 +18,10 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.core.app.NotificationManagerCompat
+import android.graphics.Bitmap
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import org.json.JSONArray
 
 /**
@@ -58,6 +62,19 @@ class MainActivity : Activity() {
         }
 
         web.loadUrl(BuildConfig.WEB_URL)
+        warmUpOcr()
+    }
+
+    /**
+     * 한국어 OCR 모델을 미리 받아 둔다. Play 서비스가 처음 쓸 때 내려받는데, 그때까지 첫 캡처가
+     * "글자를 못 읽음"으로 실패할 수 있어서, 앱을 켤 때 작은 더미 이미지로 미리 깨워 둔다.
+     */
+    private fun warmUpOcr() {
+        runCatching {
+            val bmp = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+            TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+                .process(InputImage.fromBitmap(bmp, 0))
+        }
     }
 
     /** 카톡에서 내보내기를 공유받았다 — 홈을 다시 열면 홈이 원본을 꺼내 처리한다 */
@@ -230,6 +247,10 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun takePendingOcrText(): String = StoreStore.takePendingOcr(this@MainActivity)
+
+        /** 마지막 캡처 결과("read"/"empty"/""). 홈이 결과 안내를 정확히 하도록 꺼내 쓴다 */
+        @JavascriptInterface
+        fun takeCaptureStatus(): String = StoreStore.takeCaptureStatus(this@MainActivity)
 
         @JavascriptInterface
         fun saveStoreSubs(json: String) = StoreStore.saveStoreSubs(this@MainActivity, json)

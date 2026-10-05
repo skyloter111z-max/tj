@@ -16,6 +16,18 @@ import java.io.File
 object StoreStore {
     private fun pendingOcr(context: Context) = File(context.filesDir, "pending-ocr.json")
     private fun storeSubs(context: Context) = File(context.filesDir, "store-subs.json")
+    private fun captureStatus(context: Context) = File(context.filesDir, "capture-status.txt")
+
+    /** 마지막 캡처 결과: "read"(글자를 읽음) / "empty"(화면은 잡았지만 글자 없음·인식 실패). 웹이 꺼내 안내한다 */
+    @Synchronized
+    fun saveCaptureStatus(context: Context, status: String) = captureStatus(context).writeText(status)
+
+    @Synchronized
+    fun takeCaptureStatus(context: Context): String {
+        val f = captureStatus(context)
+        if (!f.exists()) return ""
+        return f.readText().also { f.delete() }
+    }
 
     /** 읽은 화면 하나를 쌓는다. id는 그 화면이 어느 서비스였는지(없으면 ""). */
     @Synchronized

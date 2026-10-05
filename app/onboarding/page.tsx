@@ -193,17 +193,37 @@ function ConnectStep({
  */
 function AndroidImport({ onBack }: { onBack: () => void }) {
   const router = useRouter();
+  const bridge = nativeBridge();
   return (
     <div className="space-y-6">
+      {/* ① 누구나 바로 되는 길: 구글플레이 구독 한 장(+원하면 OTT·AI 직접) */}
       <CapturePicker title="어떤 구독을 확인할까요?" onLaunch={() => router.push("/")} />
 
+      {/* ② 앞으로 오는 카드 결제는 알림 접근 한 번으로 자동 — 내보내기 필요 없음 */}
       <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
-        <h2 className="text-sm font-bold text-zinc-200">또는 카톡 카드 알림으로 과거 결제까지 찾기</h2>
+        <h2 className="text-sm font-bold text-zinc-200">앞으로 결제도 자동으로 (선택)</h2>
         <p className="mt-1 mb-3 text-xs leading-relaxed text-zinc-500">
-          카드로 낸 구독까지 몇 년치를 한 번에 읽어 더 정확히 찾습니다.
+          알림 접근을 한 번 켜두면 새 구독 결제를 알아서 찾아요. 카톡 내보내기 같은 건 필요 없어요.
+        </p>
+        <button
+          type="button"
+          onClick={() => bridge?.openAccessSettings?.()}
+          className="w-full rounded-lg border border-zinc-700 bg-zinc-800/60 px-4 py-2.5 text-sm font-semibold text-zinc-100 transition hover:bg-zinc-800"
+        >
+          결제 알림 자동으로 받기
+        </button>
+      </div>
+
+      {/* ③ 과거 몇 년치까지 더 정확히 — 쓰는 사람만, 맨 뒤 옵션 */}
+      <details className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
+        <summary className="cursor-pointer text-sm font-bold text-zinc-300">
+          또는 카톡 카드 알림으로 과거 결제까지 (선택)
+        </summary>
+        <p className="mt-2 mb-3 text-xs leading-relaxed text-zinc-500">
+          카드 알림을 카톡으로 받는 분만. 몇 년치를 한 번에 읽어 더 정확히 찾습니다.
         </p>
         <ImportHistoryCard />
-      </div>
+      </details>
 
       <div className="space-y-1">
         <button

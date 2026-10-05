@@ -37,6 +37,8 @@ export type NativeBridge = {
   startCaptureSequence?(queueJson: string): void;
   /** 읽은 화면들의 글자 [{id, text}]의 JSON. 꺼내는 순간 지워진다 (android) */
   takePendingOcrText?(): string;
+  /** 마지막 캡처 결과: "read"(글자 읽음) / "empty"(화면은 잡았지만 글자 없음) / "". 꺼내면 지워진다 (android) */
+  takeCaptureStatus?(): string;
   /** 웹이 OCR 글자에서 뽑은 스토어 구독 [{id, amount, cycle}]의 JSON을 저장한다 */
   saveStoreSubs?(json: string): void;
   getStoreSubs?(): string;

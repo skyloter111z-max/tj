@@ -257,6 +257,8 @@ class ScreenCaptureService : Service() {
         finished = true
         main.removeCallbacks(stepRunnable)
         main.removeCallbacks(stepTimeout)
+        // 홈이 돌아왔을 때 결과를 정확히 안내하도록 상태를 남긴다
+        StoreStore.saveCaptureStatus(this, if (gotText) "read" else "empty")
         postResultNotification(gotText)
         runCatching { startActivity(openAppIntent()) }
         stop()

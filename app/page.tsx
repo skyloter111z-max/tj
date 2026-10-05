@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { AutoCaptureOffer } from "@/components/AutoCapture";
 import { CapturePicker } from "@/components/CapturePicker";
 import { SubscriptionDetail } from "@/components/SubscriptionDetail";
-import { ImportHistoryCard, ReimportLine } from "@/components/ImportHistory";
+import { ReimportLine } from "@/components/ImportHistory";
 import { MoreSources } from "@/components/MoreSources";
 import { OttOverview } from "@/components/OttOverview";
 import { DeclaredWaiting, WatchingCard } from "@/components/Watching";
@@ -69,6 +69,8 @@ type HomeState =
       justOcr: number;
       /** 화면은 읽었는데 아는 구독을 못 찾았다 — 다시 시도 안내를 띄운다 */
       ocrReadNothing: boolean;
+      /** 방금 캡처했지만 글자를 아예 못 읽었다(인식 준비 중 등) — 다른 안내를 띄운다 */
+      ocrCaptureFailed: boolean;
     };
 
 function loadHome(): HomeState | "onboarding" {
@@ -101,6 +103,8 @@ function loadHome(): HomeState | "onboarding" {
   // 스토어 스크린샷 OCR: 읽은 화면들의 글자가 있으면 파싱·저장하고, 저장된 스토어 구독을 합친다.
   // 각 화면엔 어느 서비스였는지(id)가 붙어 있어, "모두 읽기"의 OTT 화면도 그 서비스로 해석한다.
   const ocr = ingestPendingOcr(bridge);
+  // 방금 캡처가 글자를 아예 못 읽었는지(인식 준비 중 등) — 결과가 없을 때 다른 안내를 하려고 읽는다
+  const captureStatus = bridge.takeCaptureStatus?.() ?? "";
   const storeSubs = readStoreSubs(bridge);
   const subsWithStore = mergeStoreSubs(home.subs, storeSubs, today);
   return {
@@ -118,6 +122,7 @@ function loadHome(): HomeState | "onboarding" {
       !readJSON(STORAGE_KEYS.autoCaptureDismissed, false),
     justOcr: ocr.found.length,
     ocrReadNothing: ocr.readText && ocr.found.length === 0,
+    ocrCaptureFailed: !ocr.readText && ocr.found.length === 0 && captureStatus === "empty",
   };
 }
 
@@ -177,6 +182,12 @@ export default function HomePage() {
         </div>
       )}
 
+      {home.justOcr === 0 && home.ocrCaptureFailed && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-200/90">
+          화면은 열렸지만 글자를 못 읽었어요. 글자 인식이 준비 중일 수 있으니 잠시 뒤 다시 시도해 주세요.
+        </div>
+      )}
+
       {home.autoCaptureOff && !autoCaptureHidden && (home.importedSpan !== null || home.paymentCount > 0) && (
         <AutoCaptureOffer onDismiss={() => setAutoCaptureHidden(true)} />
       )}
@@ -184,7 +195,12 @@ export default function HomePage() {
       {home.subs.length > 0 ? (
         <Subscriptions subs={home.subs} today={home.today} live onOpen={setSelected} />
       ) : home.canImport && !home.importedSpan ? (
-        <ImportHistoryCard />
+        <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 text-center">
+          <p className="font-semibold text-zinc-200">아직 찾은 구독이 없어요</p>
+          <p className="mt-1 text-xs text-zinc-500">
+            아래 &apos;어떤 구독을 확인할까요?&apos;에서 구글플레이로 바로 찾아보세요.
+          </p>
+        </div>
       ) : home.importedSpan ? (
         <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 text-center">
           <p className="font-semibold text-zinc-200">가져온 결제에서 정기결제를 찾지 못했어요</p>

@@ -33,10 +33,21 @@ export function CapturePicker({
 
   const queue = buildQueue(selected);
 
+  // 캡처가 끝나고 앱으로 돌아왔을 때 온보딩이 아니라 홈이 뜨도록 표시해 둔다
+  const markOnboarded = () => writeJSON(STORAGE_KEYS.onboarded, true);
+
+  // 가장 확실한 길: 구글플레이 구독 화면 한 장. 로그인·카드알림·카톡 없이 누구나 바로 된다.
+  const PLAY_URL = "https://play.google.com/store/account/subscriptions";
+  const playOnce = () => {
+    markOnboarded();
+    if (canCapture) bridge?.startStoreCapture?.();
+    else if (typeof window !== "undefined") window.open(PLAY_URL, "_blank", "noopener");
+    onLaunch?.();
+  };
+
   const start = () => {
     if (queue.length === 0) return;
-    // 캡처가 끝나고 앱으로 돌아왔을 때 온보딩이 아니라 홈이 뜨도록 표시해 둔다
-    writeJSON(STORAGE_KEYS.onboarded, true);
+    markOnboarded();
     if (canCapture) bridge?.startCaptureSequence?.(JSON.stringify(queue));
     else if (typeof window !== "undefined") window.open(queue[0]!.url, "_blank", "noopener");
     onLaunch?.();
@@ -47,8 +58,23 @@ export function CapturePicker({
       <div>
         <h2 className="text-sm font-bold text-zinc-100">{title}</h2>
         <p className="mt-1 text-xs leading-relaxed text-zinc-400">
-          고른 구독 화면을 차례로 열어 금액까지 읽어요. 화면 캡처 동의는 한 번이면 됩니다.
+          카드 알림도, 카톡도 필요 없어요. 구글플레이 구독 화면 한 장이면 앱으로 결제한 구독이 한 번에
+          잡힙니다.
         </p>
+      </div>
+
+      <button
+        type="button"
+        onClick={playOnce}
+        className="w-full rounded-xl bg-sky-500 px-4 py-3.5 text-center font-bold text-sky-950 transition hover:bg-sky-400"
+      >
+        구글플레이 구독 한 번에 찾기
+      </button>
+
+      <div className="flex items-center gap-3 pt-1">
+        <span className="h-px flex-1 bg-zinc-800" />
+        <span className="text-xs text-zinc-500">또는 원하는 것만 골라서</span>
+        <span className="h-px flex-1 bg-zinc-800" />
       </div>
 
       {groups.map((group) => (
