@@ -15,6 +15,7 @@ import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -24,24 +25,34 @@ import android.view.WindowManager
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
+import org.json.JSONArray
 
 /**
- * 화면 캡처로 스토어 구독 화면을 읽는다 (MediaProjection).
+ * 화면 캡처로 구독 화면을 읽는다 (MediaProjection).
  *
- * 사용자가 화면 캡처를 1회 동의하면, 스토어 구독 화면이 보일 때 알림의 "화면 읽기"를 눌러
- * 그 순간 화면을 한 장 잡아 ML Kit로 글자를 뽑는다. 접근성 매크로가 아니라 화면 녹화 앱이 쓰는
- * 공식 API다. 잡은 글자는 StoreStore에 넣고, 웹이 parseStoreScreenshot으로 해석한다.
+ * 한 번의 화면 캡처 동의로 여러 화면을 차례로 읽는다("주요 OTT 모두 읽기"). 각 대상(서비스 id + 주소)을
+ * 순서대로 열고, 화면이 뜰 시간을 준 뒤 한 장씩 잡아 ML Kit로 글자를 뽑는다. 접근성 매크로가 아니라
+ * 화면 녹화 앱이 쓰는 공식 API다. 잡은 글자는 어느 서비스였는지(id)와 함께 StoreStore에 쌓고,
+ * 웹이 parseStoreScreenshot(targeted)으로 해석한다. 하나짜리 큐면 예전처럼 한 화면만 읽는다.
  */
 class ScreenCaptureService : Service() {
     private var projection: MediaProjection? = null
     private var resultCode = 0
     private var data: Intent? = null
-    private var captured = false
-    private var finished = false
     private var reader: ImageReader? = null
     private var display: VirtualDisplay? = null
     private val main = Handler(Looper.getMainLooper())
-    private val giveUp = Runnable { finishToApp(false) }
+
+    private data class Target(val id: String, val url: String)
+
+    private var queue: List<Target> = emptyList()
+    private var index = 0
+    private var gotAny = false
+    private var finished = false
+    private var stepDone = false
+
+    private val stepRunnable = Runnable { captureCurrent() }
+    private val stepTimeout = Runnable { onStep(null) }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -54,33 +65,51 @@ class ScreenCaptureService : Service() {
                 } else {
                     @Suppress("DEPRECATION") intent.getParcelableExtra(EXTRA_DATA)
                 }
+                queue = parseQueue(intent.getStringExtra(EXTRA_QUEUE))
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
                 } else {
                     startForeground(NOTIF_ID, buildNotification())
                 }
-                // 스토어 화면이 뜰 시간을 준 뒤 알아서 한 장 읽는다. 버튼을 찾을 필요가 없다.
-                main.postDelayed({ capture() }, AUTO_CAPTURE_DELAY_MS)
+                // 첫 화면은 액티비티가 이미 열었다. 뜰 시간을 준 뒤 순서대로 읽어 나간다.
+                if (queue.isEmpty()) finishToApp(false) else scheduleStep()
             }
-            ACTION_CAPTURE -> { main.removeCallbacks(giveUp); releaseCapture(); captured = false; capture() }
+            // 알림의 "지금 읽기": 기다리지 않고 지금 한 장 잡는다
+            ACTION_CAPTURE -> { main.removeCallbacks(stepRunnable); main.removeCallbacks(stepTimeout); captureCurrent() }
             ACTION_STOP -> stop()
         }
         return START_NOT_STICKY
     }
 
-    private fun capture() {
-        if (captured) return
-        captured = true
-        // 프레임이나 OCR이 끝내 오지 않아도 사용자가 흰 화면에 갇히지 않게, 일정 시간 뒤 앱으로 돌려보낸다.
-        main.postDelayed(giveUp, CAPTURE_TIMEOUT_MS)
+    private fun parseQueue(json: String?): List<Target> {
+        if (json.isNullOrBlank()) return emptyList()
+        val arr = runCatching { JSONArray(json) }.getOrNull() ?: return emptyList()
+        val out = ArrayList<Target>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val url = o.optString("url")
+            if (url.isNotBlank()) out.add(Target(o.optString("id"), url))
+        }
+        return out
+    }
+
+    private fun scheduleStep() {
+        main.removeCallbacks(stepRunnable)
+        main.postDelayed(stepRunnable, AUTO_CAPTURE_DELAY_MS)
+    }
+
+    /** 지금 화면을 한 장 잡는다. 프레임이 오거나(또는 못 오면 시간초과) onStep으로 모인다. */
+    private fun captureCurrent() {
+        stepDone = false
+        main.postDelayed(stepTimeout, STEP_TIMEOUT_MS)
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val d = data ?: return finishToApp(false)
+        val d = data ?: return onStep(null)
         val proj = projection ?: runCatching {
             mpm.getMediaProjection(resultCode, d).also {
                 projection = it
                 it.registerCallback(object : MediaProjection.Callback() {}, main)
             }
-        }.getOrNull() ?: return finishToApp(false)
+        }.getOrNull() ?: return onStep(null)
 
         val metrics = screenMetrics()
         reader = ImageReader.newInstance(metrics.width, metrics.height, PixelFormat.RGBA_8888, 2)
@@ -95,17 +124,64 @@ class ScreenCaptureService : Service() {
                 null,
                 main,
             )
-        }.getOrNull() ?: return finishToApp(false)
+        }.getOrNull() ?: return onStep(null)
 
         reader!!.setOnImageAvailableListener({ r ->
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             val bitmap = runCatching { toBitmap(image, metrics.width) }.getOrNull()
             image.close()
             r.setOnImageAvailableListener(null, null)
-            releaseCapture()
-            if (bitmap == null) return@setOnImageAvailableListener finishToApp(false)
-            recognize(bitmap)
+            onStep(bitmap)
         }, main)
+    }
+
+    /** 이번 화면 한 장이 끝났다(프레임/실패/시간초과 중 한 번만). 글자를 뽑고 다음으로 넘어간다. */
+    private fun onStep(bitmap: Bitmap?) {
+        if (stepDone) return
+        stepDone = true
+        main.removeCallbacks(stepTimeout)
+        releaseCapture()
+        if (bitmap == null) return advance(false)
+        recognize(bitmap) { got -> advance(got) }
+    }
+
+    private fun recognize(bitmap: Bitmap, done: (Boolean) -> Unit) {
+        val id = queue.getOrNull(index)?.id ?: ""
+        TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+            .process(InputImage.fromBitmap(bitmap, 0))
+            .addOnSuccessListener { result ->
+                val text = result.text
+                if (text.isNotBlank()) StoreStore.appendPendingOcr(this, id, text)
+                done(text.isNotBlank())
+            }
+            .addOnFailureListener { done(false) }
+    }
+
+    /** 다음 대상으로. 더 없으면 앱으로 돌아간다. */
+    private fun advance(got: Boolean) {
+        if (got) gotAny = true
+        index++
+        val next = queue.getOrNull(index)
+        if (next != null) {
+            openTarget(next)
+            scheduleStep()
+        } else {
+            finishToApp(gotAny)
+        }
+    }
+
+    /** 다음 서비스 화면을 연다. 플레이 구독 주소는 플레이 스토어 앱으로, 나머지는 기본 처리로. */
+    private fun openTarget(t: Target) {
+        val url = Uri.parse(t.url)
+        if (url.host?.contains("play.google.com") == true) {
+            val toPlay = Intent(Intent.ACTION_VIEW, url)
+                .setPackage("com.android.vending")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (toPlay.resolveActivity(packageManager) != null) {
+                runCatching { startActivity(toPlay) }.onSuccess { return }
+            }
+        }
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, url).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
     }
 
     private fun releaseCapture() {
@@ -125,17 +201,6 @@ class ScreenCaptureService : Service() {
         return if (rowPadding == 0) bmp else Bitmap.createBitmap(bmp, 0, 0, width, image.height)
     }
 
-    private fun recognize(bitmap: Bitmap) {
-        TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
-            .process(InputImage.fromBitmap(bitmap, 0))
-            .addOnSuccessListener { result ->
-                val text = result.text
-                if (text.isNotBlank()) StoreStore.savePendingOcr(this, text)
-                finishToApp(text.isNotBlank())
-            }
-            .addOnFailureListener { finishToApp(false) }
-    }
-
     /**
      * 결과를 가지고 앱 홈으로 돌아간다. 홈이 OCR 글자를 꺼내 해석한다.
      * 자동 전환은 기기에 따라 막힐 수 있어, 눌러서 돌아올 수 있는 결과 알림도 함께 띄운다.
@@ -143,7 +208,8 @@ class ScreenCaptureService : Service() {
     private fun finishToApp(gotText: Boolean) {
         if (finished) return
         finished = true
-        main.removeCallbacks(giveUp)
+        main.removeCallbacks(stepRunnable)
+        main.removeCallbacks(stepTimeout)
         postResultNotification(gotText)
         runCatching { startActivity(openAppIntent()) }
         stop()
@@ -175,7 +241,8 @@ class ScreenCaptureService : Service() {
     }
 
     private fun stop() {
-        main.removeCallbacks(giveUp)
+        main.removeCallbacks(stepRunnable)
+        main.removeCallbacks(stepTimeout)
         releaseCapture()
         projection?.stop()
         projection = null
@@ -224,14 +291,16 @@ class ScreenCaptureService : Service() {
         const val ACTION_STOP = "kr.submoa.app.CAPTURE_STOP"
         const val EXTRA_CODE = "code"
         const val EXTRA_DATA = "data"
-        private const val AUTO_CAPTURE_DELAY_MS = 3500L
-        private const val CAPTURE_TIMEOUT_MS = 6000L
+        const val EXTRA_QUEUE = "queue"
+        private const val AUTO_CAPTURE_DELAY_MS = 4000L
+        private const val STEP_TIMEOUT_MS = 6000L
 
-        fun start(context: Context, resultCode: Int, data: Intent) {
+        fun start(context: Context, resultCode: Int, data: Intent, queueJson: String) {
             val intent = Intent(context, ScreenCaptureService::class.java)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_CODE, resultCode)
                 .putExtra(EXTRA_DATA, data)
+                .putExtra(EXTRA_QUEUE, queueJson)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
             else context.startService(intent)
         }

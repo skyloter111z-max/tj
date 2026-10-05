@@ -11,8 +11,6 @@ export const STORAGE_KEYS = {
   seen: "submoa.seen",
   /** 자동 기록(알림 권한) 제안을 사용자가 닫았는가 */
   autoCaptureDismissed: "submoa.autocapture.dismissed",
-  /** 방금 "눌러서 읽기"로 캡처를 건 OTT의 서비스 id — 돌아와서 그 화면을 그 서비스로 읽는다 */
-  captureTarget: "submoa.capture.target",
 } as const;
 
 export function readJSON<T>(key: string, fallback: T): T {

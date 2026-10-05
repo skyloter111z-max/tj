@@ -22,7 +22,7 @@ class ImportActivity : Activity() {
         if (imageUri != null) {
             StoreOcr.recognize(this, imageUri) { ocr ->
                 if (ocr != null) {
-                    StoreStore.savePendingOcr(this, ocr)
+                    StoreStore.appendPendingOcr(this, "", ocr)
                     openHome(imported = false)
                 } else {
                     Toast.makeText(this, "스크린샷에서 글자를 읽지 못했어요", Toast.LENGTH_LONG).show()

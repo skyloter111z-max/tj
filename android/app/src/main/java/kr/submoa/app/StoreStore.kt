@@ -1,24 +1,35 @@
 package kr.submoa.app
 
 import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 
 /**
  * 스토어 구독 스크린샷 처리용 저장소.
  *
- *   pendingOcr  스크린샷을 OCR한 글자. 웹이 한 번 꺼내 파싱하면 지운다.
+ *   pendingOcr  읽은 화면들의 글자. [{id, text}]의 JSON 배열로 쌓는다 — "주요 OTT 모두 읽기"는
+ *               여러 화면을 차례로 읽으므로, 각 글자에 어느 서비스 화면이었는지(id)를 붙여 둔다.
+ *               (일반 플레이·공유 스크린샷은 id가 빈 문자열이다.) 웹이 한 번 꺼내 파싱하면 지운다.
  *   storeSubs   웹이 그 글자에서 뽑은 스토어 구독 [{id, amount, cycle}]의 JSON.
  */
 object StoreStore {
-    private fun pendingOcr(context: Context) = File(context.filesDir, "pending-ocr.txt")
+    private fun pendingOcr(context: Context) = File(context.filesDir, "pending-ocr.json")
     private fun storeSubs(context: Context) = File(context.filesDir, "store-subs.json")
 
-    fun savePendingOcr(context: Context, text: String) = pendingOcr(context).writeText(text)
+    /** 읽은 화면 하나를 쌓는다. id는 그 화면이 어느 서비스였는지(없으면 ""). */
+    @Synchronized
+    fun appendPendingOcr(context: Context, id: String, text: String) {
+        val f = pendingOcr(context)
+        val arr = runCatching { JSONArray(if (f.exists()) f.readText() else "[]") }.getOrDefault(JSONArray())
+        arr.put(JSONObject().put("id", id).put("text", text))
+        f.writeText(arr.toString())
+    }
 
     @Synchronized
     fun takePendingOcr(context: Context): String {
         val f = pendingOcr(context)
-        if (!f.exists()) return ""
+        if (!f.exists()) return "[]"
         return f.readText().also { f.delete() }
     }
 

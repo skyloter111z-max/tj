@@ -18,6 +18,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.core.app.NotificationManagerCompat
+import org.json.JSONArray
 
 /**
  * 화면은 웹 앱(Next.js)을 그대로 띄운다. 해석·판정 로직도 웹 쪽 TypeScript 하나뿐이다.
@@ -30,8 +31,8 @@ class MainActivity : Activity() {
     /** 알림 권한을 묻는 동안 모의 알림 요청을 들고 있는다 */
     private var pendingSimulate = false
 
-    /** 캡처 동의를 받는 동안, 동의하면 열어서 읽을 구독 화면 주소를 들고 있는다 */
-    private var pendingCaptureUrl = PLAY_SUBS_URL
+    /** 캡처 동의를 받는 동안, 동의하면 차례로 열어 읽을 화면들의 JSON([{id,url}])을 들고 있는다 */
+    private var pendingCaptureQueue = "[]"
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -84,18 +85,24 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_CAPTURE && resultCode == RESULT_OK && data != null) {
-            ScreenCaptureService.start(this, resultCode, data)
-            openCaptureTarget(pendingCaptureUrl)
+            ScreenCaptureService.start(this, resultCode, data, pendingCaptureQueue)
+            // 첫 화면은 (포그라운드 권한이 있는) 액티비티가 연다. 나머지는 서비스가 순서대로 연다.
+            firstUrl(pendingCaptureQueue)?.let { openCaptureTarget(it) }
         }
     }
 
+    /** 큐 JSON에서 첫 화면 주소를 꺼낸다 */
+    private fun firstUrl(queueJson: String): String? =
+        runCatching { JSONArray(queueJson).optJSONObject(0)?.optString("url")?.takeIf { it.isNotBlank() } }
+            .getOrNull()
+
     /**
-     * 화면 캡처 자동 읽기 시작. 먼저 알림 권한을 받아 둔다 — 캡처 뒤 앱으로 돌아오는 자동 전환이
-     * 기기(OEM)에 따라 막힐 수 있어서, 그때 "눌러서 확인" 알림이 보여야 결과로 들어올 수 있다.
-     * 권한을 거부해도 캡처 자체는 진행한다(자동 전환이 되는 기기면 그대로 동작).
+     * 화면 캡처 자동 읽기 시작. 큐([{id,url}])의 화면들을 한 번의 동의로 차례로 읽는다.
+     * 먼저 알림 권한을 받아 둔다 — 캡처 뒤 앱으로 돌아오는 자동 전환이 기기(OEM)에 따라 막힐 수 있어서,
+     * 그때 "눌러서 확인" 알림이 보여야 결과로 들어올 수 있다. 권한을 거부해도 캡처 자체는 진행한다.
      */
-    private fun beginCapture(url: String) = runOnUiThread {
-        pendingCaptureUrl = url
+    private fun beginCapture(queueJson: String) = runOnUiThread {
+        pendingCaptureQueue = queueJson
         val needsNotify = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         if (needsNotify) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFY_CAPTURE)
@@ -190,16 +197,17 @@ class MainActivity : Activity() {
         }
 
         /**
-         * 구글플레이 구독 화면을 자동으로 읽기 시작한다. (아래 startCaptureAt의 플레이 전용 단축)
+         * 구글플레이 구독 화면을 자동으로 읽기 시작한다. (화면 하나짜리 큐)
          */
         @JavascriptInterface
-        fun startStoreCapture() = beginCapture(PLAY_SUBS_URL)
+        fun startStoreCapture() = beginCapture("""[{"id":"","url":"$PLAY_SUBS_URL"}]""")
 
         /**
-         * 주어진 주소(각 OTT 구독·계정 페이지)를 열고 같은 방식으로 그 화면을 읽기 시작한다.
+         * 여러 화면([{id,url}]의 JSON)을 한 번의 동의로 차례로 열어 읽는다.
+         * OTT 하나만 읽을 때도 원소 하나짜리 배열로 부른다.
          */
         @JavascriptInterface
-        fun startCaptureAt(url: String) = beginCapture(url)
+        fun startCaptureSequence(queueJson: String) = beginCapture(queueJson)
 
         @JavascriptInterface
         fun takePendingOcrText(): String = StoreStore.takePendingOcr(this@MainActivity)

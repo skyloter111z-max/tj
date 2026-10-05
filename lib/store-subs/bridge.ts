@@ -39,25 +39,52 @@ export type OcrIngest = {
   readText: boolean;
 };
 
+/** 읽은 화면 한 장: 글자와, 어느 서비스 화면이었는지(없으면 ""). 네이티브 StoreStore와 짝 */
+type OcrScreen = { id: string; text: string };
+
+function parseScreens(raw: string): OcrScreen[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  // 새 형식: [{id, text}]. 옛 형식(그냥 글자 하나)도 안전하게 받아 일반 해석한다.
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter((r): r is OcrScreen => typeof r === "object" && r !== null && typeof (r as OcrScreen).text === "string")
+        .map((r) => ({ id: typeof r.id === "string" ? r.id : "", text: r.text }));
+    }
+  } catch {
+    // JSON이 아니면 글자 하나로 본다
+  }
+  return [{ id: "", text: trimmed }];
+}
+
 /**
- * 공유받은/캡처한 스크린샷 OCR 글자가 있으면 파싱해 저장한다. 방금 추가한 스토어 구독을 돌려준다.
+ * 캡처/공유한 화면들의 OCR 글자가 있으면 파싱해 저장한다. 방금 추가한 스토어 구독을 돌려준다.
  * 이미 저장된 것과 서비스 id로 합친다(최신 값으로 갱신).
  *
- * 글자가 있었는지(readText)도 같이 돌려준다: 화면은 읽혔는데 아는 구독이 없을 때와,
- * 캡처 자체가 빈 화면이라 읽을 글자가 없었을 때를 홈에서 다르게 안내하기 위해서다.
+ * 화면마다 어느 서비스였는지(id)를 알면 그 서비스를 노려 해석하므로("모두 읽기"에서 각 OTT 화면),
+ * 이름과 금액이 떨어져 있어도 잡는다. 글자가 있었는지(readText)도 같이 돌려준다: 화면은 읽혔는데
+ * 아는 구독이 없을 때와, 캡처 자체가 빈 화면이라 읽을 글자가 없었을 때를 홈에서 다르게 안내한다.
  */
 export function ingestPendingOcr(
   bridge: Pick<NativeBridge, "takePendingOcrText" | "getStoreSubs" | "saveStoreSubs">,
-  targetId?: string,
 ): OcrIngest {
-  const text = bridge.takePendingOcrText?.() ?? "";
-  if (!text.trim()) return { found: [], readText: false };
+  const screens = parseScreens(bridge.takePendingOcrText?.() ?? "");
+  if (screens.length === 0) return { found: [], readText: false };
 
-  const found = parseStoreScreenshot(text);
-  // 특정 OTT 화면을 열어 읽은 경우: 일반 해석이 그 서비스를 못 잡았으면, 그 하나만 노려 다시 본다
-  if (targetId && !found.some((s) => s.service.id === targetId)) {
-    const one = parseStoreScreenshotFor(text, targetId);
-    if (one) found.push(one);
+  const found: StoreSubscription[] = [];
+  const add = (s: StoreSubscription) => {
+    if (!found.some((x) => x.service.id === s.service.id)) found.push(s);
+  };
+  for (const screen of screens) {
+    if (!screen.text.trim()) continue;
+    for (const s of parseStoreScreenshot(screen.text)) add(s);
+    // 이 화면이 특정 OTT 것이면, 일반 해석이 놓쳤을 때 그 하나만 노려 다시 본다
+    if (screen.id && !found.some((s) => s.service.id === screen.id)) {
+      const one = parseStoreScreenshotFor(screen.text, screen.id);
+      if (one) add(one);
+    }
   }
   if (found.length === 0) return { found: [], readText: true };
 
