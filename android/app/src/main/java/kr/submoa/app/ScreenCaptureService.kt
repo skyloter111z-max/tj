@@ -37,6 +37,11 @@ class ScreenCaptureService : Service() {
     private var resultCode = 0
     private var data: Intent? = null
     private var captured = false
+    private var finished = false
+    private var reader: ImageReader? = null
+    private var display: VirtualDisplay? = null
+    private val main = Handler(Looper.getMainLooper())
+    private val giveUp = Runnable { finishToApp() }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -55,9 +60,9 @@ class ScreenCaptureService : Service() {
                     startForeground(NOTIF_ID, buildNotification())
                 }
                 // 스토어 화면이 뜰 시간을 준 뒤 알아서 한 장 읽는다. 버튼을 찾을 필요가 없다.
-                Handler(Looper.getMainLooper()).postDelayed({ capture() }, AUTO_CAPTURE_DELAY_MS)
+                main.postDelayed({ capture() }, AUTO_CAPTURE_DELAY_MS)
             }
-            ACTION_CAPTURE -> { captured = false; capture() }
+            ACTION_CAPTURE -> { main.removeCallbacks(giveUp); releaseCapture(); captured = false; capture() }
             ACTION_STOP -> stop()
         }
         return START_NOT_STICKY
@@ -66,37 +71,48 @@ class ScreenCaptureService : Service() {
     private fun capture() {
         if (captured) return
         captured = true
+        // 프레임이나 OCR이 끝내 오지 않아도 사용자가 흰 화면에 갇히지 않게, 일정 시간 뒤 앱으로 돌려보낸다.
+        main.postDelayed(giveUp, CAPTURE_TIMEOUT_MS)
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val d = data ?: return stop()
-        val proj = projection ?: mpm.getMediaProjection(resultCode, d).also {
-            projection = it
-            it.registerCallback(object : MediaProjection.Callback() {}, Handler(Looper.getMainLooper()))
-        }
+        val d = data ?: return finishToApp()
+        val proj = projection ?: runCatching {
+            mpm.getMediaProjection(resultCode, d).also {
+                projection = it
+                it.registerCallback(object : MediaProjection.Callback() {}, main)
+            }
+        }.getOrNull() ?: return finishToApp()
 
         val metrics = screenMetrics()
-        val reader = ImageReader.newInstance(metrics.width, metrics.height, PixelFormat.RGBA_8888, 2)
-        var display: VirtualDisplay? = null
-        display = proj.createVirtualDisplay(
-            "submoa-capture",
-            metrics.width,
-            metrics.height,
-            metrics.density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            reader.surface,
-            null,
-            Handler(Looper.getMainLooper()),
-        )
+        reader = ImageReader.newInstance(metrics.width, metrics.height, PixelFormat.RGBA_8888, 2)
+        display = runCatching {
+            proj.createVirtualDisplay(
+                "submoa-capture",
+                metrics.width,
+                metrics.height,
+                metrics.density,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                reader!!.surface,
+                null,
+                main,
+            )
+        }.getOrNull() ?: return finishToApp()
 
-        reader.setOnImageAvailableListener({ r ->
+        reader!!.setOnImageAvailableListener({ r ->
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             val bitmap = runCatching { toBitmap(image, metrics.width) }.getOrNull()
             image.close()
             r.setOnImageAvailableListener(null, null)
-            display?.release()
-            reader.close()
-            if (bitmap == null) return@setOnImageAvailableListener stop()
+            releaseCapture()
+            if (bitmap == null) return@setOnImageAvailableListener finishToApp()
             recognize(bitmap)
-        }, Handler(Looper.getMainLooper()))
+        }, main)
+    }
+
+    private fun releaseCapture() {
+        runCatching { display?.release() }
+        display = null
+        runCatching { reader?.close() }
+        reader = null
     }
 
     private fun toBitmap(image: android.media.Image, width: Int): Bitmap {
@@ -122,14 +138,21 @@ class ScreenCaptureService : Service() {
 
     /** 결과를 가지고 앱 홈으로 돌아간다. 홈이 OCR 글자를 꺼내 해석한다 */
     private fun finishToApp() {
-        startActivity(
-            Intent(this, MainActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
-        )
+        if (finished) return
+        finished = true
+        main.removeCallbacks(giveUp)
+        runCatching {
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
+            )
+        }
         stop()
     }
 
     private fun stop() {
+        main.removeCallbacks(giveUp)
+        releaseCapture()
         projection?.stop()
         projection = null
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -174,6 +197,7 @@ class ScreenCaptureService : Service() {
         const val EXTRA_CODE = "code"
         const val EXTRA_DATA = "data"
         private const val AUTO_CAPTURE_DELAY_MS = 3500L
+        private const val CAPTURE_TIMEOUT_MS = 6000L
 
         fun start(context: Context, resultCode: Int, data: Intent) {
             val intent = Intent(context, ScreenCaptureService::class.java)

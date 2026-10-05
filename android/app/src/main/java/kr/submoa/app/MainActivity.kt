@@ -82,11 +82,21 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_CAPTURE && resultCode == RESULT_OK && data != null) {
             ScreenCaptureService.start(this, resultCode, data)
-            // 사용자가 스토어 구독 화면으로 가도록 구글플레이 구독 페이지를 연다
-            runCatching {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/account/subscriptions")))
-            }
+            openPlaySubscriptions()
         }
+    }
+
+    /**
+     * 구글플레이 구독 화면으로 보낸다. 그냥 https 링크는 크롬에서 빈(흰) 웹페이지로 열릴 때가 있어,
+     * 플레이 스토어 앱(com.android.vending)으로 직접 보낸다. 플레이 앱이 없으면 기본 처리로 넘긴다.
+     */
+    private fun openPlaySubscriptions() {
+        val url = Uri.parse("https://play.google.com/store/account/subscriptions")
+        val toPlay = Intent(Intent.ACTION_VIEW, url).setPackage("com.android.vending")
+        if (toPlay.resolveActivity(packageManager) != null) {
+            runCatching { startActivity(toPlay) }.onSuccess { return }
+        }
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, url)) }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
