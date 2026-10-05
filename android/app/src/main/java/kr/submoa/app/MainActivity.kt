@@ -140,6 +140,21 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
+        fun takePendingOcrText(): String = StoreStore.takePendingOcr(this@MainActivity)
+
+        @JavascriptInterface
+        fun saveStoreSubs(json: String) = StoreStore.saveStoreSubs(this@MainActivity, json)
+
+        @JavascriptInterface
+        fun getStoreSubs(): String = StoreStore.storeSubsJson(this@MainActivity)
+
+        @JavascriptInterface
+        fun clearStoreSubs() {
+            StoreStore.clearStoreSubs(this@MainActivity)
+            runOnUiThread { dispatchResume() }
+        }
+
+        @JavascriptInterface
         fun openKakaoTalk() = runOnUiThread {
             val launch = packageManager.getLaunchIntentForPackage("com.kakao.talk")
             if (launch != null) startActivity(launch)

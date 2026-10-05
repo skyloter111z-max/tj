@@ -31,6 +31,12 @@ export type NativeBridge = {
   getImportedAlerts?(): string;
   clearImported?(): void;
   openKakaoTalk?(): void;
+  /** 스토어 구독 스크린샷을 OCR한 글자. 꺼내는 순간 지워진다 (android) */
+  takePendingOcrText?(): string;
+  /** 웹이 OCR 글자에서 뽑은 스토어 구독 [{id, amount, cycle}]의 JSON을 저장한다 */
+  saveStoreSubs?(json: string): void;
+  getStoreSubs?(): string;
+  clearStoreSubs?(): void;
   /** 디버그 빌드 전용: 실제 결제 없이 모의 결제 알림을 폰에 띄워 알림 읽기 전체를 시험한다 */
   canSimulate?(): boolean;
   simulatePaymentAlert?(): void;

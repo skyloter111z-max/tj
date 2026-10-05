@@ -18,6 +18,8 @@ import {
   RESUME_EVENT,
 } from "@/lib/card-alerts/bridge";
 import { extractCardAlerts, type ImportResult } from "@/lib/card-alerts/import";
+import { ingestPendingOcr, readStoreSubs } from "@/lib/store-subs/bridge";
+import { mergeStoreSubs } from "@/lib/store-subs/parse";
 import { exportSpan } from "@/lib/card-alerts/kakao-export";
 import {
   daysUntilCharge,
@@ -62,6 +64,8 @@ type HomeState =
       justImported: ImportResult | null;
       /** 안드로이드에서 알림 자동 수집이 아직 꺼져 있다 */
       autoCaptureOff: boolean;
+      /** 방금 스토어 스크린샷에서 찾은 구독 수 (0이면 배너 안 띄움) */
+      justOcr: number;
     };
 
 function loadHome(): HomeState | "onboarding" {
@@ -90,10 +94,16 @@ function loadHome(): HomeState | "onboarding" {
     baseline: justImported !== null && Object.keys(seenBefore).length === 0,
   });
   writeJSON(STORAGE_KEYS.seen, seen);
+
+  // 스토어 스크린샷 OCR: 공유받은 글자가 있으면 파싱·저장하고, 저장된 스토어 구독을 합친다
+  const justOcrSubs = ingestPendingOcr(bridge);
+  const storeSubs = readStoreSubs(bridge);
+  const subsWithStore = mergeStoreSubs(home.subs, storeSubs, today);
   return {
     mode: "live",
     today,
     ...home,
+    subs: subsWithStore,
     declared: readJSON<string[]>(STORAGE_KEYS.declared, []),
     canImport: bridgePlatform(bridge) === "android" && typeof bridge.openKakaoTalk === "function",
     importedSpan: exportSpan(imported),
@@ -102,6 +112,7 @@ function loadHome(): HomeState | "onboarding" {
       bridgePlatform(bridge) === "android" &&
       !bridge.isAccessGranted() &&
       !readJSON(STORAGE_KEYS.autoCaptureDismissed, false),
+    justOcr: justOcrSubs.length,
   };
 }
 
@@ -148,6 +159,12 @@ export default function HomePage() {
   return (
     <div className="space-y-6">
       {home.justImported && <ImportedBanner result={home.justImported} />}
+
+      {home.justOcr > 0 && (
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-xs text-emerald-200/90">
+          스크린샷에서 구독 {home.justOcr}개를 찾았어요
+        </div>
+      )}
 
       {home.autoCaptureOff && !autoCaptureHidden && (home.importedSpan !== null || home.paymentCount > 0) && (
         <AutoCaptureOffer onDismiss={() => setAutoCaptureHidden(true)} />

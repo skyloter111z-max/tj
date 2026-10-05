@@ -72,5 +72,7 @@ tasks.named("preBuild") { dependsOn(syncWebAssets) }
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.webkit:webkit:1.12.1")
+    // 스토어 구독 스크린샷 글자 인식 (온디바이스, 한국어). 네트워크·추가 권한 불필요.
+    implementation("com.google.mlkit:text-recognition-korean:16.0.1")
     testImplementation("junit:junit:4.13.2")
 }

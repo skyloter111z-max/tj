@@ -16,27 +16,51 @@ import android.widget.Toast
 class ImportActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 이미지 공유 = 스토어 구독 스크린샷 → OCR
+        val imageUri = sharedUri(intent)?.takeIf { (intent.type ?: "").startsWith("image/") }
+        if (imageUri != null) {
+            StoreOcr.recognize(this, imageUri) { ocr ->
+                if (ocr != null) {
+                    StoreStore.savePendingOcr(this, ocr)
+                    openHome(imported = false)
+                } else {
+                    Toast.makeText(this, "스크린샷에서 글자를 읽지 못했어요", Toast.LENGTH_LONG).show()
+                }
+                finish()
+            }
+            return
+        }
+
+        // 그 밖 = 카카오톡 대화 내보내기 텍스트/zip
         val text = runCatching { readShared(intent) }.getOrNull()
         if (text != null && KakaoExport.looksLikeExport(text)) {
             ImportStore.savePending(this, text)
-            startActivity(
-                Intent(this, MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                    .putExtra(MainActivity.EXTRA_IMPORTED, true),
-            )
+            openHome(imported = true)
         } else {
             Toast.makeText(this, "카카오톡 대화 내보내기 파일이 아니에요", Toast.LENGTH_LONG).show()
         }
         finish()
     }
 
-    private fun readShared(intent: Intent): String? {
-        val uri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    private fun openHome(imported: Boolean) {
+        startActivity(
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra(MainActivity.EXTRA_IMPORTED, imported),
+        )
+    }
+
+    private fun sharedUri(intent: Intent): Uri? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
         } else {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra(Intent.EXTRA_STREAM)
         }
+
+    private fun readShared(intent: Intent): String? {
+        val uri: Uri? = sharedUri(intent)
         if (uri != null) {
             contentResolver.openInputStream(uri)?.use { input ->
                 return KakaoExport.decode(input.readBytes())

@@ -53,6 +53,8 @@ export type DetectedSubscription = {
   priceChange: PriceChange | null;
   /** 이번 배치에서 처음 등장한 구독 (spec/v5 §4-4 신규 구독 알림) */
   isNew: boolean;
+  /** 어디서 찾았나. 카드 알림(기본) vs 앱스토어 스크린샷 */
+  source?: "card" | "store";
   /**
    * 마지막 결제 뒤로 주기의 1.5배가 지나도록 다음 결제가 없으면 끝난 구독이다.
    * 카톡 알림방 내보내기처럼 몇 년치를 한 번에 읽으면 해지한 구독이 섞여 들어온다.
@@ -284,6 +286,7 @@ export function detectSubscriptions(
       // 멀쩡한 구독이 "신규"로 다시 뜬다.
       isNew: !known.has(service ? `svc:${service.id}` : key),
       active: daysBetween(last.date, today) <= CYCLE_WINDOWS[cycle].nominal * ENDED_AFTER_CYCLES,
+      source: "card",
     });
   }
 
