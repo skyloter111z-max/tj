@@ -21,15 +21,6 @@ export function MoreSources() {
         </p>
       </div>
       <div className="space-y-2">
-        {typeof nativeBridge()?.startStoreCapture === "function" && (
-          <button
-            type="button"
-            onClick={() => nativeBridge()?.startStoreCapture?.()}
-            className="w-full rounded-lg bg-sky-500 px-4 py-3 text-center text-sm font-bold text-sky-950 transition hover:bg-sky-400"
-          >
-            스토어 구독 자동으로 읽기
-          </button>
-        )}
         <button
           type="button"
           onClick={() => nativeBridge()?.openKakaoTalk?.()}
@@ -57,9 +48,8 @@ export function MoreSources() {
       </div>
       <p className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs leading-relaxed text-zinc-400">
         넷플릭스·유튜브처럼 <span className="text-zinc-200">앱스토어로 결제</span>한 구독은 카드에 서비스명이
-        안 찍혀요. <span className="text-zinc-200">자동으로 읽기</span>를 누르면 화면 캡처 동의 한 번으로 구독
-        화면을 열고, <span className="text-zinc-200">몇 초 뒤 알아서 읽어</span> 추가합니다. 스토어 화면을 직접
-        캡처해 구독모아로 공유해도 됩니다.
+        안 찍혀요. 위 <span className="text-zinc-200">&apos;어떤 구독을 확인할까요?&apos;</span>에서 골라 화면
+        캡처로 한 번에 읽을 수 있고, 스토어 화면을 직접 캡처해 구독모아로 공유해도 됩니다.
       </p>
     </section>
   );

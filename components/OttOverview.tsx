@@ -30,23 +30,12 @@ export function OttOverview({
   const bridge = nativeBridge();
   const canCapture = typeof bridge?.startCaptureSequence === "function";
 
-  // 읽을 수 있는, 아직 못 찾은 OTT들의 큐 [{id,url}]
-  const queue = statuses
-    .filter((s) => !s.found)
-    .map((s) => ({ id: s.service.id, url: readUrl(s.service) }))
-    .filter((q): q is { id: string; url: string } => Boolean(q.url));
-
   // 한 서비스 화면을 연다: 앱이면 캡처로 읽고, 아니면 그 페이지를 새 탭으로 연다
   const read = (service: ServiceDef) => {
     const url = readUrl(service);
     if (!url) return;
     if (canCapture) bridge?.startCaptureSequence?.(JSON.stringify([{ id: service.id, url }]));
     else if (typeof window !== "undefined") window.open(url, "_blank", "noopener");
-  };
-
-  // 못 찾은 OTT들을 한 번의 동의로 차례로 읽는다
-  const readAll = () => {
-    if (canCapture && queue.length > 0) bridge?.startCaptureSequence?.(JSON.stringify(queue));
   };
 
   return (
@@ -97,19 +86,9 @@ export function OttOverview({
         )}
       </div>
 
-      {canCapture && queue.length > 1 && (
-        <button
-          type="button"
-          onClick={readAll}
-          className="w-full rounded-lg border border-sky-500/40 bg-sky-500/10 px-4 py-2.5 text-center text-sm font-semibold text-sky-200 transition hover:bg-sky-500/20"
-        >
-          못 찾은 OTT {queue.length}개 모두 읽기
-        </button>
-      )}
-
       <p className="text-xs leading-relaxed text-zinc-600">
-        &apos;모두 읽기&apos;를 누르면 못 찾은 OTT 화면을 차례로 열어 금액까지 읽어요. 각 OTT에 로그인돼
-        있어야 보이고, 안 돼 있으면 그 OTT는 건너뜁니다.
+        &apos;눌러서 읽기&apos;를 누르면 그 OTT 화면을 열어 금액까지 읽어요. 여러 개를 한 번에 확인하려면
+        아래 &apos;어떤 구독을 확인할까요?&apos;에서 골라 한 번에 읽을 수 있어요.
       </p>
     </section>
   );

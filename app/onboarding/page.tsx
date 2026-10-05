@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ServicePicker } from "@/components/ServicePicker";
+import { CapturePicker } from "@/components/CapturePicker";
 import { ImportHistoryCard } from "@/components/ImportHistory";
 import { DeclaredWaiting, WatchingCard } from "@/components/Watching";
 import {
@@ -187,14 +188,23 @@ function ConnectStep({
 }
 
 /**
- * 안드로이드: 카톡 카드사 알림방을 한 번 공유하면 끝. 결제를 계속 지켜보지 않는다.
- * 공유하면 앱이 홈으로 열리며 바로 결과가 나온다(ImportActivity → 홈). 여기서 기다릴 것은 없다.
+ * 안드로이드: 두 가지 길을 준다. 기본은 "구독 화면으로 바로 확인"(OTT·AI를 골라 화면 캡처로 읽기),
+ * 그리고 더 정확히 찾고 싶으면 카톡 카드 알림 가져오기. 카톡으로 시작하도록 강요하지 않는다.
  */
 function AndroidImport({ onBack }: { onBack: () => void }) {
   const router = useRouter();
   return (
     <div className="space-y-6">
-      <ImportHistoryCard />
+      <CapturePicker title="어떤 구독을 확인할까요?" onLaunch={() => router.push("/")} />
+
+      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
+        <h2 className="text-sm font-bold text-zinc-200">또는 카톡 카드 알림으로 과거 결제까지 찾기</h2>
+        <p className="mt-1 mb-3 text-xs leading-relaxed text-zinc-500">
+          카드로 낸 구독까지 몇 년치를 한 번에 읽어 더 정확히 찾습니다.
+        </p>
+        <ImportHistoryCard />
+      </div>
+
       <div className="space-y-1">
         <button
           type="button"

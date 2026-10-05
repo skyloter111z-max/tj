@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AutoCaptureOffer } from "@/components/AutoCapture";
+import { CapturePicker } from "@/components/CapturePicker";
 import { SubscriptionDetail } from "@/components/SubscriptionDetail";
 import { ImportHistoryCard, ReimportLine } from "@/components/ImportHistory";
 import { MoreSources } from "@/components/MoreSources";
@@ -207,6 +208,8 @@ export default function HomePage() {
       )}
 
       {hasData && <RecentPayments recent={home.recent} />}
+
+      <CapturePicker />
 
       {home.importedSpan !== null && <MoreSources />}
 
