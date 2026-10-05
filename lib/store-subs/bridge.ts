@@ -4,7 +4,12 @@
 
 import type { NativeBridge } from "../card-alerts/bridge";
 import { findService } from "../merchants";
-import { parseStoreScreenshot, toStored, type StoreSubscription } from "./parse";
+import {
+  parseStoreScreenshot,
+  parseStoreScreenshotFor,
+  toStored,
+  type StoreSubscription,
+} from "./parse";
 
 /** 저장된 스토어 구독을 복원한다. 사전에서 사라진 id는 버린다 */
 export function readStoreSubs(bridge: Pick<NativeBridge, "getStoreSubs">): StoreSubscription[] {
@@ -43,10 +48,17 @@ export type OcrIngest = {
  */
 export function ingestPendingOcr(
   bridge: Pick<NativeBridge, "takePendingOcrText" | "getStoreSubs" | "saveStoreSubs">,
+  targetId?: string,
 ): OcrIngest {
   const text = bridge.takePendingOcrText?.() ?? "";
   if (!text.trim()) return { found: [], readText: false };
+
   const found = parseStoreScreenshot(text);
+  // 특정 OTT 화면을 열어 읽은 경우: 일반 해석이 그 서비스를 못 잡았으면, 그 하나만 노려 다시 본다
+  if (targetId && !found.some((s) => s.service.id === targetId)) {
+    const one = parseStoreScreenshotFor(text, targetId);
+    if (one) found.push(one);
+  }
   if (found.length === 0) return { found: [], readText: true };
 
   const byId = new Map(readStoreSubs(bridge).map((s) => [s.service.id, s]));

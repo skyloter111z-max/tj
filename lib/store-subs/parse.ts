@@ -70,6 +70,46 @@ export function parseStoreScreenshot(ocrText: string): StoreSubscription[] {
   return [...byId.values()];
 }
 
+/** 결제·요금 맥락을 나타내는 말. 화면의 아무 숫자가 아니라 "결제 예정액"을 고르기 위한 닻이다 */
+const BILLING_HINT = /결제|요금|구독|멤버십|플랜|요금제|renew|billing|next\s*payment|per\s*month|\/\s*월|\/\s*년/i;
+
+/**
+ * 어떤 OTT의 구독 화면을 열어 캡처한 경우(targetId를 안다), 그 서비스 하나만 노려서 읽는다.
+ *
+ * 일반 parseStoreScreenshot은 "이름 줄 + 가까운 가격"만 보는데, OTT 계정 페이지는 이름(로고)과
+ * 금액이 멀리 떨어져 있어 놓치기 쉽다. 여기서는 (1) 그 서비스 이름이 화면 어딘가에 있는지 확인하고,
+ * (2) "결제 예정" 같은 결제 맥락에 붙은 금액을 고른다. 결제 맥락이 없고 금액이 여럿이면
+ * 섣불리 찍지 않는다(틀린 금액을 보여 주느니 "못 찾음"이 낫다).
+ */
+export function parseStoreScreenshotFor(ocrText: string, targetId: string): StoreSubscription | null {
+  const lines = ocrText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  // 이 화면에 그 서비스가 보이는가 (로고가 아니라 글자로)
+  const service = lines.map((l) => matchMerchant(l).service).find((s) => s?.id === targetId);
+  if (!service) return null;
+
+  // 결제 맥락(결제 예정 등)에 붙은 금액을 먼저 찾는다 — 가장 믿을 만한 "결제액"이다
+  const anchored: number[] = [];
+  const all: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const price = priceOf(lines[i]!);
+    if (price === null) continue;
+    all.push(price);
+    const near = [lines[i - 1], lines[i], lines[i + 1]].filter(Boolean).join(" ");
+    if (BILLING_HINT.test(near)) anchored.push(price);
+  }
+
+  // 결제 맥락에 붙은 금액이 있으면 그걸, 없으면 화면에 금액이 딱 하나일 때만 쓴다
+  const amount = anchored[0] ?? (all.length === 1 ? all[0]! : null);
+  if (amount === null) return null;
+
+  const cycle = cycleOf(ocrText) ?? "monthly";
+  return { service, amount, cycle };
+}
+
 const DAY_MS = 86_400_000;
 const CYCLE_DAYS = { monthly: 30, yearly: 365 } as const;
 

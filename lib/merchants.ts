@@ -42,6 +42,11 @@ export type ServiceDef = {
   yearlyPrices?: number[];
   /** 해지 페이지 딥링크 (spec/v5 §4-5) */
   cancelUrl?: string;
+  /**
+   * 구독·요금(결제 예정액)이 보이는 계정 페이지. "구독 화면 읽기"가 이 주소를 열고
+   * 화면을 캡처해 금액을 읽는다. 없으면 cancelUrl로 대신한다.
+   */
+  manageUrl?: string;
 };
 
 /**
@@ -91,6 +96,7 @@ export const SERVICES: ServiceDef[] = [
     category: "ott",
     patterns: [/NETFLIX/, /넷플릭스/],
     cancelUrl: "https://www.netflix.com/cancelplan",
+    manageUrl: "https://www.netflix.com/account",
     maskedPrefixes: ["넷플", "NE"],
     prices: [7000, 13500, 17000],
     cycles: ["monthly"],
@@ -146,6 +152,8 @@ export const SERVICES: ServiceDef[] = [
     // 전자상거래 알림은 6자로 잘려 "유튜브 프리"로 온다. 유튜브 결제는 유튜브로 본다
     patterns: [/YOUTUBE/, /유튜브/],
     cancelUrl: "https://www.youtube.com/paid_memberships",
+    // 유튜브 프리미엄은 보통 구글플레이로 결제된다 → 읽기는 플레이 구독 화면에서
+    manageUrl: "https://play.google.com/store/account/subscriptions",
     maskedPrefixes: ["유튜", "GO", "YO"],
     prices: [14900, 23900],
     cycles: ["monthly", "yearly"],

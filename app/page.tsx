@@ -97,8 +97,11 @@ function loadHome(): HomeState | "onboarding" {
   });
   writeJSON(STORAGE_KEYS.seen, seen);
 
-  // 스토어 스크린샷 OCR: 공유받은 글자가 있으면 파싱·저장하고, 저장된 스토어 구독을 합친다
-  const ocr = ingestPendingOcr(bridge);
+  // 스토어 스크린샷 OCR: 공유받은 글자가 있으면 파싱·저장하고, 저장된 스토어 구독을 합친다.
+  // "눌러서 읽기"로 특정 OTT 화면을 캡처한 경우 그 서비스를 힌트로 넘겨 더 잘 잡게 한다.
+  const captureTarget = readJSON<string | null>(STORAGE_KEYS.captureTarget, null);
+  const ocr = ingestPendingOcr(bridge, captureTarget ?? undefined);
+  if (captureTarget !== null) writeJSON(STORAGE_KEYS.captureTarget, null);
   const storeSubs = readStoreSubs(bridge);
   const subsWithStore = mergeStoreSubs(home.subs, storeSubs, today);
   return {
