@@ -20,18 +20,29 @@ object CaptureApps {
 
     private data class App(val pkg: String, val hint: String)
 
-    /** 서비스 id → 앱 패키지와, 앱 안에서 구독 화면으로 가는 길 안내 */
-    private val APPS = mapOf(
-        "netflix" to App("com.netflix.mediaclient", "프로필 → 계정에서 멤버십 화면을 열어 주세요"),
-        "disneyplus" to App("com.disney.disneyplus", "내 정보 → 계정 → 구독 화면을 열어 주세요"),
-        "tving" to App("net.cj.cjhv.gs.tving", "마이 → 이용권 화면을 열어 주세요"),
-        "wavve" to App("kr.co.captv.pooqV2", "마이 → 이용권 화면을 열어 주세요"),
-        "coupangplay" to App("com.coupang.mobile", "마이쿠팡 → 와우 멤버십 화면을 열어 주세요"),
-        "chatgpt" to App("com.openai.chatgpt", "설정 → 구독(플랜) 화면을 열어 주세요"),
-        "claude" to App("com.anthropic.claude", "설정 → 구독·결제 화면을 열어 주세요"),
-        "gemini" to App("com.google.android.apps.subscriptions.red", "Google One 멤버십 화면을 열어 주세요"),
-        "perplexity" to App("ai.perplexity.app.android", "설정 → 구독 화면을 열어 주세요"),
+    /**
+     * 서비스 id → 그 서비스를 읽을 수 있는 앱들(먼저 깔려 있는 것을 쓴다)과, 앱 안에서 구독 화면으로 가는 길.
+     * 길 안내는 실제 화면 기준(넷플릭스 계정·쿠팡플레이 프로필은 2026-10 사용자 캡처로 확인).
+     */
+    private val APPS: Map<String, List<App>> = mapOf(
+        "netflix" to listOf(App("com.netflix.mediaclient", "아래 My Netflix → 오른쪽 위 메뉴(≡) → 계정을 열어 주세요")),
+        "disneyplus" to listOf(App("com.disney.disneyplus", "내 정보 → 계정 → 구독 화면을 열어 주세요")),
+        "tving" to listOf(App("net.cj.cjhv.gs.tving", "마이 → 이용권 화면을 열어 주세요")),
+        "wavve" to listOf(App("kr.co.captv.pooqV2", "마이 → 이용권 화면을 열어 주세요")),
+        // 쿠팡플레이는 쿠팡 와우에 들어 있다. 쿠팡플레이 앱 '프로필'에 "WOW! 와우회원"이 보인다(없으면 쿠팡 앱)
+        "coupangplay" to listOf(
+            App("com.coupang.mobile.play", "아래 '프로필' 탭을 열어 주세요"),
+            App("com.coupang.mobile", "마이쿠팡 → 와우 멤버십 화면을 열어 주세요"),
+        ),
+        "chatgpt" to listOf(App("com.openai.chatgpt", "설정 → 구독(플랜) 화면을 열어 주세요")),
+        "claude" to listOf(App("com.anthropic.claude", "설정 → 구독·결제 화면을 열어 주세요")),
+        "gemini" to listOf(App("com.google.android.apps.subscriptions.red", "Google One 멤버십 화면을 열어 주세요")),
+        "perplexity" to listOf(App("ai.perplexity.app.android", "설정 → 구독 화면을 열어 주세요")),
     )
+
+    /** 이 서비스를 읽을, 폰에 깔려 있는 첫 앱 */
+    private fun appFor(context: Context, id: String): App? =
+        APPS[id]?.firstOrNull { installed(context, it.pkg) }
 
     private fun isPlay(url: String) = Uri.parse(url).host?.contains("play.google.com") == true
 
@@ -40,11 +51,12 @@ object CaptureApps {
 
     fun modeFor(context: Context, id: String, url: String): Mode {
         if (isPlay(url)) return Mode.AUTO
-        val app = APPS[id] ?: return Mode.AUTO // 스토어 전체(앱스토어) 등: 그대로 연다
-        return if (installed(context, app.pkg)) Mode.GUIDED else Mode.SKIP
+        if (APPS[id] == null) return Mode.AUTO // 스토어 전체(앱스토어) 등: 그대로 연다
+        return if (appFor(context, id) != null) Mode.GUIDED else Mode.SKIP
     }
 
-    fun hintFor(id: String): String = APPS[id]?.hint ?: "구독(멤버십) 화면을 열어 주세요"
+    fun hintFor(context: Context, id: String): String =
+        (appFor(context, id) ?: APPS[id]?.firstOrNull())?.hint ?: "구독(멤버십) 화면을 열어 주세요"
 
     /**
      * 대상 화면을 연다. 서비스에서 열 때는 newTask=true.
@@ -59,7 +71,7 @@ object CaptureApps {
         when (mode) {
             Mode.SKIP -> Unit
             Mode.GUIDED -> {
-                val pkg = APPS.getValue(id).pkg
+                val pkg = appFor(context, id)?.pkg ?: return Mode.SKIP
                 val inApp = Intent(Intent.ACTION_VIEW, uri).setPackage(pkg).addFlags(flags)
                 val opened = inApp.resolveActivity(pm) != null && runCatching { context.startActivity(inApp) }.isSuccess
                 if (!opened) {

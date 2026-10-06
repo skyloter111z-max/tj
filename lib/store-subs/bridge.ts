@@ -4,6 +4,7 @@
 
 import type { NativeBridge } from "../card-alerts/bridge";
 import { findService } from "../merchants";
+import { inferFromAppScreen } from "./app-screens";
 import {
   parseStoreScreenshot,
   parseStoreScreenshotFor,
@@ -24,10 +25,11 @@ export function readStoreSubs(bridge: Pick<NativeBridge, "getStoreSubs">): Store
   const out: StoreSubscription[] = [];
   for (const row of parsed) {
     if (typeof row !== "object" || row === null) continue;
-    const { id, amount, cycle } = row as Record<string, unknown>;
+    const { id, amount, cycle, billedVia } = row as Record<string, unknown>;
     const service = typeof id === "string" ? findService(id) : undefined;
     if (!service || typeof amount !== "number" || (cycle !== "monthly" && cycle !== "yearly")) continue;
-    out.push({ service, amount, cycle });
+    const via = typeof billedVia === "string" && findService(billedVia) ? billedVia : undefined;
+    out.push({ service, amount, cycle, ...(via ? { billedVia: via } : {}) });
   }
   return out;
 }
@@ -82,6 +84,9 @@ export function ingestPendingOcr(
   };
   for (const screen of screens) {
     if (!screen.text.trim()) continue;
+    // 서비스 앱 안 화면: 그 앱을 아는 해석(요금제 → 금액, 묶음 멤버십)을 먼저 한다.
+    // 앱 안 화면엔 금액이 없는 경우가 많고("광고형 스탠다드 멤버십", "WOW! 와우회원"), 일반 해석보다 정확하다.
+    if (screen.trusted && screen.id) for (const s of inferFromAppScreen(screen.text, screen.id)) add(s);
     for (const s of parseStoreScreenshot(screen.text)) add(s);
     // 이 화면이 특정 OTT 것이면, 일반 해석이 놓쳤을 때 그 하나만 노려 다시 본다
     if (screen.id && !found.some((s) => s.service.id === screen.id)) {

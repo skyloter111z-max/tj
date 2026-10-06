@@ -512,7 +512,7 @@ class ScreenCaptureService : Service() {
         titleView?.text = if (total > 1) "$name (${index + 1}/$total)" else name
         hintView?.text = when (mode) {
             CaptureApps.Mode.AUTO -> "화면이 뜨면 자동으로 읽어요"
-            CaptureApps.Mode.GUIDED -> "${CaptureApps.hintFor(t.id)}\n보이면 자동으로 읽어요. 안 되면 '$LABEL_READ'"
+            CaptureApps.Mode.GUIDED -> "${CaptureApps.hintFor(this, t.id)}\n보이면 자동으로 읽어요. 안 되면 '$LABEL_READ'"
             CaptureApps.Mode.SKIP -> "이 폰에 앱이 없어 건너뜁니다"
         }
     }

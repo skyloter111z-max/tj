@@ -30,6 +30,7 @@ import {
   type DetectedSubscription,
   type RawTransaction,
 } from "@/lib/detector";
+import { viaLabel } from "@/lib/billing";
 import { buildLiveHome, type SeenMap } from "@/lib/home";
 import { KNOWN_KEYS, SAMPLE_TRANSACTIONS } from "@/lib/sample-data";
 import { readJSON, STORAGE_KEYS, writeJSON } from "@/lib/storage";
@@ -321,6 +322,7 @@ function Subscriptions({
         <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">결제 예정</h2>
         {upcoming.map((s) => {
           const d = daysUntilCharge(s, today);
+          const via = viaLabel(s);
           return (
             <button
               type="button"
@@ -341,18 +343,27 @@ function Subscriptions({
                 </p>
               </div>
               <div className="shrink-0 pl-3 text-right">
-                <p className="font-semibold text-zinc-100">
-                  {won(monthlyEquivalent(s))}
-                  <span className="text-xs font-normal text-zinc-500">/월</span>
-                </p>
-                <p
-                  className={`text-xs font-bold ${
-                    d < 0 ? "text-zinc-500" : d <= 3 ? "text-rose-400" : d <= 7 ? "text-amber-400" : "text-zinc-500"
-                  }`}
-                >
-                  {/* 결제일이 지났는데 알림이 아직 없다 — 늦게 오거나 해지했을 수 있다 */}
-                  {d < 0 ? "결제 확인 중" : `D-${d}`}
-                </p>
+                {/* 다른 멤버십에 포함된 구독(네이버플러스 안의 넷플릭스 등): 0원 대신 "어디에 포함"을 보인다 */}
+                {via && s.amount === 0 ? (
+                  <p className="text-sm font-semibold text-sky-300">{via}</p>
+                ) : (
+                  <p className="font-semibold text-zinc-100">
+                    {won(monthlyEquivalent(s))}
+                    <span className="text-xs font-normal text-zinc-500">/월</span>
+                  </p>
+                )}
+                {via ? (
+                  s.amount > 0 && <p className="text-xs text-zinc-500">{via}</p>
+                ) : (
+                  <p
+                    className={`text-xs font-bold ${
+                      d < 0 ? "text-zinc-500" : d <= 3 ? "text-rose-400" : d <= 7 ? "text-amber-400" : "text-zinc-500"
+                    }`}
+                  >
+                    {/* 결제일이 지났는데 알림이 아직 없다 — 늦게 오거나 해지했을 수 있다 */}
+                    {d < 0 ? "결제 확인 중" : `D-${d}`}
+                  </p>
+                )}
               </div>
             </button>
           );

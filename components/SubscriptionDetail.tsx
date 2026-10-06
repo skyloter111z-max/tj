@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { monthlyEquivalent, type DetectedSubscription } from "@/lib/detector";
 import { iconFor } from "@/lib/service-icons";
+import { viaLabel } from "@/lib/billing";
 import { partyForService, savingsPerMonth } from "@/lib/parties";
 
 const won = (n: number) => `${n.toLocaleString("ko-KR")}원`;
@@ -12,6 +13,7 @@ const ym = (d: string) => `${d.slice(0, 4)}.${d.slice(5, 7)}`;
 /** 구독 하나를 눌렀을 때: 그동안 쓴 총액 + 해지 방법 + 같이 쓰기 */
 export function SubscriptionDetail({ sub, onClose }: { sub: DetectedSubscription; onClose: () => void }) {
   const party = sub.service ? partyForService(sub.service.id) : null;
+  const via = viaLabel(sub);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-4" onClick={onClose}>
@@ -26,13 +28,21 @@ export function SubscriptionDetail({ sub, onClose }: { sub: DetectedSubscription
           <div className="min-w-0">
             <p className="truncate text-lg font-bold text-zinc-100">{sub.displayName}</p>
             <p className="text-sm text-zinc-400">
-              {CYCLE_LABEL[sub.cycle]} {won(sub.amount)}
+              {via && sub.amount === 0 ? via : `${CYCLE_LABEL[sub.cycle]} ${won(sub.amount)}`}
+              {via && sub.amount > 0 && <span className="ml-2 text-zinc-500">· {via}</span>}
               {!sub.active && <span className="ml-2 text-zinc-500">· 해지한 것 같아요</span>}
             </p>
           </div>
         </div>
 
-        {/* 가져온 내역이 주는 한 방: 그동안 얼마 썼는지 */}
+        {/* 묶음 멤버십에 포함된 구독: 따로 나가는 돈이 없다는 걸 먼저 알린다 */}
+        {via && sub.amount === 0 ? (
+          <div className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-4 text-center">
+            <p className="text-sm font-semibold text-sky-200">따로 결제되지 않아요</p>
+            <p className="mt-1 text-xs text-zinc-400">{via.replace(/에 포함$/, "")} 멤버십 요금에 들어 있어요</p>
+          </div>
+        ) : (
+        /* 가져온 내역이 주는 한 방: 그동안 얼마 썼는지 */
         <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4 text-center">
           <p className="text-xs text-zinc-500">그동안 이 구독에 쓴 돈</p>
           <p className="mt-1 text-2xl font-bold text-zinc-50">{won(sub.totalPaid)}</p>
@@ -40,6 +50,7 @@ export function SubscriptionDetail({ sub, onClose }: { sub: DetectedSubscription
             {ym(sub.firstChargeDate)}부터 {sub.occurrences}번 결제
           </p>
         </div>
+        )}
 
         <dl className="space-y-2 text-sm">
           {sub.active && (

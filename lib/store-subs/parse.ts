@@ -16,6 +16,11 @@ export type StoreSubscription = {
   service: ServiceDef;
   amount: number;
   cycle: "monthly" | "yearly";
+  /**
+   * 다른 멤버십을 통해 청구된다(그 서비스 id). 네이버플러스 안의 넷플릭스, 쿠팡 와우 안의 쿠팡플레이처럼.
+   * amount가 0이면 그 멤버십 요금에 포함돼 따로 나가는 돈이 없다는 뜻이다.
+   */
+  billedVia?: string;
 };
 
 /**
@@ -29,7 +34,8 @@ function priceOf(line: string): number | null {
   const m =
     line.match(new RegExp("(?:₩|\\\\)\\s?" + num)) ?? // ₩14,900 / ₩17000
     line.match(new RegExp(num + "\\s*원")) ?? // 14,900원
-    line.match(/(\d{1,3}(?:,\d{3})+)/); // 쉼표가 있는 숫자
+    // 쉼표가 있는 숫자. 단 "2,330점"(포인트)·"1,234명"·"1,000회"처럼 돈이 아닌 단위가 붙은 건 뺀다
+    line.match(/(?<![\d,])(\d{1,3}(?:,\d{3})+)(?![\d,])(?!\s*(?:점|포인트|P\b|명|회|개|건|%|분|초|시간|일|위))/i);
   if (!m) return null;
   const n = Number(m[1]!.replace(/,/g, ""));
   return Number.isFinite(n) && n >= 100 ? n : null;
@@ -146,6 +152,7 @@ export function storeSubToDetected(s: StoreSubscription, today: string): Detecte
     isNew: false,
     active: true,
     source: "store",
+    ...(s.billedVia ? { billedVia: s.billedVia } : {}),
   };
 }
 
@@ -166,8 +173,13 @@ export function mergeStoreSubs(
 }
 
 /** 브리지에 저장할 수 있는 납작한 형태 (ServiceDef는 직렬화하지 않는다) */
-export type StoredStoreSub = { id: string; amount: number; cycle: "monthly" | "yearly" };
+export type StoredStoreSub = { id: string; amount: number; cycle: "monthly" | "yearly"; billedVia?: string };
 
 export function toStored(subs: readonly StoreSubscription[]): StoredStoreSub[] {
-  return subs.map((s) => ({ id: s.service.id, amount: s.amount, cycle: s.cycle }));
+  return subs.map((s) => ({
+    id: s.service.id,
+    amount: s.amount,
+    cycle: s.cycle,
+    ...(s.billedVia ? { billedVia: s.billedVia } : {}),
+  }));
 }

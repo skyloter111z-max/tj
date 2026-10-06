@@ -27,4 +27,23 @@ class SubscriptionSignalTest {
         assertFalse(SubscriptionSignal.looksLikeSubscription("오늘의 추천\n인기 드라마\n이어보기"))
         assertFalse(SubscriptionSignal.looksLikeSubscription("로그인\n이메일\n비밀번호"))
     }
+
+    // 실제 화면(2026-10, 사용자 캡처)에서 개인정보 줄은 뺐다
+    @Test
+    fun `넷플릭스 계정 화면은 금액이 없어도 구독 상태로 본다`() {
+        val netflix = "계정\n멤버십 정보\n멤버십 시작: 2025년 6월\n광고형 스탠다드 멤버십\n네이버 멤버십 서비스 추가 옵션을 통해 청구\n결제 내역 확인"
+        assertTrue(SubscriptionSignal.looksLikeSubscription(netflix))
+    }
+
+    @Test
+    fun `쿠팡플레이 프로필의 와우회원 표시는 구독 상태로 본다`() {
+        val coupang = "홍길동 >\nWOW! 와우회원\npremium 구독하고 광고 없이 시청하세요 >\n쿠플클럽\n2,330점 >"
+        assertTrue(SubscriptionSignal.looksLikeSubscription(coupang))
+    }
+
+    @Test
+    fun `와우회원 전용이나 가입 권유 문구로는 넘어가지 않는다`() {
+        assertFalse(SubscriptionSignal.looksLikeSubscription("오늘의 추천\nWOW! 와우회원 전용\n인기 영화"))
+        assertFalse(SubscriptionSignal.looksLikeSubscription("와우회원이 되어 보세요\n지금 가입하기"))
+    }
 }

@@ -5,6 +5,7 @@ import { monthlyEquivalent, type DetectedSubscription } from "@/lib/detector";
 import { foundCount, ottStatuses } from "@/lib/ott";
 import type { ServiceDef } from "@/lib/merchants";
 import { iconFor } from "@/lib/service-icons";
+import { viaLabel } from "@/lib/billing";
 
 const won = (n: number) => `${n.toLocaleString("ko-KR")}원`;
 
@@ -61,7 +62,9 @@ export function OttOverview({
               </span>
               <span className="min-w-0">
                 <span className="block truncate text-sm font-medium text-zinc-100">{service.name}</span>
-                <span className="block text-xs text-sky-300">{won(monthlyEquivalent(found))}/월</span>
+                <span className="block text-xs text-sky-300">
+                  {viaLabel(found) && found.amount === 0 ? viaLabel(found) : `${won(monthlyEquivalent(found))}/월`}
+                </span>
               </span>
             </button>
           ) : (
