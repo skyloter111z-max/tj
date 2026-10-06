@@ -7,7 +7,9 @@
  * 실제로 돈이 나가는 멤버십과 "그 안에 포함된" 서비스로 나눠 두 번 세지 않는다.
  *
  * 가격(2026-10 확인): 넷플릭스 광고형 스탠다드 7,000 · 스탠다드 13,500 · 프리미엄 17,000.
- * 네이버플러스 4,900에 넷플릭스 광고형 포함, 스탠다드 +6,500 · 프리미엄 +10,000. 쿠팡 와우 7,890.
+ * 네이버플러스에 넷플릭스 광고형 포함(추가 0원), 스탠다드 +6,500 · 프리미엄 +10,000. 쿠팡 와우 7,890.
+ * 네이버플러스 자체 요금은 넣지 않는다 — 네이버 패밀리로 가족 대표가 내는 경우가 있어, 넷플릭스 화면만으로는
+ * 본인이 내는지 알 수 없다(사용자 사례 2026-10).
  */
 
 import { findService } from "../merchants";
@@ -17,7 +19,6 @@ type NetflixPlan = "ads" | "standard" | "premium";
 
 const NETFLIX_DIRECT: Record<NetflixPlan, number> = { ads: 7000, standard: 13500, premium: 17000 };
 const NETFLIX_VIA_NAVER_EXTRA: Record<NetflixPlan, number> = { ads: 0, standard: 6500, premium: 10000 };
-const NAVERPLUS_MONTHLY = 4900;
 const COUPANG_WOW_MONTHLY = 7890;
 
 function planOf(name: string): NetflixPlan {
@@ -61,7 +62,10 @@ export function inferFromAppScreen(text: string, targetId: string): StoreSubscri
     const plan = netflixPlan(text);
     if (!plan) return [];
     if (/네이버\s*(플러스\s*)?멤버십/.test(text)) {
-      out.push(monthly("netflix", NETFLIX_VIA_NAVER_EXTRA[plan], "naverplus"), monthly("naverplus", NAVERPLUS_MONTHLY));
+      // 이 화면이 증명하는 건 "넷플릭스가 네이버 멤버십으로 청구된다"까지다. 네이버플러스를 누가 내는지
+      // (본인인지, 네이버 패밀리로 가족 대표가 내는지)·월간인지 연간인지는 알 수 없으므로 네이버플러스
+      // 금액은 넣지 않는다. 본인이 내면 카드 결제로 잡힐 때 실제 금액이 들어간다.
+      out.push(monthly("netflix", NETFLIX_VIA_NAVER_EXTRA[plan], "naverplus"));
     } else {
       out.push(monthly("netflix", NETFLIX_DIRECT[plan]));
     }

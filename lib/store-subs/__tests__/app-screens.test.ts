@@ -44,11 +44,13 @@ const ids = (subs: { service: { id: string }; amount: number; billedVia?: string
   subs.map((s) => [s.service.id, s.amount, s.billedVia ?? null]);
 
 describe("넷플릭스 앱 계정 화면", () => {
-  it("네이버플러스로 청구되는 광고형은 넷플릭스 0원(포함) + 네이버플러스 4,900원", () => {
-    expect(ids(inferFromAppScreen(NETFLIX_ACCOUNT_VIA_NAVER, "netflix"))).toEqual([
-      ["netflix", 0, "naverplus"],
-      ["naverplus", 4900, null],
-    ]);
+  it("네이버플러스로 청구되는 광고형은 넷플릭스 0원(네이버플러스에 포함)", () => {
+    expect(ids(inferFromAppScreen(NETFLIX_ACCOUNT_VIA_NAVER, "netflix"))).toEqual([["netflix", 0, "naverplus"]]);
+  });
+
+  it("네이버플러스 요금은 넣지 않는다 — 네이버 패밀리로 가족 대표가 내면 본인 지출이 아니다", () => {
+    const found = inferFromAppScreen(NETFLIX_ACCOUNT_VIA_NAVER, "netflix");
+    expect(found.some((s) => s.service.id === "naverplus")).toBe(false);
   });
 
   it("네이버로 스탠다드를 쓰면 업그레이드 차액 6,500원이 네이버플러스로 청구", () => {
@@ -116,7 +118,6 @@ describe("앱 안 화면을 홈까지", () => {
     expect(ids(out.found).sort()).toEqual([
       ["coupangplay", 0, "coupangwow"],
       ["coupangwow", 7890, null],
-      ["naverplus", 4900, null],
       ["netflix", 0, "naverplus"],
     ]);
     // 저장 → 복원해도 "포함" 관계가 남는다
