@@ -60,17 +60,21 @@ def check(coin, since_hours):
     h4 = candles(240, coin, 60)
     h1 = candles(60, coin, 60)
     m1 = candles(1, coin, 60)
-    recent = candles(60, coin, max(1, since_hours))
+    recent = candles(60, coin, since_hours + 1)  # 진행 중인 봉 포함 N개면 직전 체크 직후 1시간이 빠지므로 1개 더
     hi = max(c["high_price"] for c in recent)
     lo = min(c["low_price"] for c in recent)
 
     m1_chg = pct(m1[-1]["trade_price"], m1[0]["opening_price"])
+    m10 = candles(10, coin, min(200, since_hours * 6 + 7))  # 창 시작 60분 전부터 받아 창 안에서 끝나는 60분 변화를 모두 본다
+    swing = max((pct(b["trade_price"], a["trade_price"]) for a, b in zip(m10, m10[6:])), key=abs, default=0.0)
+    cover = min(since_hours, (len(m10) - 7) // 6)
     vol = [c["candle_acc_trade_price"] for c in m1]
     spike = vol[-5:] and sum(vol[-5:]) / 5 / (sum(vol) / len(vol) or 1)
     day24 = pct(price, h1[-24]["opening_price"])
 
     out = [f"■ {coin} {price:,.0f} (24h {day24:+.1f}%, 최근 {since_hours}h 범위 {lo:,.0f}~{hi:,.0f})"]
-    out.append(f"  4h: {trend(h4)} | 1h: {trend(h1)} | 1m: 60분 {m1_chg:+.2f}%, 최근5분 거래대금 평균대비 x{spike:.1f}")
+    out.append(f"  4h: {trend(h4)} | 1h: {trend(h1)} | 1m: 60분 {m1_chg:+.2f}%, 최근5분 거래대금 평균대비 x{spike:.1f}"
+               f" | 최근 {cover}h 중 60분 최대 {swing:+.1f}% (10분봉)")
     ns = min(sells, key=lambda s: s[1] - price if s[1] > price else 1e18) if sells else None
     nb = max(buys, key=lambda b: b[1] if b[1] < price else -1)
     out.append(f"  가까운 매도: {ns[0]} {ns[1]:,.0f} ({pct(ns[1], price):+.1f}%)" if ns else "  매도 레벨 없음")
@@ -78,6 +82,8 @@ def check(coin, since_hours):
     touched = [f"{n} {p:,.0f}" for n, p in sells if hi >= p] + [f"{n} {p:,.0f}" for n, p in buys if lo <= p]
     if touched:
         out.append(f"  ⚠ 최근 {since_hours}h 안에 닿음 → 체결 가능: {', '.join(touched)}")
+    if abs(swing) >= 2:
+        out.append(f"  ⚠ 최근 {cover}h 안에 60분 {swing:+.1f}% 급변")
     last_day = days[1] if days[0]["candle_date_time_kst"][:10] == datetime.datetime.now(KST).strftime("%Y-%m-%d") else days[0]
     if last_day["trade_price"] < stop:
         out.append(f"  ⚠ 직전 일봉 종가 {last_day['trade_price']:,.0f} < 매수 중단선")
