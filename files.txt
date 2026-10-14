@@ -1,0 +1,14 @@
+fib_recalc.py
+fib_orders.py
+fib_check.py
+fib_ws.py
+fib_voice.py
+fib_icon.py
+fib_telegram.py
+fibtrader_core.py
+fibtrader_theme.py
+fibtrader_widgets.py
+fibtrader.pyw
+sleep.bat
+game.bat
+tg_test.bat
