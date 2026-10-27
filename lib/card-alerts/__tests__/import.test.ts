@@ -40,7 +40,7 @@ describe("extractCardAlerts", () => {
 describe("readImportedAlerts", () => {
   it("저장된 알림을 읽고 모양이 틀린 항목은 버린다", () => {
     const json = JSON.stringify([
-      { body: "삼성1088승인", receivedAt: "2026-10-03" },
+      { body: "삼성1234승인", receivedAt: "2026-10-03" },
       { body: "x", receivedAt: "어제" },
       { body: 1, receivedAt: "2026-10-03" },
     ]);

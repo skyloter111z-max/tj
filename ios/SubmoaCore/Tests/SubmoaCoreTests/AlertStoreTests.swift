@@ -9,7 +9,7 @@ final class AlertStoreTests: XCTestCase {
         return (AlertStore(url: url), url)
     }
 
-    private let approval = "삼성1088승인 홍*동\n88,000원 일시불\n10/03 21:24 바다식당"
+    private let approval = "삼성1234승인 홍*동\n88,000원 일시불\n10/03 21:24 바다식당"
 
     func testKeepsOnlyCardAlerts() {
         let (store, _) = tempStore()

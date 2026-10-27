@@ -8,7 +8,7 @@ import org.junit.Test
 class AlertFilterTest {
     @Test
     fun `일반 승인을 통과시킨다`() {
-        assertTrue(AlertFilter.isCardAlert("삼성카드", "삼성1088승인 홍*동\n88,000원 일시불\n10/03 21:24 바다식당"))
+        assertTrue(AlertFilter.isCardAlert("삼성카드", "삼성1234승인 홍*동\n88,000원 일시불\n10/03 21:24 바다식당"))
     }
 
     @Test
@@ -18,13 +18,13 @@ class AlertFilterTest {
 
     @Test
     fun `자동납부와 취소를 통과시킨다`() {
-        assertTrue(AlertFilter.isCardAlert("삼성카드", "[삼성카드]1088\n자동결제 04/12접수\nKT통신료(123456)\n55,000원"))
-        assertTrue(AlertFilter.isCardAlert("삼성카드", "[삼성카드]1088취소\n01/19 테스트상점\n-77,900원"))
+        assertTrue(AlertFilter.isCardAlert("삼성카드", "[삼성카드]1234\n자동결제 04/12접수\nKT통신료(123456)\n55,000원"))
+        assertTrue(AlertFilter.isCardAlert("삼성카드", "[삼성카드]1234취소\n01/19 테스트상점\n-77,900원"))
     }
 
     @Test
     fun `알림 미리보기처럼 제목 없이 한 줄로 와도 통과시킨다`() {
-        assertTrue(AlertFilter.isCardAlert(null, "삼성1088승인 홍*동 88,000원 일시불 10/03 21:24 바다식당"))
+        assertTrue(AlertFilter.isCardAlert(null, "삼성1234승인 홍*동 88,000원 일시불 10/03 21:24 바다식당"))
     }
 
     @Test

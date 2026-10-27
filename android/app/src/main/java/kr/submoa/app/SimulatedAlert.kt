@@ -31,7 +31,7 @@ object SimulatedAlert {
         val date = String.format(Locale.US, "%02d/%02d", at.get(Calendar.MONTH) + 1, at.get(Calendar.DAY_OF_MONTH))
         val time = String.format(Locale.US, "%02d:%02d", at.get(Calendar.HOUR_OF_DAY), at.get(Calendar.MINUTE))
         val won = String.format(Locale.US, "%,d", amount)
-        return "삼성1088승인 홍*동\n${won}원 일시불\n$date $time $MERCHANT"
+        return "삼성1234승인 홍*동\n${won}원 일시불\n$date $time $MERCHANT"
     }
 
     /** 알림을 띄웠으면 true. Android 13+에서 알림 권한이 없으면 false */

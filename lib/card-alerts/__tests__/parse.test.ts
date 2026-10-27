@@ -3,12 +3,12 @@ import { detectSubscriptions, totalMonthly } from "../../detector";
 import { collectTransactions, inferDate, parseCardAlert } from "../parse";
 
 // 삼성카드 카카오톡 알림톡의 실제 형식. 금액·가맹점·이름은 바꿨다.
-const APPROVAL = "삼성1088승인 홍*동\n88,000원 일시불\n10/03 21:24 바다식당";
-const APPROVAL_WRAPPED = "[삼성카드]\n삼성1088승인 홍*동 \n88,000원 일시불\n10/03 21:24 바다식당\n\n이번 달 카드 이용내역 자세히 보기";
+const APPROVAL = "삼성1234승인 홍*동\n88,000원 일시불\n10/03 21:24 바다식당";
+const APPROVAL_WRAPPED = "[삼성카드]\n삼성1234승인 홍*동 \n88,000원 일시불\n10/03 21:24 바다식당\n\n이번 달 카드 이용내역 자세히 보기";
 const ONLINE = "삼성카드 홍*동님 전자상거래이용\n05/06 01:26 테스트상점 42,400원";
-const AUTOPAY = "[삼성카드]1088\n자동결제 04/12접수\nKT통신료(123456)\n55,000원";
-const CANCEL = "[삼성카드]\n삼성1088취소 홍*동\n-165,000원 일시불\n10/18 12:29 주식회사여행사";
-const LATE_CANCEL = "[삼성카드]1088취소\n01/19 테스트상점\n-77,900원\nhttp://q.samsungcard.com/xxxx";
+const AUTOPAY = "[삼성카드]1234\n자동결제 04/12접수\nKT통신료(123456)\n55,000원";
+const CANCEL = "[삼성카드]\n삼성1234취소 홍*동\n-165,000원 일시불\n10/18 12:29 주식회사여행사";
+const LATE_CANCEL = "[삼성카드]1234취소\n01/19 테스트상점\n-77,900원\nhttp://q.samsungcard.com/xxxx";
 const VOUCHER = "[삼성카드]12,060원\n승인(온누리상품권 12,060원 사용)\n*결제대금에 미포함";
 const VOUCHER_WRAPPED = "[삼성카드]4,500원 승인(온누리상품권\n4,500원 사용)\n*결제대금에 미포함";
 
@@ -17,7 +17,7 @@ describe("parseCardAlert — 삼성카드", () => {
     expect(parseCardAlert(APPROVAL, "2026-10-03")).toEqual({
       kind: "charge",
       channel: "card",
-      transaction: { merchantRaw: "바다식당", amount: 88000, date: "2026-10-03", cardId: "samsung-1088" },
+      transaction: { merchantRaw: "바다식당", amount: 88000, date: "2026-10-03", cardId: "samsung-1234" },
       time: "21:24",
       installmentMonths: 1,
     });
@@ -45,18 +45,18 @@ describe("parseCardAlert — 삼성카드", () => {
     expect(parseCardAlert(AUTOPAY, "2026-04-13")).toEqual({
       kind: "charge",
       channel: "autopay",
-      transaction: { merchantRaw: "KT통신료", amount: 55000, date: "2026-04-12", cardId: "samsung-1088" },
+      transaction: { merchantRaw: "KT통신료", amount: 55000, date: "2026-04-12", cardId: "samsung-1234" },
     });
   });
 
   it("승인취소·매입취소는 환불로 나눈다", () => {
     expect(parseCardAlert(CANCEL, "2026-10-18")).toEqual({
       kind: "refund",
-      transaction: { merchantRaw: "주식회사여행사", amount: 165000, date: "2026-10-18", cardId: "samsung-1088" },
+      transaction: { merchantRaw: "주식회사여행사", amount: 165000, date: "2026-10-18", cardId: "samsung-1234" },
     });
     expect(parseCardAlert(LATE_CANCEL, "2026-01-22")).toEqual({
       kind: "refund",
-      transaction: { merchantRaw: "테스트상점", amount: 77900, date: "2026-01-19", cardId: "samsung-1088" },
+      transaction: { merchantRaw: "테스트상점", amount: 77900, date: "2026-01-19", cardId: "samsung-1234" },
     });
   });
 
@@ -79,7 +79,7 @@ describe("parseCardAlert — 삼성카드", () => {
 
   // android SimulatedAlertTest와 같은 문자열 — 앱이 띄우는 모의 알림을 웹이 그대로 읽어야 한다
   it("앱의 모의 결제 알림도 같은 형식으로 읽는다", () => {
-    const alert = parseCardAlert("삼성1088승인 홍*동\n13,500원 일시불\n10/04 09:05 모의결제", "2026-10-04");
+    const alert = parseCardAlert("삼성1234승인 홍*동\n13,500원 일시불\n10/04 09:05 모의결제", "2026-10-04");
     expect(alert).toMatchObject({ kind: "charge", transaction: { merchantRaw: "모의결제", amount: 13500, date: "2026-10-04" } });
   });
 

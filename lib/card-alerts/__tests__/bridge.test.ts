@@ -11,7 +11,7 @@ describe("kstDate", () => {
 });
 
 describe("readCapturedAlerts", () => {
-  const body = "삼성1088승인 홍*동\n88,000원 일시불\n10/03 21:24 바다식당";
+  const body = "삼성1234승인 홍*동\n88,000원 일시불\n10/03 21:24 바다식당";
 
   it("앱이 모은 알림을 판정 입력으로 바꾼다", () => {
     const json = JSON.stringify([{ body, postedAt: Date.UTC(2026, 9, 3, 12, 24) }]);
